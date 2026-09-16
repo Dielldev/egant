@@ -30,7 +30,8 @@ streaming transcript.
 └──────────────────────┴──────────────────────────────────────┘
 ```
 
-Two columns. The **sidebar** is every conversation on this machine, newest
+Two columns, and a third on request (see *Files and terminals* below).
+The **sidebar** is every conversation on this machine, newest
 last, under a header naming the project they run in (`project @ machine`) and
 above a footer saying where they run (`Local only`). Rows read as merged
 thread units: where and how long ago, then the title. Its header menu also
@@ -71,6 +72,97 @@ is translucent and an undimmed photograph makes body text unreadable. A wallpape
 that has since been moved or deleted is forgotten rather than drawn as a blank
 rectangle.
 
+### Files, changes and terminals
+
+The stage's top-right button opens the **workspace panel** — the window's third
+column, and the only one that isn't about the conversation, which is why it
+stays shut until asked for. An empty panel asks what it should hold, with three
+buttons: **Files**, **Changes** or **Terminal**. Its own `+` adds more of any of
+them, and its tabs belong to the window rather than to a conversation — a shell
+running a build should not disappear because the sidebar moved to another
+thread.
+
+```text
+┌─sidebar─┬───────── stage ──────────┬───── panel ──────┐
+│ threads │ ▣ hello tehre            │ Files Changes  + │
+│         │ [Chat][store.ts (Wor…×]  │ ⎇ main ↑2   ⟳↓↑ │
+│         │ ── Changed ────────────  │ Changed   2    ☐ │
+│         │ 12 │ - const a = 1       │  All files  [+]  │
+│         │ 12 │ + const a = 2       │  store.ts  +8−3◼ │
+│         │                          │ Staged    0      │
+│         │                          │ Pull requests    │
+│         │                          │ ┌──────────────┐ │
+│         │                          │ │ message      │ │
+│         │                          │ │ description  │ │
+│         │                          │ │[Commit&Push] │ │
+└─────────┴──────────────────────────┴──┴──────────────┴┘
+```
+
+**Files** is the project as a tree, expanding a directory at a time — nothing
+is walked until it is opened, so a `node_modules` nobody clicked costs nothing.
+The file-type icons are the [Antigravity Icons Supercharged][icons] set,
+vendored into one generated module along with the pack's own extension and
+filename tables, so a `.tsx` gets the icon it gets in the editor — folders
+included, filled when closed and outlined when open. See
+`src/components/icons/LICENSE.md` for what the generator changes and how to
+rebuild it. Clicking a file opens it as a **tab on the stage**, beside the
+conversation: read-only, syntax-highlighted, with line numbers, because the
+agent is what edits files and a viewer is what the user needs to follow along.
+Those tabs hang off the conversation they were opened beside, so each thread
+keeps its own set.
+
+[icons]: https://marketplace.visualstudio.com/items?itemName=davidbabel.antigravity-icons-supercharged-gray
+
+**Changes** is what git says you have done. A status line heads it — the
+branch, how far ahead or behind it is, and buttons to fetch, pull and push, or
+to **publish** a branch that has never left the machine. Under it are the
+sections git actually has: **Changed** (the working tree against the index) and
+**Staged** (the index against HEAD), each with a count, a collapse, a
+select-all, and a flat/tree toggle.
+
+A row reads filename-first with its directory trailing behind, then `+8 −3` and
+a status glyph — which becomes a checkbox on hover, so picking files never
+widens the row. Above the rows, one bar says what the next action applies to:
+*All files* until something is ticked, the selection after that, so a click can
+never do more than the bar says. Staging, unstaging and discarding are there;
+discarding asks first, because nothing has ever recovered work that was never
+committed.
+
+The **commit box is pinned to the bottom of the column**, below the sections
+rather than inside one: committing is what this column is for, and it should
+never be somewhere you have to scroll to find. One button — **Commit & Push**,
+because a commit that never leaves this machine helps nobody. With nothing
+staged it stages everything first; with something staged it commits only that.
+A branch with no upstream gets one on its first push, and a repository with no
+remote is offered a plain **Commit**, since there would be nowhere to push it.
+⌘⏎ from either field does the same thing as the button.
+
+**Pull requests** are the third section, run through the user's own `gh` — the
+account they are already signed in as, no second sign-in for this window to
+keep in step and no token for it to hold. Each one expands to its checks,
+commits, files and comments, with a merge footer that says what would stop the
+merge (conflicts, a red check, changes requested) before offering it, and a
+squash/merge/rebase choice beside it. The branch you are on, if it has no PR
+yet, gets a **Create pull request** form. What `gh` can't answer in one call —
+the conversation on a PR, a failed check's log — links out to the browser
+rather than being half-rebuilt here.
+
+Clicking a row opens the diff as a **stage tab**, named for the file and the
+side of git it came from — `store.ts (Working Tree)` or `store.ts (Index)` —
+so the same file can be open twice, once against each. The diff reads unified
+or split and remembers which you prefer; an image diff shows the two pictures
+side by side over a checkerboard instead of calling itself binary; and a file
+that can be rendered (Markdown, HTML) carries a **Diff / Preview** toggle, the
+HTML in a fully sandboxed frame.
+
+Nothing here polls: the panel reads on open, after any action it takes, and on
+`turn_ended`, which is exactly when the agent has stopped editing.
+
+**Terminals** are real PTYs — the user's login shell (`$SHELL -l`, so it has
+their actual `PATH`) in the session's working directory, drawn by xterm.js over
+the panel's glass. Closing the tab is what ends the shell; hiding the panel
+does not, so a build keeps running while you talk to the agent about it.
+
 ### Keys
 
 | | |
@@ -79,6 +171,7 @@ rectangle.
 | ⌘K | reveal and focus the filter field |
 | ⌘L | focus the composer |
 | ⌘B | hide the sidebar |
+| ⌘J | open / hide the workspace panel |
 | ⌘⎋ | interrupt the running turn |
 | ⏎ / ⇧⏎ | send / newline |
 
@@ -96,6 +189,7 @@ restarts.
 | Node | 20+ with npm (frontend dev server and builds) |
 | macOS | Command Line Tools are enough; no full Xcode needed |
 | `claude` | on `PATH`, logged in (`claude login`) |
+| `gh` | optional — only for the panel's Pull requests section |
 
 ## Running
 
@@ -131,12 +225,22 @@ src-tauri/   the Tauri backend — state only, no agent or git logic
   commands.rs   everything the frontend can invoke
   dto.rs        the shapes that cross the IPC boundary
   project.rs    the folders the app has been pointed at
+  files.rs      the panel's file tree and the viewer's reads
+  pty.rs        one real PTY per terminal tab, streamed as `pty-output`
+  github.rs     pull requests, by way of the user's own `gh`
+                (git itself lives in `commands.rs`, over the `vcs` crate)
   settings.rs   preferences that outlive a run
 src/         the React frontend — views only
   components/  Sidebar · WindowBar · ProjectMenu · SessionHeader ·
-               TranscriptView · Composer · ContextMeter · Wallpaper
+               TranscriptView · Composer · ContextMeter · Wallpaper ·
+               WorkspacePanel · FileTree · FileIcon · FileView ·
+               StageTabs · TerminalPane · ChangesPanel · PullRequests ·
+               DiffTabView · ChangeStatus
+  components/icons/  the vendored file-type icon set (generated; MIT)
   lib/         IPC wrappers, dialog pickers, the transcript fold
   store.ts     zustand store: snapshot + live transcripts + lists
+scripts/
+  vendor-icons.py  regenerates the icon module from the published .vsix
 crates/
   harness/    agent backends behind a `Harness` trait
     protocol.rs   Claude Code's stream-json wire types

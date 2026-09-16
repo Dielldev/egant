@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
-    ChangeDto, DiffHunkDto, DiffLineDto, ExplorerEntryDto, StateDto, TranscriptDto,
+    ChangeDto, DiffHunkDto, DiffLineDto, RepoStatusDto, StateDto, TranscriptDto,
 };
 use crate::sessions;
 use crate::settings::{SettingsDto, is_supported_image};
@@ -348,38 +348,6 @@ fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<(),
 }
 
 // ---------------------------------------------------------------------------
-// Explorer
-// ---------------------------------------------------------------------------
-
-/// How many entries the explorer lists before it stops. The column is a glance
-/// at the project, not a file manager, and a node_modules directory would
-/// otherwise cost a full directory walk on every call.
-const EXPLORER_LIMIT: usize = 500;
-
-#[tauri::command]
-fn explorer_list(path: String) -> Result<Vec<ExplorerEntryDto>, String> {
-    let entries = std::fs::read_dir(&path).map_err(|error| error.to_string())?;
-    let mut rows: Vec<ExplorerEntryDto> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // Dotfiles are noise at this size; the agent can still see them.
-            if name.starts_with('.') {
-                return None;
-            }
-            Some(ExplorerEntryDto {
-                is_dir: entry.file_type().is_ok_and(|kind| kind.is_dir()),
-                name,
-            })
-        })
-        .take(EXPLORER_LIMIT)
-        .collect();
-
-    rows.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
-    Ok(rows)
-}
-
-// ---------------------------------------------------------------------------
 // Git (local ops through libgit2, remotes through the user's own `git`)
 // ---------------------------------------------------------------------------
 
@@ -393,8 +361,11 @@ fn changes_list(path: String) -> Result<Vec<ChangeDto>, String> {
         .into_iter()
         .map(|change| ChangeDto {
             path: change.path.display().to_string(),
+            status: status_name(change.status).to_string(),
             code: change.status.code().to_string(),
             staged: change.staged,
+            additions: change.additions,
+            deletions: change.deletions,
         })
         .collect();
 
@@ -418,10 +389,116 @@ fn diff_file(root: String, path: String, staged: bool) -> Result<Vec<DiffHunkDto
                 .map(|line| DiffLineDto {
                     origin: line.origin.to_string(),
                     content: line.content,
+                    old_lineno: line.old_lineno,
+                    new_lineno: line.new_lineno,
                 })
                 .collect(),
         })
         .collect())
+}
+
+/// The name the panel's row draws its icon from.
+fn status_name(status: egant_vcs::FileStatus) -> &'static str {
+    use egant_vcs::FileStatus;
+    match status {
+        FileStatus::Added => "added",
+        FileStatus::Modified => "modified",
+        FileStatus::Deleted => "deleted",
+        FileStatus::Renamed => "renamed",
+        FileStatus::Untracked => "untracked",
+        FileStatus::Conflicted => "conflicted",
+    }
+}
+
+/// Branch, upstream distance and first remote, for the Changes tab's header
+/// and for deciding whether pushing is even possible.
+#[tauri::command]
+fn repo_status(path: String) -> Result<RepoStatusDto, String> {
+    let repo = egant_vcs::Repo::discover(&path).map_err(|error| error.to_string())?;
+    // Deliberately not `snapshot()`: that walks the whole status to collect
+    // changes, which `changes_list` is already doing alongside this call.
+    let branch = repo.head_branch().map_err(|error| error.to_string())?;
+    let head_summary = repo.head_summary().map_err(|error| error.to_string())?;
+    let ahead_behind = repo.ahead_behind().ok();
+    let published = repo.has_upstream();
+    let remote = egant_vcs::remote::remotes(repo.root())
+        .ok()
+        .and_then(|remotes| {
+            // `origin` if it exists, else whatever the repository does have.
+            remotes
+                .iter()
+                .find(|name| *name == "origin")
+                .or_else(|| remotes.first())
+                .cloned()
+        });
+    Ok(RepoStatusDto {
+        root: repo.root().display().to_string(),
+        branch,
+        head_summary,
+        ahead: ahead_behind.map(|(ahead, _)| ahead),
+        behind: ahead_behind.map(|(_, behind)| behind),
+        published,
+        remote,
+    })
+}
+
+/// Throws away working-tree changes. Destructive and unrecoverable, so the
+/// panel confirms before calling it.
+#[tauri::command]
+fn discard_files(root: String, paths: Vec<String>) -> Result<(), String> {
+    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    repo.discard(&paths).map_err(|error| error.to_string())
+}
+
+/// One side of a file as git has it. `source` is `workdir`, `index` or `head`;
+/// `None` means that side has no such file, which is what one end of an added
+/// or deleted file looks like.
+fn blob_bytes(root: &str, path: &Path, source: &str) -> Result<Option<Vec<u8>>, String> {
+    if source == "workdir" {
+        // The working tree is just the filesystem: a project with no
+        // repository at all still has files to show, so this side never asks
+        // git for permission. An absolute path (what a file tab carries)
+        // replaces the base on `join`, which is exactly right.
+        let full = match egant_vcs::Repo::discover(root) {
+            Ok(repo) => repo.root().join(path),
+            Err(_) => Path::new(root).join(path),
+        };
+        if !full.is_file() {
+            return Ok(None);
+        }
+        return Ok(Some(std::fs::read(full).map_err(|error| error.to_string())?));
+    }
+
+    let repo = egant_vcs::Repo::discover(root).map_err(|error| error.to_string())?;
+    let stored = if source == "head" {
+        egant_vcs::BlobSource::Head
+    } else {
+        egant_vcs::BlobSource::Index
+    };
+    repo.blob(path, stored).map_err(|error| error.to_string())
+}
+
+/// One side of a file as a data URL, for the diffs the viewer draws rather
+/// than reads: images.
+#[tauri::command]
+fn blob_data_url(root: String, path: String, source: String) -> Result<Option<String>, String> {
+    let file = Path::new(&path);
+    Ok(blob_bytes(&root, file, &source)?.map(|bytes| {
+        format!(
+            "data:{};base64,{}",
+            mime_for(file),
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+        )
+    }))
+}
+
+/// One side of a file as text, for the preview a renderable file can offer
+/// instead of its diff.
+#[tauri::command]
+fn blob_text(root: String, path: String, source: String) -> Result<Option<String>, String> {
+    Ok(blob_bytes(&root, Path::new(&path), &source)?
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 #[tauri::command]
@@ -456,6 +533,31 @@ fn commit_changes(root: String, message: String) -> Result<String, String> {
 fn repo_branch(path: String) -> Result<Option<String>, String> {
     let repo = egant_vcs::Repo::discover(&path).map_err(|error| error.to_string())?;
     repo.head_branch().map_err(|error| error.to_string())
+}
+
+/// `git pull --ff-only`. Fast-forward only on purpose: a merge commit the user
+/// didn't ask for is not something a button should be able to make.
+#[tauri::command]
+async fn git_pull(root: String, remote: String, branch: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::remote::pull_ff_only(Path::new(&root), &remote, &branch)
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// The first push of a branch that has no upstream yet — `git push -u`.
+#[tauri::command]
+async fn git_publish(root: String, remote: String, branch: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::remote::push_set_upstream(Path::new(&root), &remote, &branch)
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -513,8 +615,23 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         list_models,
         wallpaper_data_url,
         sync_window_appearance,
-        explorer_list,
+        crate::files::list_dir,
+        crate::github::gh_status,
+        crate::github::pr_list,
+        crate::github::pr_detail,
+        crate::github::pr_create,
+        crate::github::pr_merge,
+        crate::github::open_url,
+        crate::files::read_file,
+        crate::pty::pty_spawn,
+        crate::pty::pty_write,
+        crate::pty::pty_resize,
+        crate::pty::pty_kill,
         changes_list,
+        repo_status,
+        discard_files,
+        blob_data_url,
+        blob_text,
         diff_file,
         stage_files,
         unstage_files,
@@ -523,6 +640,8 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         repo_branch,
         git_remotes,
         git_push,
+        git_pull,
+        git_publish,
         git_fetch,
     ]
 }

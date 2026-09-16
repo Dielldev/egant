@@ -193,6 +193,155 @@ export function parseContext(input: string): number {
 /** Presets offered by the picker's CONTEXT section and the Agents settings. */
 export const CONTEXT_PRESETS = ["32K", "64K", "100K", "200K", "500K", "1M"];
 
+/** One row of the workspace panel's file tree (`list_dir`). */
+export interface FileEntry {
+  name: string;
+  /** Absolute path — what expands a folder and what a stage tab opens. */
+  path: string;
+  isDir: boolean;
+}
+
+/** A file as the stage's viewer tab shows it (`read_file`). `binary` and
+ * `truncated` are the two honest answers the viewer gives instead of text. */
+export interface FileContent {
+  path: string;
+  name: string;
+  text: string;
+  /** Size on disk, which `text` may be only the head of. */
+  bytes: number;
+  truncated: boolean;
+  binary: boolean;
+}
+
+/** How git describes one changed path. Drives the row's status icon. */
+export type GitChangeStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+/** One row of the panel's Changed or Staged section (`changes_list`). A path
+ * that is both staged and edited again since appears twice — once per
+ * section — which is what git itself reports. */
+export interface GitChange {
+  path: string;
+  status: GitChangeStatus;
+  /** The `git status --short` letter. */
+  code: string;
+  staged: boolean;
+  additions: number;
+  deletions: number;
+}
+
+/** Where the repository stands (`repo_status`). */
+export interface RepoStatus {
+  /** The repository's own root. Paths in `GitChange` are relative to this,
+   * which is not always the folder the panel was pointed at. */
+  root: string;
+  branch: string | null;
+  headSummary: string | null;
+  ahead: number | null;
+  behind: number | null;
+  /** `null` when the repository has no remote, which is what hides "Push". */
+  remote: string | null;
+  /** Whether the branch tracks anything yet. A branch that doesn't is offered
+   * "Publish" rather than "Push". */
+  published: boolean;
+}
+
+/** Whether the GitHub CLI is there and signed in. Everything in the Pull
+ * Requests section runs through it. */
+export interface GhStatus {
+  installed: boolean;
+  authenticated: boolean;
+  /** What to tell the user when one of the above is false. */
+  hint: string;
+}
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  /** `OPEN` | `CLOSED` | `MERGED`. */
+  state: string;
+  draft: boolean;
+  head: string;
+  base: string;
+  url: string;
+  author: string;
+  updated: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}
+
+/** One CI check. `bucket` is the four-way answer the UI colours by. */
+export interface PrCheck {
+  name: string;
+  /** `pass` | `fail` | `pending` | `skipped`. */
+  bucket: string;
+  description: string;
+  url: string | null;
+}
+
+export interface PrCommit {
+  sha: string;
+  message: string;
+  author: string;
+}
+
+export interface PrFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface PrComment {
+  author: string;
+  body: string;
+  at: string;
+}
+
+export interface PrDetail {
+  pullRequest: PullRequest;
+  body: string;
+  /** `MERGEABLE` | `CONFLICTING` | `UNKNOWN`. */
+  mergeable: string;
+  /** `APPROVED` | `CHANGES_REQUESTED` | `REVIEW_REQUIRED` | empty. */
+  reviewDecision: string;
+  checks: PrCheck[];
+  commits: PrCommit[];
+  files: PrFile[];
+  comments: PrComment[];
+}
+
+/** One line of a diff. `origin` is git's own marker: `+`, `-` or a space. */
+export interface DiffLine {
+  origin: string;
+  content: string;
+  /** `null` where the line doesn't exist on that side — a removed line has no
+   * new number, an added line has no old one. */
+  oldLineno: number | null;
+  newLineno: number | null;
+}
+
+export interface DiffHunk {
+  header: string;
+  lines: DiffLine[];
+}
+
+/** A chunk of terminal output, as emitted on `pty-output`. */
+export interface PtyOutput {
+  id: number;
+  data: string;
+}
+
+/** The shell behind a terminal tab has exited (`pty-exit`). */
+export interface PtyExit {
+  id: number;
+}
+
 export interface WindowState {
   projects: Project[];
   activeProject: number | null;

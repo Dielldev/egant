@@ -354,23 +354,69 @@ pub struct StateDto {
 }
 
 // ---------------------------------------------------------------------------
-// Explorer / git
+// Files / git
 // ---------------------------------------------------------------------------
 
+/// Where a repository stands: the branch, and whether it has an upstream to
+/// push to. The panel's Changes tab heads its sections with it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExplorerEntryDto {
+pub struct RepoStatusDto {
+    /// The repository's own root, which is not always the folder the panel was
+    /// pointed at — a project can sit inside a larger repository, and git's
+    /// paths are relative to this.
+    pub root: String,
+    pub branch: Option<String>,
+    pub head_summary: Option<String>,
+    /// Commits ahead of and behind the upstream, when one is configured.
+    pub ahead: Option<usize>,
+    pub behind: Option<usize>,
+    /// Whether the branch has an upstream at all. A branch that doesn't is
+    /// offered "Publish" rather than "Push".
+    pub published: bool,
+    /// First remote's name (`origin`, usually), or `null` when there is none —
+    /// which is what decides whether "Commit & Push" is on offer.
+    pub remote: Option<String>,
+}
+
+/// One row of the workspace panel's file tree.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntryDto {
     pub name: String,
+    /// Absolute path — what the tree expands and what a stage tab opens.
+    pub path: String,
     pub is_dir: bool,
 }
 
+/// A file as the stage's viewer tab shows it. `binary` and `truncated` are the
+/// two honest answers the viewer can give instead of text.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContentDto {
+    pub path: String,
+    pub name: String,
+    pub text: String,
+    /// Size on disk, which `text` may be only the head of.
+    pub bytes: u64,
+    pub truncated: bool,
+    pub binary: bool,
+}
+
+/// One row of the panel's Changed or Staged section.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeDto {
     pub path: String,
-    /// The `git status --short` letter.
+    /// `added` | `modified` | `deleted` | `renamed` | `untracked` |
+    /// `conflicted` — spelled out rather than sent as the `git status --short`
+    /// letter, because the row draws an icon from it, not a letter.
+    pub status: String,
+    /// The `git status --short` letter, for anywhere a glance is enough.
     pub code: String,
     pub staged: bool,
+    pub additions: usize,
+    pub deletions: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,6 +424,10 @@ pub struct ChangeDto {
 pub struct DiffLineDto {
     pub origin: String,
     pub content: String,
+    /// Line number on each side, `null` where the line doesn't exist there.
+    /// The split view reads these to put a line in the right column.
+    pub old_lineno: Option<u32>,
+    pub new_lineno: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

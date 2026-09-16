@@ -1,0 +1,121 @@
+import { MessageSquare, X } from "lucide-react";
+import type { StageTab } from "../store";
+import { CHAT_TAB, diffGroupSuffix, useEgant } from "../store";
+import { ChangeStatusIcon } from "./ChangeStatus";
+import { FileIcon } from "./FileIcon";
+
+/** Stable empty list: a fresh `[]` per render would make the store's snapshot
+ * a new value every time. */
+const NO_TABS: StageTab[] = [];
+
+/** The strip above the stage: the conversation, then whatever files and diffs
+ * are open beside it. It appears only once something is opened — with nothing
+ * but the chat there is nothing to switch between, and a tab strip naming one
+ * thing is the window saying it twice. */
+export function StageTabs({ sessionKey }: { sessionKey: number }) {
+  const tabs = useEgant((s) => s.stageTabs[sessionKey] ?? NO_TABS);
+  const showing = useEgant((s) => s.stageTab[sessionKey] ?? CHAT_TAB);
+  const setStageTab = useEgant((s) => s.setStageTab);
+  const closeStageTab = useEgant((s) => s.closeStageTab);
+  const title = useEgant(
+    (s) => s.snapshot?.sessions.find((session) => session.id === sessionKey)?.title,
+  );
+
+  if (tabs.length === 0) return null;
+
+  return (
+    <div className="flex w-full shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--border)] px-3 pb-1.5">
+      <Tab
+        icon={<MessageSquare size={12} strokeWidth={2} />}
+        label={title ?? "Chat"}
+        active={showing === CHAT_TAB}
+        onClick={() => setStageTab(sessionKey, CHAT_TAB)}
+      />
+      {tabs.map((tab) => (
+        <Tab
+          key={tab.key}
+          icon={<FileIcon name={tab.name} size={14} />}
+          label={tab.name}
+          // Which side of git this diff is — the same file can be open twice,
+          // once against the index and once against HEAD.
+          suffix={tab.group ? diffGroupSuffix(tab.group) : undefined}
+          status={
+            tab.status ? <ChangeStatusIcon status={tab.status} size={13} /> : undefined
+          }
+          hint={tab.group ? `${tab.path} ${diffGroupSuffix(tab.group)}` : tab.path}
+          active={showing === tab.key}
+          onClick={() => setStageTab(sessionKey, tab.key)}
+          onClose={() => closeStageTab(sessionKey, tab.key)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Tab({
+  icon,
+  label,
+  suffix,
+  status,
+  hint,
+  active,
+  onClick,
+  onClose,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  suffix?: string;
+  status?: React.ReactNode;
+  hint?: string;
+  active: boolean;
+  onClick: () => void;
+  onClose?: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      title={hint ?? label}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onClick();
+      }}
+      // Middle-click closes, the way every tab strip does.
+      onAuxClick={(e) => {
+        if (e.button === 1 && onClose) {
+          e.preventDefault();
+          onClose();
+        }
+      }}
+      className={`group flex max-w-[230px] min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 pl-2 text-[12px] ${
+        active
+          ? "bg-[var(--selected)] text-[var(--ink)]"
+          : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+      }`}
+    >
+      <span className="flex shrink-0 items-center text-[var(--faint)]">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">
+        {label}
+        {suffix && <span className="ml-1 text-[11px] text-[var(--faint)]">{suffix}</span>}
+      </span>
+      {/* The status gives way to the close button on hover rather than sitting
+        beside it, which would make the tab wider the moment you point at it. */}
+      {status && <span className="shrink-0 group-hover:hidden">{status}</span>}
+      {onClose && (
+        <button
+          type="button"
+          title="Close tab"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          className={`shrink-0 cursor-pointer rounded-sm p-0.5 hover:bg-[rgba(255,255,255,0.12)] hover:text-[var(--ink)] ${
+            status ? "hidden group-hover:block" : "opacity-0 group-hover:opacity-100"
+          }`}
+        >
+          <X size={10} strokeWidth={2.2} />
+        </button>
+      )}
+    </div>
+  );
+}

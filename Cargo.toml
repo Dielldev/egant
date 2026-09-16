@@ -41,6 +41,8 @@ tauri = "2"
 tauri-build = "2"
 tauri-plugin-dialog = "2"
 base64 = "0.22"
+# Real PTYs for the workspace panel's terminal tabs.
+portable-pty = "0.9"
 
 anyhow = "1"
 async-channel = "2"

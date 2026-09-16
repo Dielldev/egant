@@ -8,8 +8,11 @@
 
 mod commands;
 mod dto;
+mod files;
+mod github;
 mod persist;
 mod project;
+mod pty;
 mod sessions;
 mod settings;
 mod state;
@@ -24,6 +27,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(AppState::new()))
+        // Terminals live beside the window state rather than inside it: the
+        // reader thread behind every terminal tab must never wait on the lock
+        // the whole UI takes to render a snapshot.
+        .manage(Mutex::new(pty::Terminals::default()))
         .invoke_handler(commands::handlers())
         .setup(|_app| {
             // The window opens transparent (see `tauri.conf.json`); on macOS this

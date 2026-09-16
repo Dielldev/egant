@@ -14,7 +14,7 @@ pub mod repo;
 pub mod watcher;
 pub mod worktree;
 
-pub use repo::{DiffHunk, FileChange, FileStatus, Repo, RepoSnapshot};
+pub use repo::{BlobSource, DiffHunk, FileChange, FileStatus, Repo, RepoSnapshot};
 pub use watcher::{RepoWatcher, WatchEvent};
 pub use worktree::{Worktree, WorktreeStore};
 

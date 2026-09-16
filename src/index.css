@@ -24,6 +24,10 @@
   --diff-add-fg: #6fcf97;
   --diff-del-bg: rgba(224, 112, 112, 0.12);
   --diff-del-fg: #e07070;
+  /* The other two states a changed path can be in, for the Changes tab's
+     status icons: edited, and needing a human to settle it. */
+  --diff-mod-fg: #d8a657;
+  --diff-conflict-fg: #e0904c;
   /* Accent follows the Appearance setting. Toggles, selection rings and
    * focus accents read from these rather than a fixed tint. */
   --accent: #8e7cf6;
@@ -665,4 +669,215 @@ input {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+/* ---------------------------------------------------------------------------
+ * The file viewer on the stage, and the terminals in the workspace panel.
+ * ------------------------------------------------------------------------ */
+
+/* Code tokens. Named rather than per-palette: a palette re-skins the window's
+ * surfaces, but syntax colour has to stay legible against every one of them,
+ * so there are two sets — one for each appearance — and both are tuned
+ * against the stage they actually sit on. */
+:root {
+  --code-comment: #6b6b76;
+  --code-keyword: #c98bdf;
+  --code-string: #8fce9b;
+  --code-number: #e0a05c;
+  --code-function: #7aa8f0;
+  --code-type: #5fc9d8;
+  --code-attr: #e0b94a;
+  --code-meta: #8b8b95;
+}
+
+html[data-theme="light"] {
+  --code-comment: #8a8a96;
+  --code-keyword: #8b3fbf;
+  --code-string: #2f7d4a;
+  --code-number: #a35a13;
+  --code-function: #2a5fb8;
+  --code-type: #1c7a87;
+  --code-attr: #8a5f00;
+  --code-meta: #62626c;
+}
+
+/* The viewer is two panes on one monospace grid: the numbers and the code
+ * must agree line for line, so they share every metric that decides where a
+ * line sits. */
+.code-pane,
+.code-gutter {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+
+/* Sticky rather than scrolling away: a line number is only useful while the
+ * line it belongs to is on screen. The tint is what keeps code from sliding
+ * underneath it on a horizontal scroll. */
+.code-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding: 0 12px 0 10px;
+  text-align: right;
+  color: var(--faint);
+  user-select: none;
+  background: color-mix(in srgb, var(--stage) 80%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.code-pane {
+  padding-right: 24px;
+  color: var(--ink);
+}
+
+.code-pane .hljs-comment,
+.code-pane .hljs-quote {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.code-pane .hljs-keyword,
+.code-pane .hljs-selector-tag,
+.code-pane .hljs-literal,
+.code-pane .hljs-section,
+.code-pane .hljs-doctag {
+  color: var(--code-keyword);
+}
+.code-pane .hljs-string,
+.code-pane .hljs-regexp,
+.code-pane .hljs-addition {
+  color: var(--code-string);
+}
+.code-pane .hljs-number,
+.code-pane .hljs-symbol,
+.code-pane .hljs-bullet {
+  color: var(--code-number);
+}
+.code-pane .hljs-title,
+.code-pane .hljs-title.function_,
+.code-pane .hljs-name {
+  color: var(--code-function);
+}
+.code-pane .hljs-title.class_,
+.code-pane .hljs-type,
+.code-pane .hljs-built_in {
+  color: var(--code-type);
+}
+.code-pane .hljs-attr,
+.code-pane .hljs-attribute,
+.code-pane .hljs-property,
+.code-pane .hljs-variable,
+.code-pane .hljs-template-variable {
+  color: var(--code-attr);
+}
+.code-pane .hljs-meta,
+.code-pane .hljs-selector-class,
+.code-pane .hljs-selector-id {
+  color: var(--code-meta);
+}
+.code-pane .hljs-deletion {
+  color: var(--diff-del-fg);
+}
+.code-pane .hljs-emphasis {
+  font-style: italic;
+}
+.code-pane .hljs-strong {
+  font-weight: 600;
+}
+
+/* The terminal paints its own background from its theme, which is deliberately
+ * transparent so the panel's glass stays visible behind the shell. xterm still
+ * fills the viewport element itself, so that fill has to go too. */
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* The diff viewer on the stage: the same monospace grid as the file viewer,
+ * with a column of line numbers per side and git's own marker between them. */
+.code-diff-row {
+  display: grid;
+  grid-template-columns: 3.2rem 3.2rem 1rem 1fr;
+  align-items: baseline;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* Split rows carry one number and no marker: which side a line is on is what
+ * a split diff already says. */
+.grid-cols-2 > .code-diff-row {
+  grid-template-columns: 3.2rem 1fr;
+}
+
+.code-diff-num {
+  padding-right: 10px;
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+
+.code-diff-marker {
+  color: var(--faint);
+  text-align: center;
+  user-select: none;
+}
+
+.code-diff-text {
+  padding-right: 16px;
+  padding-left: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.code-diff-add {
+  background: var(--diff-add-bg);
+}
+.code-diff-del {
+  background: var(--diff-del-bg);
+}
+
+/* The blank that keeps a split row level when one side has more lines than
+ * the other. Hatched rather than empty, so it reads as "nothing here" instead
+ * of as a line that happens to be blank. */
+.code-diff-blank {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 5px,
+    var(--hover) 5px,
+    var(--hover) 10px
+  );
+  min-height: 1.55em;
+}
+
+/* `@@ -12,7 +12,9 @@` — the address of what follows, not part of it. */
+.code-hunk-header {
+  padding: 3px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
+  font-size: 11px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Behind an image in the viewer and the image diff: the usual checkerboard,
+ * so a transparent PNG reads as transparent rather than as the theme's
+ * background colour. */
+.image-checker {
+  background-image:
+    linear-gradient(45deg, var(--hover) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--hover) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--hover) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--hover) 75%);
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-size: 12px 12px;
 }

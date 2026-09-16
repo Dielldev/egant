@@ -1,3 +1,4 @@
+import { PanelRight, PanelRightClose } from "lucide-react";
 import { useEgant } from "../store";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
@@ -47,9 +48,42 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
             </span>
           )}
           {active?.busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
+          {/* Stops short of the panel button so the title can't run under it. */}
           <div data-tauri-drag-region className="h-full flex-1" />
+          <div className="w-7 shrink-0" />
         </div>
       )}
+      {/* Pinned to the stage's top-right corner rather than placed in a row:
+        it has to be reachable in all four combinations of launch screen and
+        hidden sidebar, and those rows are not all the same row. */}
+      <div className="absolute top-[7px] right-3 z-20">
+        <PanelButton />
+      </div>
     </div>
+  );
+}
+
+/** The way into the workspace panel: the project's files, or a shell in it.
+ * A plain toggle — what the panel should hold is a question the panel itself
+ * asks, with two buttons, the first time it opens. */
+function PanelButton() {
+  const panelOpen = useEgant((s) => s.panelOpen);
+  const togglePanel = useEgant((s) => s.togglePanel);
+
+  return (
+    <button
+      type="button"
+      title={panelOpen ? "Hide files and terminals · ⌘J" : "Files and terminals · ⌘J"}
+      onClick={() => togglePanel()}
+      className={`cursor-pointer rounded-md p-1.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
+        panelOpen ? "text-[var(--ink)]" : "text-[var(--muted)]"
+      }`}
+    >
+      {panelOpen ? (
+        <PanelRightClose size={15} strokeWidth={2} />
+      ) : (
+        <PanelRight size={15} strokeWidth={2} />
+      )}
+    </button>
   );
 }

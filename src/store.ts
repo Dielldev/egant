@@ -11,6 +11,8 @@ import { parseContext } from "./lib/types";
 import type {
   AgentModel,
   AgentStatus,
+  GitChange,
+  GitChangeStatus,
   SessionEventPayload,
   SessionInfo,
   TranscriptState,
@@ -32,6 +34,64 @@ export type SettingsSection =
 export type SidebarOrganize = "flat" | "byProject";
 /** Sidebar filter popover — SORT section. */
 export type SidebarSort = "updated" | "created";
+
+/** What a workspace-panel tab holds: the project's files, a shell, or what git
+ * says has changed. */
+export type PanelTabKind = "files" | "terminal" | "changes";
+
+/** One tab in the workspace panel on the right. The Files tab is a tree of
+ * the project; a terminal tab owns one PTY for as long as it is open. */
+export interface PanelTab {
+  id: string;
+  kind: PanelTabKind;
+  title: string;
+  /** The shell's working directory, captured at creation so switching
+   * conversations can't move a running shell out from under itself. The Files
+   * tab ignores it and follows the conversation in front of you instead —
+   * a tree, unlike a shell, has nothing running in it to disturb. */
+  cwd: string;
+  /** The live PTY, once the pane has spawned its shell. Terminal tabs only. */
+  ptyId?: number;
+  /** Set when that shell exits, so the tab can say so instead of looking live. */
+  exited?: boolean;
+}
+
+/** Which side of git a diff is showing: the working tree against the index
+ * (`disk`), or the index against HEAD (`staged`). */
+export type DiffGroup = "disk" | "staged";
+
+/** One tab on the stage beside the conversation: a file from the tree, or a
+ * diff from the Changes tab. */
+export interface StageTab {
+  /** Unique within a conversation. A file is keyed by its path; a diff by its
+   * group and path, so the same file can be open as a file and as a diff. */
+  key: string;
+  kind: "file" | "diff";
+  /** Absolute for a file, repo-relative for a diff — which is how git names
+   * it, and what `diff_file` expects. */
+  path: string;
+  name: string;
+  /** Diffs only. */
+  group?: DiffGroup;
+  status?: GitChangeStatus;
+  /** Diffs only: the repository the path is relative to. */
+  root?: string;
+}
+
+/** The suffix a diff tab carries after its filename, naming which side of git
+ * it shows. */
+export function diffGroupSuffix(group: DiffGroup): string {
+  return group === "staged" ? "(Index)" : "(Working Tree)";
+}
+
+/** The key a diff tab is addressed by. */
+export function diffTabKey(group: DiffGroup, path: string): string {
+  return `diff:${group}:${path}`;
+}
+
+/** The stage's tab strip addresses the conversation by this key; every other
+ * key is an open file's path. */
+export const CHAT_TAB = "chat";
 
 export type AppearanceMode = "system" | "light" | "dark";
 export type GlassMode = "default" | "frosted" | "clear" | "opaque";
@@ -151,6 +211,48 @@ interface EgantStore {
    * sensible range. Persisted so a resize survives reopening the window. */
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
+  /** The workspace panel on the right: the project's files and its
+   * terminals. Closed until asked for — the window is a conversation first. */
+  panelOpen: boolean;
+  panelWidth: number;
+  setPanelWidth: (width: number) => void;
+  /** Panel tabs are the window's, not a conversation's: a shell running a
+   * build should not vanish because the sidebar moved to another thread. */
+  panelTabs: PanelTab[];
+  /** Active panel tab id, or `null` when the panel holds none. */
+  panelTab: string | null;
+  setPanelTab: (id: string) => void;
+  /** Shows or hides the panel. With no tabs open it shows its two buttons,
+   * Files and Terminal, rather than choosing one on the user's behalf. */
+  togglePanel: () => void;
+  /** Reveals the file tree — focuses the existing Files tab rather than
+   * opening a second copy of the same tree. */
+  openFilesTab: () => void;
+  openTerminalTab: () => void;
+  /** Same one-of-a-kind rule as the tree: one Changes tab per window. */
+  openChangesTab: () => void;
+  closePanelTab: (id: string) => void;
+  /** The pane reports the PTY it spawned back to the tab that owns it, which
+   * is what lets closing the tab kill the shell. */
+  attachPty: (id: string, ptyId: number) => void;
+  markPtyExited: (ptyId: number) => void;
+
+  /** What is open on the stage, per conversation: files from the tree and
+   * diffs from the Changes tab, each conversation keeping its own set. */
+  stageTabs: Record<number, StageTab[]>;
+  /** Which stage tab each conversation is showing (`CHAT_TAB` or a tab key). */
+  stageTab: Record<number, string>;
+  openFile: (sessionId: number, path: string, name: string) => void;
+  /** Opens a change as a diff tab, or focuses it if it is already open. */
+  openDiff: (sessionId: number, root: string, change: GitChange, group: DiffGroup) => void;
+  closeStageTab: (sessionId: number, key: string) => void;
+  setStageTab: (sessionId: number, key: string) => void;
+  /** Bumped whenever something may have changed the working tree — a turn
+   * ending, or the panel's own git actions. The Changes tab refetches on it
+   * rather than polling. */
+  changesToken: number;
+  refreshChanges: () => void;
+
   /** Bumped to move focus; components watch the counter, not the value. */
   focusComposerToken: number;
   focusFilterToken: number;
@@ -417,6 +519,32 @@ export function selectLaunching(
   );
 }
 
+/** Where the workspace panel points: the active conversation's working
+ * directory, else the selected project, else the first project open. The
+ * panel is about the project in front of you, and those are the three
+ * increasingly loose ways to name it. */
+export function workspaceRoot(snapshot: WindowState | null): string {
+  if (!snapshot) return "";
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSession);
+  if (active?.cwd) return active.cwd;
+  const project =
+    snapshot.projects.find((candidate) => candidate.id === snapshot.activeProject) ??
+    snapshot.projects[0];
+  return project?.path ?? "";
+}
+
+/** The first shell is just "Terminal"; the rest are numbered. */
+function terminalTitle(n: number): string {
+  return n === 1 ? "Terminal" : `Terminal ${n}`;
+}
+
+let panelTabSeq = 0;
+/** Panel tab ids only have to be unique within this window's lifetime. */
+function nextPanelTabId(): number {
+  panelTabSeq += 1;
+  return panelTabSeq;
+}
+
 export const useEgant = create<EgantStore>()((set, get) => {
   /** Patches one session row in the snapshot, if it is on screen. */
   function patchSession(id: number, patch: Partial<SessionInfo>): void {
@@ -430,6 +558,17 @@ export const useEgant = create<EgantStore>()((set, get) => {
         ),
       },
     });
+  }
+
+  /** Adds a tab to the stage (or focuses the one already there) and shows it.
+   * A tab's identity is its key, so re-opening the same file or the same side
+   * of the same diff never stacks duplicates. */
+  function openStageTab(sessionId: number, tab: StageTab): void {
+    const open = get().stageTabs[sessionId] ?? [];
+    const stageTabs = open.some((existing) => existing.key === tab.key)
+      ? get().stageTabs
+      : { ...get().stageTabs, [sessionId]: [...open, tab] };
+    set({ stageTabs, stageTab: { ...get().stageTab, [sessionId]: tab.key } });
   }
 
   /** Refetches the wallpaper image when the setting points somewhere new. */
@@ -446,9 +585,37 @@ export const useEgant = create<EgantStore>()((set, get) => {
     }
   }
 
+  /** Files can be opened from the panel before there is a conversation to
+   * open them beside; those tabs wait under `-1`. The moment a conversation
+   * becomes the active one, they belong to it — otherwise the tab the user
+   * just opened would vanish the instant they sent their first message. */
+  function adoptOrphanFileTabs(activeSession: number | null): void {
+    if (activeSession == null || activeSession < 0) return;
+    const { stageTabs, stageTab } = get();
+    const orphans = stageTabs[-1] ?? [];
+    if (orphans.length === 0) return;
+
+    const existing = stageTabs[activeSession] ?? [];
+    const taken = new Set(existing.map((tab) => tab.key));
+    const merged = [...existing, ...orphans.filter((tab) => !taken.has(tab.key))];
+
+    const { [-1]: _dropped, ...rest } = stageTabs;
+    const { [-1]: orphanShowing, ...restShowing } = stageTab;
+    set({
+      stageTabs: { ...rest, [activeSession]: merged },
+      stageTab: {
+        ...restShowing,
+        // Keep looking at whatever was on screen, now under the conversation
+        // that has taken it over.
+        [activeSession]: orphanShowing ?? stageTab[activeSession] ?? CHAT_TAB,
+      },
+    });
+  }
+
   function applySnapshot(snapshot: WindowState): void {
     const prev = get().snapshot;
     set({ snapshot });
+    adoptOrphanFileTabs(snapshot.activeSession);
     // Drop transcripts for sessions that no longer exist.
     const alive = new Set(snapshot.sessions.map((s) => s.id));
     const transcripts = get().transcripts;
@@ -477,6 +644,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
     };
     if (event.type === "exited") patch.ended = true;
     patchSession(sessionId, patch);
+    // The agent has just stopped editing: whatever the Changes tab is showing
+    // is now out of date. Cheaper and steadier than watching the filesystem,
+    // and it lands exactly when the user looks back at the panel.
+    if (event.type === "turn_ended") get().refreshChanges();
   }
 
   return {
@@ -511,6 +682,140 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ sidebarWidth });
       saveString("egant.sidebarWidth", String(sidebarWidth));
     },
+    panelOpen: loadBool("egant.panelOpen", false),
+    panelWidth: loadNumber("egant.panelWidth", 320),
+    setPanelWidth: (width) => {
+      const panelWidth = Math.round(Math.min(720, Math.max(240, width)));
+      set({ panelWidth });
+      saveString("egant.panelWidth", String(panelWidth));
+    },
+    panelTabs: [],
+    panelTab: null,
+    setPanelTab: (panelTab) => set({ panelTab }),
+    togglePanel: () => {
+      const panelOpen = !get().panelOpen;
+      // With no tabs the panel shows its two buttons — Files or Terminal — so
+      // opening it never has to guess which one was meant.
+      set({ panelOpen });
+      saveString("egant.panelOpen", String(panelOpen));
+    },
+    openFilesTab: () => {
+      const { panelTabs } = get();
+      const existing = panelTabs.find((tab) => tab.kind === "files");
+      if (existing) {
+        set({ panelOpen: true, panelTab: existing.id });
+      } else {
+        const tab: PanelTab = {
+          id: `files-${nextPanelTabId()}`,
+          kind: "files",
+          title: "Files",
+          cwd: workspaceRoot(get().snapshot),
+        };
+        // The tree belongs at the front: terminals come and go beside it.
+        set({ panelOpen: true, panelTabs: [tab, ...panelTabs], panelTab: tab.id });
+      }
+      saveString("egant.panelOpen", "true");
+    },
+    openChangesTab: () => {
+      const { panelTabs } = get();
+      const existing = panelTabs.find((tab) => tab.kind === "changes");
+      if (existing) {
+        set({ panelOpen: true, panelTab: existing.id });
+      } else {
+        const tab: PanelTab = {
+          id: `changes-${nextPanelTabId()}`,
+          kind: "changes",
+          title: "Changes",
+          cwd: workspaceRoot(get().snapshot),
+        };
+        set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
+      }
+      saveString("egant.panelOpen", "true");
+      // Opening it is a good moment to be sure it is current.
+      get().refreshChanges();
+    },
+    openTerminalTab: () => {
+      const { panelTabs } = get();
+      // The lowest number not already on the strip, so closing "Terminal" and
+      // opening another doesn't produce a second "Terminal 2".
+      const taken = new Set(panelTabs.map((tab) => tab.title));
+      let n = 1;
+      while (taken.has(terminalTitle(n))) n += 1;
+      const tab: PanelTab = {
+        id: `term-${nextPanelTabId()}`,
+        kind: "terminal",
+        title: terminalTitle(n),
+        cwd: workspaceRoot(get().snapshot),
+      };
+      set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
+      saveString("egant.panelOpen", "true");
+    },
+    closePanelTab: (id) => {
+      const { panelTabs, panelTab } = get();
+      const index = panelTabs.findIndex((tab) => tab.id === id);
+      if (index < 0) return;
+      // Closing a terminal tab ends its shell — the tab was the only thing
+      // holding it open.
+      const closing = panelTabs[index];
+      if (closing.ptyId != null) void api.ptyKill(closing.ptyId).catch(() => {});
+      const rest = panelTabs.filter((tab) => tab.id !== id);
+      // Land on the neighbour rather than jumping to the end of the strip.
+      const neighbour = rest[index] ?? rest[index - 1] ?? null;
+      set({
+        panelTabs: rest,
+        panelTab: panelTab === id ? neighbour?.id ?? null : panelTab,
+      });
+    },
+    attachPty: (id, ptyId) =>
+      set({
+        panelTabs: get().panelTabs.map((tab) =>
+          tab.id === id ? { ...tab, ptyId, exited: false } : tab,
+        ),
+      }),
+    markPtyExited: (ptyId) =>
+      set({
+        panelTabs: get().panelTabs.map((tab) =>
+          tab.ptyId === ptyId ? { ...tab, exited: true } : tab,
+        ),
+      }),
+
+    stageTabs: {},
+    stageTab: {},
+    openFile: (sessionId, path, name) => {
+      openStageTab(sessionId, { key: path, kind: "file", path, name });
+    },
+    openDiff: (sessionId, root, change, group) => {
+      const name = change.path.split("/").pop() ?? change.path;
+      openStageTab(sessionId, {
+        key: diffTabKey(group, change.path),
+        kind: "diff",
+        path: change.path,
+        name,
+        group,
+        status: change.status,
+        root,
+      });
+    },
+    closeStageTab: (sessionId, key) => {
+      const open = get().stageTabs[sessionId] ?? [];
+      const index = open.findIndex((tab) => tab.key === key);
+      if (index < 0) return;
+      const rest = open.filter((tab) => tab.key !== key);
+      const showing = get().stageTab[sessionId];
+      // Closing the tab you are looking at falls to its neighbour, and back to
+      // the conversation once the last one is gone.
+      const next =
+        showing === key ? (rest[index]?.key ?? rest[index - 1]?.key ?? CHAT_TAB) : showing;
+      set({
+        stageTabs: { ...get().stageTabs, [sessionId]: rest },
+        stageTab: { ...get().stageTab, [sessionId]: next ?? CHAT_TAB },
+      });
+    },
+    setStageTab: (sessionId, key) =>
+      set({ stageTab: { ...get().stageTab, [sessionId]: key } }),
+    changesToken: 0,
+    refreshChanges: () => set({ changesToken: get().changesToken + 1 }),
+
     focusComposerToken: 0,
     focusFilterToken: 0,
     error: null,
