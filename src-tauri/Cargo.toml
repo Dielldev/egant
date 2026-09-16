@@ -1,0 +1,30 @@
+[package]
+name = "egant"
+description = "A native desktop workspace for coding agents (Tauri edition)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "egant"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+egant-harness.workspace = true
+egant-vcs.workspace = true
+tauri = { workspace = true, features = ["macos-private-api"] }
+tauri-plugin-dialog.workspace = true
+
+anyhow.workspace = true
+async-channel.workspace = true
+base64.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+window-vibrancy = "0.8.0"
+
+[features]
+default = []

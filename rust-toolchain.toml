@@ -1,0 +1,5 @@
+[toolchain]
+# GPUI tracks recent stable Rust and the workspace is edition 2024,
+# so anything older than 1.85 will not build.
+channel = "stable"
+components = ["rustfmt", "clippy"]

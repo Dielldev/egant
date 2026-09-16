@@ -1,0 +1,668 @@
+@import "tailwindcss";
+
+/* One palette for both screens. The launch screen and the conversation are
+ * the same window in two states, so they share every tint: only the wallpaper
+ * treatment changes between them. */
+:root {
+  /* Matches the user's Ghostty theme: background #0d0d0d, foreground #e0e0e0,
+   * selection #2a2a2a/#ffffff. The sidebar is the window's ground, a shade
+   * darker than the stage so it stays distinct from it. */
+  --sidebar: rgba(9, 9, 9, 0.94);
+  --stage: #0d0d0d;
+  --border: rgba(255, 255, 255, 0.06);
+  --ink: #e0e0e0;
+  --muted: #8b8b95;
+  --faint: #5d5d67;
+  --hover: rgba(255, 255, 255, 0.05);
+  --selected: #2a2a2a;
+  --bubble: rgba(255, 255, 255, 0.09);
+  --busy: #7d93f0;
+  --danger: #e07070;
+  /* Diff lines in tool cards (Edit/MultiEdit/Write). Fixed like --busy and
+   * --danger above rather than redefined per palette. */
+  --diff-add-bg: rgba(80, 200, 120, 0.12);
+  --diff-add-fg: #6fcf97;
+  --diff-del-bg: rgba(224, 112, 112, 0.12);
+  --diff-del-fg: #e07070;
+  /* Accent follows the Appearance setting. Toggles, selection rings and
+   * focus accents read from these rather than a fixed tint. */
+  --accent: #8e7cf6;
+  --toggle-on: #e0e0e0;
+  --card: rgba(255, 255, 255, 0.025);
+  --cursor: #ffffff;
+
+  /* Derived, not hand-tuned per palette: a barely-there wash of the palette's
+   * own --sidebar/--stage color, mixed down toward transparent. This is what
+   * actually paints behind the sidebar, the conversation stage and the
+   * Settings page day to day — real macOS window vibrancy (see
+   * `sync_window_appearance`) does the "see-through" work, and this tint just
+   * keeps the theme's color present as a color, not a fill. The near-opaque
+   * --sidebar/--stage values above are kept for Appearance > Glass > Opaque,
+   * which turns transparency off and falls back to them directly. */
+  --glass-tint: color-mix(in srgb, var(--sidebar) 16%, transparent);
+  --stage-tint: color-mix(in srgb, var(--stage) 10%, transparent);
+}
+
+/* Light palettes. Every surface in the window reads from the vars above, so
+ * flipping the palette re-skins the whole app — sidebar, stage, composer,
+ * menus and settings alike. */
+html[data-palette="zeron-light"] {
+  --sidebar: rgba(244, 244, 247, 0.9);
+  --stage: #f2f2f5;
+  --border: rgba(0, 0, 0, 0.08);
+  --ink: #17171c;
+  --muted: #62626c;
+  --faint: #9a9aa5;
+  --hover: rgba(0, 0, 0, 0.045);
+  --selected: rgba(0, 0, 0, 0.06);
+  --bubble: rgba(0, 0, 0, 0.06);
+  --toggle-on: #17171c;
+  --card: rgba(0, 0, 0, 0.02);
+}
+
+html[data-palette="sand"] {
+  --sidebar: rgba(243, 238, 229, 0.92);
+  --stage: #efe9dd;
+  --border: rgba(90, 70, 40, 0.14);
+  --ink: #221c12;
+  --muted: #6f6350;
+  --faint: #a2937a;
+  --hover: rgba(90, 70, 40, 0.07);
+  --selected: rgba(90, 70, 40, 0.1);
+  --bubble: rgba(90, 70, 40, 0.09);
+  --toggle-on: #221c12;
+  --card: rgba(90, 70, 40, 0.04);
+}
+
+html[data-palette="midnight"] {
+  --sidebar: rgba(4, 6, 14, 0.96);
+  --stage: #02040a;
+  --border: rgba(140, 170, 255, 0.1);
+  --ink: #e4eafc;
+  --muted: #8b96b5;
+  --faint: #525b78;
+  --hover: rgba(140, 170, 255, 0.07);
+  --selected: rgba(140, 170, 255, 0.1);
+  --bubble: rgba(140, 170, 255, 0.12);
+  --card: rgba(140, 170, 255, 0.04);
+}
+
+/* Editor-inspired dark palettes (Appearance > Dark theme). Each one reads its
+ * background and accent from the real theme it's named after, then follows
+ * the same var recipe as the palettes above so every surface in the window
+ * re-skins consistently. */
+html[data-palette="dark-plus"] {
+  --sidebar: rgba(24, 24, 24, 0.94);
+  --stage: #1e1e1e;
+  --border: rgba(255, 255, 255, 0.08);
+  --ink: #d4d4d4;
+  --muted: #9a9a9a;
+  --faint: #6a6a6a;
+  --hover: rgba(0, 122, 204, 0.08);
+  --selected: rgba(0, 122, 204, 0.16);
+  --bubble: rgba(255, 255, 255, 0.08);
+  --card: rgba(255, 255, 255, 0.03);
+}
+
+html[data-palette="catppuccin-mocha"] {
+  --sidebar: rgba(17, 17, 27, 0.94);
+  --stage: #1e1e2e;
+  --border: rgba(203, 166, 247, 0.12);
+  --ink: #cdd6f4;
+  --muted: #a6adc8;
+  --faint: #6c7086;
+  --hover: rgba(203, 166, 247, 0.07);
+  --selected: rgba(203, 166, 247, 0.14);
+  --bubble: rgba(203, 166, 247, 0.1);
+  --card: rgba(203, 166, 247, 0.04);
+}
+
+html[data-palette="tokyo-night"] {
+  --sidebar: rgba(16, 17, 26, 0.95);
+  --stage: #1a1b26;
+  --border: rgba(122, 162, 247, 0.1);
+  --ink: #c0caf5;
+  --muted: #a9b1d6;
+  --faint: #565f89;
+  --hover: rgba(122, 162, 247, 0.06);
+  --selected: rgba(122, 162, 247, 0.12);
+  --bubble: rgba(122, 162, 247, 0.09);
+  --card: rgba(122, 162, 247, 0.03);
+}
+
+html[data-palette="dracula"] {
+  --sidebar: rgba(33, 34, 44, 0.95);
+  --stage: #282a36;
+  --border: rgba(189, 147, 249, 0.12);
+  --ink: #f8f8f2;
+  --muted: #b3b4c6;
+  --faint: #6272a4;
+  --hover: rgba(189, 147, 249, 0.07);
+  --selected: rgba(189, 147, 249, 0.14);
+  --bubble: rgba(189, 147, 249, 0.1);
+  --card: rgba(189, 147, 249, 0.03);
+}
+
+html[data-palette="github-dark"] {
+  --sidebar: rgba(9, 13, 17, 0.95);
+  --stage: #0d1117;
+  --border: rgba(88, 166, 255, 0.12);
+  --ink: #c9d1d9;
+  --muted: #8b949e;
+  --faint: #545d68;
+  --hover: rgba(88, 166, 255, 0.07);
+  --selected: rgba(88, 166, 255, 0.14);
+  --bubble: rgba(88, 166, 255, 0.1);
+  --card: rgba(88, 166, 255, 0.03);
+}
+
+html[data-palette="ayu-dark"] {
+  --sidebar: rgba(6, 9, 13, 0.95);
+  --stage: #0a0e14;
+  --border: rgba(255, 180, 84, 0.12);
+  --ink: #b3b1ad;
+  --muted: #6c7380;
+  --faint: #4a5160;
+  --hover: rgba(255, 180, 84, 0.07);
+  --selected: rgba(255, 180, 84, 0.14);
+  --bubble: rgba(255, 180, 84, 0.1);
+  --card: rgba(255, 180, 84, 0.03);
+}
+
+html[data-palette="ayu-mirage"] {
+  --sidebar: rgba(16, 19, 26, 0.95);
+  --stage: #1f2430;
+  --border: rgba(255, 204, 102, 0.12);
+  --ink: #cbccc6;
+  --muted: #8a9199;
+  --faint: #565b66;
+  --hover: rgba(255, 204, 102, 0.07);
+  --selected: rgba(255, 204, 102, 0.14);
+  --bubble: rgba(255, 204, 102, 0.1);
+  --card: rgba(255, 204, 102, 0.03);
+}
+
+html[data-palette="gruvbox-dark"] {
+  --sidebar: rgba(20, 20, 20, 0.95);
+  --stage: #282828;
+  --border: rgba(184, 187, 38, 0.12);
+  --ink: #ebdbb2;
+  --muted: #a89984;
+  --faint: #7c6f64;
+  --hover: rgba(250, 189, 47, 0.07);
+  --selected: rgba(250, 189, 47, 0.14);
+  --bubble: rgba(250, 189, 47, 0.1);
+  --card: rgba(250, 189, 47, 0.03);
+}
+
+html[data-palette="rose-pine-moon"] {
+  --sidebar: rgba(19, 18, 29, 0.95);
+  --stage: #232136;
+  --border: rgba(234, 154, 151, 0.12);
+  --ink: #e0def4;
+  --muted: #908caa;
+  --faint: #6e6a86;
+  --hover: rgba(156, 207, 216, 0.07);
+  --selected: rgba(156, 207, 216, 0.14);
+  --bubble: rgba(234, 154, 151, 0.1);
+  --card: rgba(156, 207, 216, 0.03);
+}
+
+html[data-palette="nord"] {
+  --sidebar: rgba(24, 28, 35, 0.95);
+  --stage: #2e3440;
+  --border: rgba(136, 192, 208, 0.12);
+  --ink: #d8dee9;
+  --muted: #9aa5b1;
+  --faint: #616e7f;
+  --hover: rgba(136, 192, 208, 0.07);
+  --selected: rgba(136, 192, 208, 0.14);
+  --bubble: rgba(136, 192, 208, 0.1);
+  --card: rgba(136, 192, 208, 0.03);
+}
+
+html[data-palette="one-dark-pro"] {
+  --sidebar: rgba(21, 23, 28, 0.95);
+  --stage: #282c34;
+  --border: rgba(97, 175, 239, 0.12);
+  --ink: #abb2bf;
+  --muted: #7f848e;
+  --faint: #545862;
+  --hover: rgba(97, 175, 239, 0.07);
+  --selected: rgba(97, 175, 239, 0.14);
+  --bubble: rgba(97, 175, 239, 0.1);
+  --card: rgba(97, 175, 239, 0.03);
+}
+
+html[data-palette="atom-one-dark"] {
+  --sidebar: rgba(15, 17, 20, 0.95);
+  --stage: #21252b;
+  --border: rgba(82, 139, 255, 0.12);
+  --ink: #abb2bf;
+  --muted: #7f848e;
+  --faint: #545862;
+  --hover: rgba(82, 139, 255, 0.07);
+  --selected: rgba(82, 139, 255, 0.14);
+  --bubble: rgba(82, 139, 255, 0.1);
+  --card: rgba(82, 139, 255, 0.03);
+}
+
+html[data-palette="night-owl"] {
+  --sidebar: rgba(1, 10, 20, 0.95);
+  --stage: #011627;
+  --border: rgba(130, 170, 255, 0.12);
+  --ink: #d6deeb;
+  --muted: #829bb2;
+  --faint: #4b6479;
+  --hover: rgba(130, 170, 255, 0.07);
+  --selected: rgba(130, 170, 255, 0.14);
+  --bubble: rgba(130, 170, 255, 0.1);
+  --card: rgba(130, 170, 255, 0.03);
+}
+
+html[data-palette="winter-is-coming-dark-blue"] {
+  --sidebar: rgba(8, 15, 28, 0.95);
+  --stage: #0e1c36;
+  --border: rgba(106, 159, 181, 0.12);
+  --ink: #cdd7e0;
+  --muted: #8a9bab;
+  --faint: #566578;
+  --hover: rgba(106, 159, 181, 0.07);
+  --selected: rgba(106, 159, 181, 0.14);
+  --bubble: rgba(106, 159, 181, 0.1);
+  --card: rgba(106, 159, 181, 0.03);
+}
+
+html[data-palette="palenight"] {
+  --sidebar: rgba(21, 23, 31, 0.95);
+  --stage: #292d3e;
+  --border: rgba(199, 146, 234, 0.12);
+  --ink: #a6accd;
+  --muted: #767c9d;
+  --faint: #4b5065;
+  --hover: rgba(199, 146, 234, 0.07);
+  --selected: rgba(199, 146, 234, 0.14);
+  --bubble: rgba(199, 146, 234, 0.1);
+  --card: rgba(199, 146, 234, 0.03);
+}
+
+html[data-palette="synthwave-84"] {
+  --sidebar: rgba(18, 16, 26, 0.95);
+  --stage: #262335;
+  --border: rgba(255, 126, 219, 0.14);
+  --ink: #f2e9e9;
+  --muted: #b893ce;
+  --faint: #6f5b7e;
+  --hover: rgba(255, 126, 219, 0.08);
+  --selected: rgba(255, 126, 219, 0.16);
+  --bubble: rgba(255, 126, 219, 0.12);
+  --card: rgba(255, 126, 219, 0.04);
+}
+
+html[data-palette="shades-of-purple"] {
+  --sidebar: rgba(22, 20, 44, 0.95);
+  --stage: #2d2b55;
+  --border: rgba(250, 208, 0, 0.12);
+  --ink: #e3dfff;
+  --muted: #9d97c9;
+  --faint: #625d94;
+  --hover: rgba(250, 208, 0, 0.07);
+  --selected: rgba(250, 208, 0, 0.14);
+  --bubble: rgba(157, 140, 255, 0.1);
+  --card: rgba(157, 140, 255, 0.03);
+}
+
+html[data-palette="cobalt2"] {
+  --sidebar: rgba(11, 26, 37, 0.95);
+  --stage: #193549;
+  --border: rgba(255, 198, 0, 0.12);
+  --ink: #ffffff;
+  --muted: #9dc0d1;
+  --faint: #5a7f92;
+  --hover: rgba(255, 198, 0, 0.07);
+  --selected: rgba(255, 198, 0, 0.14);
+  --bubble: rgba(255, 198, 0, 0.1);
+  --card: rgba(255, 198, 0, 0.03);
+}
+
+html[data-palette="andromeda"] {
+  --sidebar: rgba(17, 19, 25, 0.95);
+  --stage: #23262e;
+  --border: rgba(199, 77, 237, 0.12);
+  --ink: #d5ced9;
+  --muted: #8d8391;
+  --faint: #57505c;
+  --hover: rgba(199, 77, 237, 0.07);
+  --selected: rgba(199, 77, 237, 0.14);
+  --bubble: rgba(199, 77, 237, 0.1);
+  --card: rgba(199, 77, 237, 0.03);
+}
+
+/* The sidebar: frosted glass in every Glass mode, including No Glass —
+ * it is the one surface that always keeps its blur/tint. */
+.sidebar-glass {
+  background: var(--glass-tint);
+  backdrop-filter: blur(38px) saturate(1.4);
+  -webkit-backdrop-filter: blur(38px) saturate(1.4);
+}
+
+/* Clear: the most transparent option — half the tint of frosted, so the
+ * desktop reads through strongly while the blur keeps text legible. */
+html[data-glass="clear"] .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 8%, transparent);
+  backdrop-filter: blur(44px) saturate(1.5);
+  -webkit-backdrop-filter: blur(44px) saturate(1.5);
+}
+
+/* The Settings page's own stage. The conversation stage handles this same
+ * split itself (see `Wallpaper.tsx`) since it also has to leave the
+ * transcript's transparent default alone. */
+.stage-glass {
+  background: var(--stage-tint);
+}
+html[data-glass="opaque"] .stage-glass {
+  background: var(--stage);
+}
+html[data-glass="clear"] .stage-glass {
+  background: color-mix(in srgb, var(--stage) 5%, transparent);
+}
+
+/* No Glass: the stage goes fully solid (the IDE look). Sidebar, composer
+ * and menus intentionally stay frosted glass, exactly as before. */
+
+/* Clear: composer and menus go extra translucent to match the stage. */
+html[data-glass="clear"] .composer {
+  background: rgba(22, 22, 27, 0.38);
+}
+html[data-glass="clear"] .menu {
+  background: rgba(20, 20, 24, 0.72);
+}
+
+/* The launch-screen wallpaper's entrance: a slow dissolve in rather than a
+ * hard cut, so a fresh image (or the app's first paint) settles into place
+ * instead of popping. Keyed to the image `src` in `Wallpaper.tsx`, so it
+ * replays whenever the wallpaper changes. */
+@keyframes wallpaper-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.wallpaper-fade-in {
+  animation: wallpaper-fade-in 1.1s ease-out backwards;
+}
+
+/* Wallpaper background effects (Appearance > Background effect). Overlays
+ * draped over the artwork; `none` renders nothing. */
+.bg-effect {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.bg-effect-dither {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.4) 1px, transparent 1.2px);
+  background-size: 3px 3px;
+}
+.bg-effect-scanlines {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.32) 0px,
+    rgba(0, 0, 0, 0.32) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+.bg-effect-halftone {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.55) 1.4px, transparent 1.6px);
+  background-size: 8px 8px;
+}
+.bg-effect-ascii {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='16'%3E%3Ctext x='2' y='12' font-family='monospace' font-size='11' fill='rgba(0,0,0,0.5)'%3E+%3C/text%3E%3C/svg%3E");
+  background-size: 14px 16px;
+}
+
+/* Brand marks in the model picker. Simple-icons SVGs carry no fill of their
+ * own, so they take the tile's text color. */
+.provider-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 68%;
+  height: 68%;
+}
+.provider-logo svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  display: block;
+}
+
+/* Settings toggle switch. */
+.switch {
+  position: relative;
+  width: 36px;
+  height: 21px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 0.18s ease, opacity 0.18s ease;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+html[data-palette="zeron-light"] .switch,
+html[data-palette="sand"] .switch {
+  background: rgba(0, 0, 0, 0.16);
+}
+.switch[data-on="true"] {
+  background: var(--toggle-on);
+}
+.switch:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 0.18s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.switch[data-on="true"]::after {
+  transform: translateX(14px);
+  background: var(--toggle-knob, #0a0a0d);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Transparent on purpose: the window itself is `transparent: true` with an
+   * overlay title bar, so this lets the wallpaper and vibrancy show through
+   * exactly where the chrome is translucent. */
+  background: transparent;
+  color: var(--ink);
+  font-family:
+    "JetBrains Mono", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter,
+    sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Matches the Ghostty config: a white caret in text inputs, and the same
+ * selection colors as the terminal when text is highlighted. */
+textarea,
+input {
+  caret-color: var(--cursor);
+}
+::selection {
+  background: var(--selected);
+  color: #ffffff;
+}
+
+/* The composer, on both screens. Dark frosted glass rather than a fill: over
+ * the launch wallpaper it reads as a pane you can see through, and over the
+ * conversation's near-black stage as a pill lifted off the ground. One class
+ * for both is the whole point — it is the same control either way. */
+.composer {
+  background: rgba(22, 22, 27, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(28px) saturate(1.5);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Popovers hanging off the sidebar header and the composer's chips. The
+ * model picker is fully opaque (not frosted-translucent) so launch-screen
+ * labels can never bleed through it — that was the overlap in the bugshot. */
+.menu {
+  background: rgba(20, 20, 24, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.4);
+  isolation: isolate;
+}
+
+/* Model picker motion: menu pop, staggered rows, check pop, switch fade. */
+@keyframes menu-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.menu-pop {
+  animation: menu-pop 0.18s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  transform-origin: top left;
+}
+
+/* Same pop, but for a menu that flipped upward (`shouldOpenUpward`) — it
+ * grows from its own bottom edge, so it should rise into place rather than
+ * drop, or the motion would read backwards. */
+@keyframes menu-pop-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.menu-pop-up {
+  animation: menu-pop-up 0.18s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  transform-origin: bottom left;
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateX(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.row-in {
+  animation: row-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes row-picked-flash {
+  0% {
+    background-color: rgba(142, 124, 246, 0.28);
+  }
+  100% {
+    background-color: var(--selected);
+  }
+}
+.row-picked {
+  animation: row-picked-flash 0.45s ease-out;
+}
+
+@keyframes check-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.check-pop {
+  animation: check-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes model-switch {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.model-switch {
+  animation: model-switch 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise {
+  /* `backwards`, not `both`: a retained fill would keep a stacking context
+   * alive forever and trap the header popovers under the composer. */
+  animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* Quiet scrollbars that match the chrome. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

@@ -1,0 +1,23 @@
+[package]
+name = "egant-webview"
+description = "A platform webview hosted as a child of the GPUI window."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Off by default: the rest of the app builds and runs without ever linking a
+# webview, and the browser pane degrades to a placeholder. Turn it on with
+# `cargo run -p egant --features browser`.
+default = []
+webview = ["dep:wry"]
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+raw-window-handle = "0.6"
+
+[dependencies.wry]
+version = "0.57"
+optional = true

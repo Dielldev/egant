@@ -1,0 +1,23 @@
+[package]
+name = "egant-vcs"
+description = "Git status, diffs, staging, commits and agent worktrees."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+notify.workspace = true
+thiserror.workspace = true
+
+# `default-features = false` drops libgit2's ssh/https transports, and with them
+# the openssl-sys build dependency. Nothing here talks to a remote through
+# libgit2 — see `remote.rs` for why network operations shell out to `git`.
+[dependencies.git2]
+version = "0.21"
+default-features = false
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,22 @@
+[package]
+name = "egant"
+description = "A native desktop workspace for coding agents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "egant"
+
+[dependencies]
+egant-harness.workspace = true
+# Used only to read the current branch for a session row. The changes panel is
+# not mounted yet; `egant-webview` is not wired in at all.
+egant-vcs.workspace = true
+gpui-kit.workspace = true
+
+anyhow.workspace = true
+async-channel.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true

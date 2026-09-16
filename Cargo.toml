@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+    "src-tauri",
+    "crates/harness",
+    "crates/vcs",
+]
+
+# The GPUI shell (`crates/egant`) and its companion webview (`crates/webview`)
+# are superseded by the Tauri GUI (`src-tauri` + the web frontend). They are
+# excluded from the build but left on disk for reference — delete the two
+# directories once the migration is confirmed.
+exclude = [
+    "crates/egant",
+    "crates/webview",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/dielldev/egant"
+
+[workspace.dependencies]
+# Internal crates.
+egant-harness = { path = "crates/harness" }
+egant-vcs = { path = "crates/vcs" }
+egant-webview = { path = "crates/webview" }
+
+# GPUI comes in through `gpui-kit`, which pins the matching `gpui-pre-*` family
+# and — importantly on macOS — already turns on `font-kit` (glyph rasterization)
+# and `runtime_shaders` (Metal shaders compiled at runtime, so the build does
+# not need Xcode's `xcrun metal`). See README "Why gpui-kit".
+#
+# NOTE: only used by the excluded GPUI shell now; the Tauri GUI does not need it.
+gpui-kit = "0.6"
+
+# Tauri v2 desktop shell.
+tauri = "2"
+tauri-build = "2"
+tauri-plugin-dialog = "2"
+base64 = "0.22"
+
+anyhow = "1"
+async-channel = "2"
+async-process = "2"
+async-trait = "0.1"
+futures-lite = "2"
+log = "0.4"
+env_logger = "0.11"
+notify = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.dev]
+# GPUI pulls in a large dependency tree; building it unoptimized makes the app
+# unusably slow to run, while optimizing our own crates slows edit-compile.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

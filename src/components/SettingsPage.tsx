@@ -1,0 +1,1823 @@
+import {
+  AppWindow,
+  Archive,
+  ArrowUpDown,
+  Asterisk,
+  Bell,
+  Bot,
+  Box,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronLeft as BackChevron,
+  CirclePlus,
+  Eye,
+  Folder,
+  AlignLeft,
+  KeyRound,
+  Keyboard,
+  LayoutGrid,
+  MessageCircle,
+  Monitor,
+  AlertTriangle,
+  Orbit,
+  Pencil,
+  Pi,
+  RefreshCw,
+  Share2,
+  Shell,
+  SlidersHorizontal,
+  SquareTerminal,
+  Volume2,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
+import { api } from "../lib/api";
+import { shouldOpenUpward } from "../lib/popover";
+import type { AgentModel, AgentStatus } from "../lib/types";
+import { CONTEXT_PRESETS, formatContext, parseContext } from "../lib/types";
+import {
+  selectNextAgent,
+  selectNextContext,
+  selectNextModel,
+  selectNextVariant,
+  useEgant,
+} from "../store";
+import type { BgEffect, GlassMode, SettingsSection } from "../store";
+import { useNow } from "./useNow";
+import { ProviderGlyph, ProviderLogo } from "./ProviderLogo";
+
+/** Settings: the window behind the "Local only" profile. A left rail of
+ * sections beside a scrolling pane, closed with the Back button (or `Esc`).
+ * Appearance is fully wired to the window; the other sections are local
+ * state until their backends land. */
+
+const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
+  { id: "devices", label: "Devices", icon: Monitor },
+  { id: "agents", label: "Agents", icon: LayoutGrid },
+  { id: "accounts", label: "Accounts", icon: KeyRound },
+  { id: "appearance", label: "Appearance", icon: SlidersHorizontal },
+  { id: "files", label: "Files", icon: Folder },
+  { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
+  { id: "appshots", label: "Appshots", icon: AppWindow },
+  { id: "archived", label: "Archived sessions", icon: Archive },
+];
+
+/** `useState` mirrored to localStorage, so mock sections keep their toggles
+ * across reopens. Objects merge with their defaults; primitives replace. */
+function usePersistentState<T>(key: string, initial: T): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return initial;
+      const parsed = JSON.parse(raw) as T;
+      if (
+        typeof initial === "object" &&
+        initial !== null &&
+        !Array.isArray(initial) &&
+        typeof parsed === "object" &&
+        parsed !== null
+      ) {
+        return { ...initial, ...parsed };
+      }
+      return parsed;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Unavailable storage: the window keeps the in-memory choice.
+    }
+  }, [key, value]);
+  return [value, setValue];
+}
+
+export function SettingsPage() {
+  const section = useEgant((s) => s.settingsSection);
+  const setSection = useEgant((s) => s.setSettingsSection);
+  const closeSettings = useEgant((s) => s.closeSettings);
+
+  // Back/forward walk the visited sections. Fresh on every open, since the
+  // page mounts anew when the overlay opens.
+  const [hist, setHist] = useState<SettingsSection[]>([section]);
+  const [index, setIndex] = useState(0);
+  const go = (next: SettingsSection) => {
+    if (next === hist[index]) return;
+    const nextHist = [...hist.slice(0, index + 1), next];
+    setHist(nextHist);
+    setIndex(nextHist.length - 1);
+    setSection(next);
+  };
+  const step = (delta: -1 | 1) => {
+    const next = index + delta;
+    if (next < 0 || next >= hist.length) return;
+    setIndex(next);
+    setSection(hist[next]);
+  };
+
+  return (
+    <div className="stage-glass flex h-screen w-screen overflow-hidden text-[var(--ink)]">
+      <aside className="sidebar-glass flex h-full w-[220px] shrink-0 flex-col border-r border-[var(--border)]">
+        <div
+          data-tauri-drag-region
+          className="flex h-[38px] w-full shrink-0 items-center gap-0.5 pr-2 pl-[76px]"
+        >
+          <NavArrow label="Back" disabled={index === 0} onClick={() => step(-1)}>
+            <ChevronLeft size={15} strokeWidth={2} />
+          </NavArrow>
+          <NavArrow
+            label="Forward"
+            disabled={index >= hist.length - 1}
+            onClick={() => step(1)}
+          >
+            <ChevronRight size={15} strokeWidth={2} />
+          </NavArrow>
+        </div>
+        <div className="px-4 pt-1 pb-1.5 text-[11px] font-medium text-[var(--faint)]">
+          Settings
+        </div>
+        <nav className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1.5">
+          {NAV.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => go(item.id)}
+              className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left text-[13px] ${
+                item.id === hist[index]
+                  ? "bg-[var(--selected)] font-semibold text-[var(--ink)]"
+                  : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+              }`}
+            >
+              <item.icon size={15} strokeWidth={2} className="shrink-0" />
+              <span className="truncate">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="shrink-0 px-1.5 py-3">
+          <button
+            type="button"
+            onClick={() => closeSettings()}
+            className="flex cursor-pointer items-center gap-1 rounded-lg px-2.5 py-1.5 text-[13px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          >
+            <BackChevron size={14} strokeWidth={2} />
+            Back
+          </button>
+        </div>
+      </aside>
+
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[880px] px-10 pt-9 pb-16">
+          {hist[index] === "devices" && <DevicesSection />}
+          {hist[index] === "agents" && <AgentsSection />}
+          {hist[index] === "accounts" && <AccountsSection />}
+          {hist[index] === "appearance" && <AppearanceSection />}
+          {hist[index] === "files" && <FilesSection />}
+          {hist[index] === "notifications" && <NotificationsSection />}
+          {hist[index] === "shortcuts" && <ShortcutsSection />}
+          {hist[index] === "appshots" && <Placeholder text="App snapshots will live here." />}
+          {hist[index] === "archived" && <Placeholder text="Archived sessions will live here." />}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function NavArrow({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="cursor-pointer rounded-md p-1.5 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] disabled:cursor-default disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-[var(--muted)]"
+    >
+      {children}
+    </button>
+  );
+}
+
+function SectionHead({
+  title,
+  count,
+  sub,
+  right,
+}: {
+  title: string;
+  count?: number | string;
+  sub: string;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="mb-5 flex items-start justify-between gap-6">
+      <div className="min-w-0">
+        <h1 className="text-[15px] font-semibold text-[var(--ink)]">
+          {title}
+          {count != null && (
+            <span className="ml-2 text-[13px] font-normal text-[var(--faint)]">{count}</span>
+          )}
+        </h1>
+        <p className="mt-1.5 max-w-[660px] text-[13px] leading-relaxed text-[var(--muted)]">
+          {sub}
+        </p>
+      </div>
+      {right && <div className="flex shrink-0 items-center gap-4 pt-0.5">{right}</div>}
+    </div>
+  );
+}
+
+function Card({ children }: { children: ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
+      <div className="divide-y divide-[var(--border)]">{children}</div>
+    </div>
+  );
+}
+
+function Row({
+  icon: Icon,
+  title,
+  sub,
+  control,
+}: {
+  icon: LucideIcon;
+  title: ReactNode;
+  sub?: ReactNode;
+  control?: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-3.5 px-4 py-3.5">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted)]">
+        <Icon size={16} strokeWidth={2} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-semibold text-[var(--ink)]">{title}</div>
+        {sub && <div className="mt-0.5 text-[12px] leading-relaxed text-[var(--muted)]">{sub}</div>}
+      </div>
+      {control}
+    </div>
+  );
+}
+
+function Toggle({
+  on,
+  onChange,
+  disabled,
+  label,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      data-on={on}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className="switch"
+    />
+  );
+}
+
+function Pills<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={`cursor-pointer rounded-lg border px-2.5 py-1 text-[12px] whitespace-nowrap ${
+            o.value === value
+              ? "border-[var(--accent)] text-[var(--ink)]"
+              : "border-[var(--border)] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The device chip in section headers: this machine, live, with nothing to
+ * switch to — every session in the window is a local process. */
+function DevicePill({ name }: { name: string }) {
+  return (
+    <span className="flex items-center gap-1.5 text-[13px] text-[var(--ink)]">
+      <Monitor size={14} strokeWidth={2} className="text-[var(--muted)]" />
+      <span className="font-medium whitespace-nowrap">{name}</span>
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+      <ArrowUpDown size={12} strokeWidth={2} className="text-[var(--faint)]" />
+    </span>
+  );
+}
+
+function timeAgo(ts: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - ts) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function osLabel(): string {
+  const ua = navigator.userAgent || "";
+  if (/mac/i.test(ua)) return "macOS";
+  if (/win/i.test(ua)) return "Windows";
+  return "Linux";
+}
+
+/** Stable per-machine fragment, e.g. `6886504b..393d`. */
+function useDeviceId(): string {
+  return useMemo(() => {
+    try {
+      let id = localStorage.getItem("egant.deviceId");
+      if (!id) {
+        id = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        localStorage.setItem("egant.deviceId", id);
+      }
+      return `${id.slice(0, 8)}..${id.slice(8)}`;
+    } catch {
+      return "00000000..0000";
+    }
+  }, []);
+}
+
+function useAddedAt(): number {
+  return useMemo(() => {
+    try {
+      const raw = localStorage.getItem("egant.deviceAddedAt");
+      if (raw) return Number(raw);
+      const now = Date.now();
+      localStorage.setItem("egant.deviceAddedAt", String(now));
+      return now;
+    } catch {
+      return Date.now();
+    }
+  }, []);
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+// ---------------------------------------------------------------------------
+
+function DevicesSection() {
+  const machine = useEgant((s) => s.snapshot?.machineName ?? "");
+  const [override, setOverride] = usePersistentState<string | null>(
+    "egant.deviceName",
+    null,
+  );
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [version, setVersion] = useState("0.1.0");
+  const deviceId = useDeviceId();
+  const addedAt = useAddedAt();
+  const now = useNow(30_000);
+
+  const name = override || machine || "Local device";
+
+  useEffect(() => {
+    let live = true;
+    import("@tauri-apps/api/app")
+      .then((m) => m.getVersion())
+      .then((v) => {
+        if (live && v) setVersion(v);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  return (
+    <div>
+      <SectionHead
+        title="Devices"
+        count={1}
+        sub="Manage device details stored in this local workspace."
+      />
+      <Card>
+        <div className="flex items-center gap-3.5 px-4 py-3.5">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted)]">
+            <Monitor size={16} strokeWidth={2} />
+          </span>
+          <div className="min-w-0 flex-1">
+            {editing ? (
+              <input
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setOverride(draft.trim() || null);
+                    setEditing(false);
+                  }
+                  if (e.key === "Escape") {
+                    // Cancel the rename without backing out of settings.
+                    e.stopPropagation();
+                    setEditing(false);
+                  }
+                }}
+                onBlur={() => {
+                  setOverride(draft.trim() || null);
+                  setEditing(false);
+                }}
+                className="w-full max-w-[280px] rounded-md border border-[var(--accent)] bg-transparent px-1.5 py-0.5 text-[13px] font-semibold text-[var(--ink)] outline-none"
+              />
+            ) : (
+              <div className="truncate text-[13px] font-semibold text-[var(--ink)]">{name}</div>
+            )}
+            <div className="mt-0.5 truncate text-[12px] text-[var(--faint)]">
+              {osLabel()}
+              <Dot />v{version}
+              <Dot />
+              Last seen {timeAgo(now, now)}
+              <Dot />
+              Added {timeAgo(addedAt, now)}
+              <Dot />
+              {deviceId}
+            </div>
+          </div>
+          <span className="shrink-0 text-[12px] text-[var(--muted)]">Local only</span>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(name);
+              setEditing(true);
+            }}
+            className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          >
+            <Pencil size={13} strokeWidth={2} />
+            Rename
+          </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function Dot() {
+  return <span className="mx-1.5 text-[var(--faint)]">·</span>;
+}
+
+// ---------------------------------------------------------------------------
+// Agents
+// ---------------------------------------------------------------------------
+
+interface AgentDef {
+  id: string;
+  name: string;
+  desc: string;
+  icon: LucideIcon;
+  color: string;
+  install?: string;
+}
+
+const AGENTS: AgentDef[] = [
+  {
+    id: "claude",
+    name: "Claude Code",
+    desc: "Anthropic's coding agent, driven through the Claude Code CLI.",
+    icon: Asterisk,
+    color: "#e8835a",
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    desc: "OpenAI's coding agent, driven through the Codex CLI.",
+    icon: Shell,
+    color: "#b9b9c4",
+  },
+  {
+    id: "cursor",
+    name: "Cursor",
+    desc: "Cursor's coding agent, driven through the cursor-agent CLI.",
+    icon: Box,
+    color: "#8b8b95",
+    install: "Install the cursor-agent CLI to enable",
+  },
+  {
+    id: "devin",
+    name: "Devin",
+    desc: "Cognition's Devin agent (devin CLI).",
+    icon: Share2,
+    color: "#8b8b95",
+    install: "Install the devin CLI to enable",
+  },
+  {
+    id: "grok",
+    name: "Grok",
+    desc: "xAI's Grok Build agent (grok CLI).",
+    icon: Orbit,
+    color: "#8b8b95",
+    install: "Install the grok CLI to enable",
+  },
+  {
+    id: "hermes",
+    name: "Hermes",
+    desc: "Nous Research's Hermes Agent (hermes CLI).",
+    icon: Bot,
+    color: "#8b8b95",
+    install: "Install the hermes CLI to enable",
+  },
+  {
+    id: "pi",
+    name: "Pi",
+    desc: "The pi coding agent (pi CLI).",
+    icon: Pi,
+    color: "#8b8b95",
+    install: "Install the pi CLI to enable",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    desc: "SST's opencode agent (opencode CLI).",
+    icon: SquareTerminal,
+    color: "#b9b9c4",
+  },
+];
+
+const DRIVABLE = new Set(["claude", "codex", "opencode"]);
+
+/** Stable fallback for "no bad models recorded for this agent" — a zustand
+ * selector must never construct a fresh `[]`/`{}` inline (its default
+ * equality check is by reference, so a new empty array on every call never
+ * matches the last one, and React's `useSyncExternalStore` loops forever
+ * re-rendering to "check again"; this is the exact
+ * "getSnapshot should be cached" failure). Reusing one constant reference
+ * keeps the empty case referentially stable across renders. */
+const NO_BAD_MODELS: string[] = [];
+
+function AgentsSection() {
+  const machine = useEgant((s) => s.snapshot?.machineName ?? "Local device");
+  const snapshot = useEgant((s) => s.snapshot);
+  const agents = useEgant((s) => s.agents);
+  const verifyAgents = useEgant((s) => s.verifyAgents);
+  const enabledAgents = useEgant((s) => s.enabledAgents);
+  const setAgentEnabled = useEgant((s) => s.setAgentEnabled);
+  const composerAgent = useEgant((s) => s.composerAgent);
+  const composerModel = useEgant((s) => s.composerModel);
+  const composerVariant = useEgant((s) => s.composerVariant);
+  const composerContext = useEgant((s) => s.composerContext);
+  const defaultModels = useEgant((s) => s.defaultModels);
+  const defaultVariants = useEgant((s) => s.defaultVariants);
+  const defaultContexts = useEgant((s) => s.defaultContexts);
+  useEffect(() => {
+    // A live recheck, not just the cached presence list — opening this page
+    // is exactly when a stale "connected" (credentials file present, token
+    // actually expired) would otherwise be shown at face value.
+    void verifyAgents();
+  }, [verifyAgents]);
+  const [titleAgent, setTitleAgent] = usePersistentState("egant.titleAgent", "claude");
+
+  // Detection has landed when the registry answered; before that every row
+  // renders unlocked rather than flashing install hints.
+  const known = agents.length > 0;
+  const statusOf = (id: string) => agents.find((a) => a.id === id);
+
+  const nextAgent = selectNextAgent(snapshot, composerAgent);
+  const nextModel =
+    selectNextModel(composerModel, defaultModels, nextAgent) || "CLI default";
+  const nextVariant =
+    selectNextVariant(composerVariant, defaultVariants, nextAgent) || "default";
+  const nextContextRaw = selectNextContext(
+    composerContext,
+    defaultContexts,
+    nextAgent,
+  );
+  const nextContext =
+    formatContext(parseContext(nextContextRaw)) || "model default";
+
+  return (
+    <div>
+      <SectionHead
+        title="Agents"
+        sub="Choose which coding agents the composer offers, and each agent's default model, reasoning and context window. New sessions start with the composer's pick, or these defaults when the composer is on Default. Fully wired — changing a default changes the next session."
+        right={<DevicePill name={machine} />}
+      />
+      <Card>
+        <div className="px-4 py-3 text-[12px] text-[var(--muted)]">
+          Next session:{" "}
+          <span className="font-medium text-[var(--ink)]">
+            {statusOf(nextAgent)?.name ?? nextAgent} · {nextModel} · {nextVariant} ·{" "}
+            {nextContext}
+          </span>
+          {composerModel.trim() !== "" ||
+          composerVariant.trim() !== "" ||
+          composerContext.trim() !== "" ? (
+            <span className="text-[var(--faint)]"> (composer override)</span>
+          ) : (
+            <span className="text-[var(--faint)]"> (from defaults below)</span>
+          )}
+        </div>
+      </Card>
+      <div className="mt-4">
+        <Card>
+          {AGENTS.map((agent) => {
+            const status = statusOf(agent.id);
+            // The three drivable agents lock only when detection proved the
+            // CLI missing; the rest have no harness yet and stay locked.
+            const missing = known && !(status?.installed ?? false);
+            const locked = agent.install != null || missing;
+            const hint = missing && status ? status.installHint : agent.install;
+            const on = locked ? false : (enabledAgents[agent.id] ?? false);
+            const drivable = DRIVABLE.has(agent.id);
+            return (
+              <div key={agent.id} className="px-4 py-3.5">
+                <div className="flex items-center gap-3.5">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)]">
+                    <agent.icon
+                      size={17}
+                      strokeWidth={2}
+                      style={{ color: agent.color }}
+                    />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className={`text-[13px] font-semibold ${locked ? "text-[var(--muted)]" : "text-[var(--ink)]"}`}
+                    >
+                      {agent.name}
+                    </div>
+                    <div className="mt-0.5 text-[12px] leading-relaxed text-[var(--muted)]">
+                      {agent.desc}
+                      {hint && (
+                        <>
+                          <Dot />
+                          <span className="text-amber-400/90">{hint}</span>
+                        </>
+                      )}
+                      {!locked && status?.connected && (
+                        <>
+                          <Dot />
+                          <span className="text-emerald-300/90">
+                            {status.email ?? "Logged in"}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <Toggle
+                    on={on}
+                    disabled={locked}
+                    label={`${agent.name} enabled`}
+                    onChange={(next) => setAgentEnabled(agent.id, next)}
+                  />
+                </div>
+                {drivable && on && (
+                  <AgentDefaults id={agent.id} status={status} />
+                )}
+              </div>
+            );
+          })}
+        </Card>
+      </div>
+
+      <div className="mt-4">
+        <Card>
+          <div className="px-4 pt-3.5 pb-1">
+            <div className="text-[13px] font-semibold text-[var(--ink)]">Session titles</div>
+            <div className="mt-0.5 text-[12px] leading-relaxed text-[var(--muted)]">
+              Choose the agent and model for automatic titles on this device. Claude Code
+              and Codex support restricted title generation.
+            </div>
+          </div>
+          <Row
+            icon={Asterisk}
+            title="Title model"
+            sub="The agent used to name new sessions."
+            control={
+              <div className="relative shrink-0">
+                <select
+                  value={titleAgent}
+                  onChange={(e) => setTitleAgent(e.target.value)}
+                  className="cursor-pointer appearance-none rounded-lg border border-[var(--border)] bg-[var(--card)] py-1.5 pr-8 pl-3 text-[13px] text-[var(--ink)] outline-none hover:bg-[var(--hover)] [&>option]:bg-[#1a1a1f]"
+                >
+                  <option value="claude">Claude Code</option>
+                  <option value="codex">Codex</option>
+                  <option value="off">Off</option>
+                </select>
+                <ArrowUpDown
+                  size={12}
+                  className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[var(--faint)]"
+                />
+              </div>
+            }
+          />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/** Per-agent default model + reasoning + context. Writes straight into the
+ * store, so the composer picker and the next `create_session` read the same
+ * values — no mock controls. */
+function AgentDefaults({
+  id,
+  status,
+}: {
+  id: string;
+  status?: AgentStatus;
+}) {
+  const defaultModels = useEgant((s) => s.defaultModels);
+  const setDefaultModel = useEgant((s) => s.setDefaultModel);
+  const defaultVariants = useEgant((s) => s.defaultVariants);
+  const setDefaultVariant = useEgant((s) => s.setDefaultVariant);
+  const defaultContexts = useEgant((s) => s.defaultContexts);
+  const setDefaultContext = useEgant((s) => s.setDefaultContext);
+  // Select the stable `badModels` object itself, not a derived slice of it —
+  // see `NO_BAD_MODELS`'s comment for why the derived form looped forever.
+  const badModels = useEgant((s) => s.snapshot?.badModels);
+  const badModelIds = badModels?.[id] ?? NO_BAD_MODELS;
+  const [models, setModels] = useState<AgentModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    setError(null);
+    api
+      .listModels(id)
+      .then((rows) => {
+        if (live) setModels(rows);
+      })
+      .catch((e: unknown) => {
+        if (live) {
+          setModels([]);
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [id]);
+
+  const currentModel = defaultModels[id] ?? "";
+  const modelRow = models.find((m) => m.id === currentModel) ?? null;
+  const allVariants = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of models) for (const v of m.variants) set.add(v);
+    if (modelRow) for (const v of modelRow.variants) set.add(v);
+    const saved = (defaultVariants[id] ?? "").trim();
+    if (saved) set.add(saved);
+    return [...set].sort();
+  }, [models, modelRow, defaultVariants, id]);
+  const currentVariant = defaultVariants[id] ?? "";
+  const currentContextRaw = (defaultContexts[id] ?? "").trim();
+  const currentContextNum = parseContext(currentContextRaw);
+  const contextOptions = useMemo(() => {
+    const opts = [...CONTEXT_PRESETS];
+    if (currentContextNum > 0 && !opts.some((p) => parseContext(p) === currentContextNum)) {
+      opts.push(formatContext(currentContextNum));
+    }
+    return opts;
+  }, [currentContextNum]);
+
+  return (
+    <div className="mt-3 ml-[50px] flex flex-wrap items-center gap-2">
+      <span className="flex items-center gap-1.5 text-[12px] text-[var(--faint)]">
+        {modelRow && <ProviderLogo provider={modelRow.provider} size={18} />}
+        Default model
+      </span>
+      <div className="relative">
+        <select
+          value={currentModel}
+          disabled={loading || !status?.installed}
+          onChange={(e) => {
+            setDefaultModel(id, e.target.value);
+            // A stale variant for the new model would fail the turn.
+            const next = models.find((m) => m.id === e.target.value) ?? null;
+            if (next && currentVariant && !next.variants.includes(currentVariant)) {
+              setDefaultVariant(id, "");
+            }
+            if (!next) setDefaultVariant(id, "");
+          }}
+          className="max-w-[260px] cursor-pointer appearance-none truncate rounded-lg border border-[var(--border)] bg-[var(--card)] py-1.5 pr-8 pl-3 text-[12px] text-[var(--ink)] outline-none hover:bg-[var(--hover)] disabled:cursor-default disabled:opacity-50 [&>option]:bg-[#1a1a1f]"
+        >
+          <option value="">CLI default</option>
+          {models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {badModelIds.includes(m.id) ? "⚠ " : ""}
+              {m.name} — {badModelIds.includes(m.id) ? "Failed earlier this session" : (m.description || m.providerName)}
+            </option>
+          ))}
+        </select>
+        <ArrowUpDown
+          size={12}
+          className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[var(--faint)]"
+        />
+      </div>
+      {loading && (
+        <span className="text-[12px] text-[var(--faint)]">Loading…</span>
+      )}
+      {!loading && modelRow && badModelIds.includes(modelRow.id) && (
+        <span
+          className="flex items-center gap-1 text-[12px] text-amber-400/90"
+          title="This model failed with a model/catalog error earlier this session — it may still be worth retrying."
+        >
+          <AlertTriangle size={12} strokeWidth={2} />
+          Failed earlier this session
+        </span>
+      )}
+      {error && !loading && (
+        <span className="max-w-[320px] truncate text-[12px] text-amber-400/90" title={error}>
+          {error}
+        </span>
+      )}
+      {allVariants.length > 0 && (
+        <>
+          <span className="ml-2 text-[12px] text-[var(--faint)]">Reasoning</span>
+          <div className="relative">
+            <select
+              value={currentVariant}
+              onChange={(e) => setDefaultVariant(id, e.target.value)}
+              className="cursor-pointer appearance-none rounded-lg border border-[var(--border)] bg-[var(--card)] py-1.5 pr-8 pl-3 text-[12px] text-[var(--ink)] outline-none hover:bg-[var(--hover)] [&>option]:bg-[#1a1a1f]"
+            >
+              <option value="">CLI default</option>
+              {allVariants.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            <ArrowUpDown
+              size={12}
+              className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[var(--faint)]"
+            />
+          </div>
+        </>
+      )}
+      <span className="ml-2 text-[12px] text-[var(--faint)]">Context</span>
+      <div className="relative">
+        <select
+          value={currentContextNum > 0 ? formatContext(currentContextNum) : ""}
+          onChange={(e) => setDefaultContext(id, e.target.value)}
+          title="Default context window for new sessions (Codex: passed as model_context_window)"
+          className="cursor-pointer appearance-none rounded-lg border border-[var(--border)] bg-[var(--card)] py-1.5 pr-8 pl-3 text-[12px] text-[var(--ink)] outline-none hover:bg-[var(--hover)] [&>option]:bg-[#1a1a1f]"
+        >
+          <option value="">Model default</option>
+          {contextOptions.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        <ArrowUpDown
+          size={12}
+          className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-[var(--faint)]"
+        />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+function AccountsSection() {
+  const machine = useEgant((s) => s.snapshot?.machineName ?? "Local device");
+  const agents = useEgant((s) => s.agents);
+  const fetchAgents = useEgant((s) => s.fetchAgents);
+  const verifyAgents = useEgant((s) => s.verifyAgents);
+  const refresh = useEgant((s) => s.refresh);
+  const [spinning, setSpinning] = useState(false);
+  useEffect(() => {
+    void verifyAgents();
+  }, [verifyAgents]);
+
+  const statusOf = (id: string) => agents.find((a) => a.id === id);
+  const known = agents.length > 0;
+  const connectedCount = ["claude", "codex", "opencode", "cursor"].filter(
+    (id) => statusOf(id)?.connected,
+  ).length;
+
+  const refreshAll = () => {
+    setSpinning(true);
+    const ids = ["claude", "codex", "opencode", "cursor"];
+    void Promise.all([
+      refresh(),
+      fetchAgents(),
+      ...ids.map((id) => api.checkAgentLogin(id).catch(() => null)),
+    ]).finally(() => {
+      void fetchAgents();
+      setSpinning(false);
+    });
+  };
+
+  return (
+    <div>
+      <SectionHead
+        title="Accounts"
+        count={connectedCount}
+        sub="The Claude Code, Codex, OpenCode, and Cursor logins on this device. Refresh re-checks each login with the CLI itself, not just whether a credentials file exists."
+        right={
+          <>
+            <button
+              type="button"
+              onClick={refreshAll}
+              className="flex cursor-pointer items-center gap-1.5 text-[13px] text-[var(--muted)] hover:text-[var(--ink)]"
+            >
+              <RefreshCw size={13} strokeWidth={2} className={spinning ? "animate-spin" : ""} />
+              Refresh
+            </button>
+            <DevicePill name={machine} />
+          </>
+        }
+      />
+
+      <AccountGroup
+        id="claude"
+        icon={<ProviderGlyph provider="claude" size={15} />}
+        name="Claude Code"
+        installed={!known || (statusOf("claude")?.installed ?? false)}
+        body={
+          <AccountBody
+            status={statusOf("claude")}
+            empty="Claude Code isn't connected on this device — Add account to sign in."
+          />
+        }
+      />
+
+      <AccountGroup
+        id="codex"
+        icon={<ProviderGlyph provider="codex" size={15} />}
+        name="Codex"
+        installed={!known || (statusOf("codex")?.installed ?? false)}
+        body={
+          <AccountBody
+            status={statusOf("codex")}
+            empty="Codex isn't connected on this device — Add account to sign in."
+          />
+        }
+      />
+
+      <AccountGroup
+        id="opencode"
+        icon={<ProviderGlyph provider="opencode" size={15} />}
+        name="OpenCode"
+        installed={!known || (statusOf("opencode")?.installed ?? false)}
+        body={
+          <AccountBody
+            status={statusOf("opencode")}
+            empty="OpenCode isn't installed on this device — install it to use its free models, or add a provider account."
+            readySubtitle="Free models ready — Add account to sign in to a specific provider"
+          />
+        }
+      />
+
+      <AccountGroup
+        id="cursor"
+        // No real Cursor mark ships in assets/logos yet — the plain Lucide
+        // glyph stays until one is added, rather than guessing at a brand
+        // asset.
+        icon={<Box size={15} strokeWidth={2} className="text-[var(--muted)]" />}
+        name="Cursor"
+        installed={!known || (statusOf("cursor")?.installed ?? false)}
+        body={
+          <AccountBody
+            status={statusOf("cursor")}
+            empty="Cursor isn't connected on this device — cursor-agent sign-in isn't wired up yet."
+          />
+        }
+      />
+
+      <p className="mt-4 max-w-[700px] text-[12px] leading-relaxed text-[var(--faint)]">
+        Add account runs each CLI&apos;s own sign-in: Claude Code and Codex open a
+        browser tab in the background, OpenCode opens a Terminal window for its
+        provider picker. This device only ever holds one login per agent — Add
+        account replaces whichever one is currently signed in.
+      </p>
+    </div>
+  );
+}
+
+function AccountBody({
+  status,
+  empty,
+  readySubtitle,
+}: {
+  status?: AgentStatus;
+  empty: string;
+  /** Overrides the "Logged in" line for an agent with no real login step —
+   * OpenCode is ready off the CLI install alone (its free-tier models need
+   * no provider auth), so "Logged in" would claim a step that never
+   * happened. */
+  readySubtitle?: string;
+}) {
+  if (!status?.connected) {
+    return (
+      <div className="px-4 py-6 text-center text-[13px] text-[var(--muted)]">{empty}</div>
+    );
+  }
+  const letter = (status.email?.[0] ?? status.name[0]).toUpperCase();
+  return (
+    <div className="flex items-center gap-3 px-4 py-3.5">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--selected)] text-[12px] font-medium text-[var(--ink)]">
+        {letter}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-semibold text-[var(--ink)]">
+          {status.email ?? `${status.name} connected`}
+        </div>
+        <div className="mt-0.5 text-[12px] text-[var(--faint)]">
+          {status.email ? "Usage unavailable" : (readySubtitle ?? "Logged in")}
+        </div>
+      </div>
+      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+        Active
+      </span>
+    </div>
+  );
+}
+
+/** How long "Add account" keeps polling `checkAgentLogin` after a login was
+ * started, before giving up and pointing the user at Refresh instead. Long
+ * enough for a browser OAuth round trip or a terminal picker, not so long a
+ * click-away-and-forget leaves it spinning forever. */
+const CONNECT_POLL_MS = 2_500;
+const CONNECT_TIMEOUT_MS = 120_000;
+
+/** What to tell the user to go look at while a sign-in is under way — each
+ * agent's "Add account" opens a different place, so "finish signing in"
+ * alone leaves them checking the wrong window. */
+const CONNECT_HINTS: Record<string, string> = {
+  claude: "Check your browser — a Claude Code sign-in tab should have opened.",
+  codex: "Check your browser — a Codex sign-in tab should have opened.",
+  opencode: "Check the Terminal window that just opened and follow its provider picker.",
+};
+
+function AccountGroup({
+  id,
+  icon,
+  name,
+  installed,
+  body,
+}: {
+  id: string;
+  icon: ReactNode;
+  name: string;
+  installed: boolean;
+  body: ReactNode;
+}) {
+  const fetchAgents = useEgant((s) => s.fetchAgents);
+  const [connecting, setConnecting] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const pollToken = useRef(0);
+
+  useEffect(() => () => {
+    // Invalidate any in-flight poll loop when this row unmounts (settings closed).
+    pollToken.current += 1;
+  }, []);
+
+  const onAdd = async () => {
+    const token = ++pollToken.current;
+    setNote(null);
+    try {
+      await api.connectAgent(id);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    setConnecting(true);
+    setNote(CONNECT_HINTS[id] ?? "Finish signing in — this updates on its own once you do.");
+    const deadline = Date.now() + CONNECT_TIMEOUT_MS;
+    const poll = async () => {
+      if (pollToken.current !== token) return; // superseded or unmounted
+      let status: AgentStatus | null = null;
+      try {
+        status = await api.checkAgentLogin(id);
+      } catch {
+        // A transient spawn failure shouldn't end the wait early.
+      }
+      if (pollToken.current !== token) return;
+      if (status?.connected) {
+        setConnecting(false);
+        setNote(null);
+        void fetchAgents();
+        return;
+      }
+      if (Date.now() < deadline) {
+        setTimeout(() => void poll(), CONNECT_POLL_MS);
+      } else {
+        setConnecting(false);
+        setNote("Still not connected — finish signing in, then hit Refresh.");
+      }
+    };
+    setTimeout(() => void poll(), CONNECT_POLL_MS);
+  };
+
+  return (
+    <div className="mb-5">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="flex items-center gap-2 text-[13px] font-semibold text-[var(--ink)]">
+          {icon}
+          {name}
+        </span>
+        <button
+          type="button"
+          title={installed ? `Add ${name} account` : `Install ${name} to connect an account`}
+          disabled={connecting || !installed}
+          onClick={() => void onAdd()}
+          className="flex cursor-pointer items-center gap-1.5 text-[13px] text-[var(--muted)] hover:text-[var(--ink)] disabled:cursor-default disabled:opacity-50 disabled:hover:text-[var(--muted)]"
+        >
+          <CirclePlus size={14} strokeWidth={2} className={connecting ? "animate-pulse" : ""} />
+          {connecting ? "Connecting…" : "Add account"}
+        </button>
+      </div>
+      <Card>{body}</Card>
+      {note && (
+        <div
+          className={`mt-2 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12px] leading-relaxed ${
+            connecting
+              ? "border-[var(--accent)]/25 bg-[var(--accent)]/10 text-[var(--ink)]"
+              : "border-amber-400/25 bg-amber-400/10 text-amber-200"
+          }`}
+        >
+          {connecting ? (
+            <RefreshCw size={13} strokeWidth={2} className="mt-0.5 shrink-0 animate-spin" />
+          ) : (
+            <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+          )}
+          <span>{note}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Appearance (fully functional)
+// ---------------------------------------------------------------------------
+
+const LIGHT_THEMES: { value: string; label: string; swatch: [string, string] }[] = [
+  { value: "zeron-light", label: "Zeron Light", swatch: ["#f2f2f5", "#8e7cf6"] },
+  { value: "sand", label: "Sand", swatch: ["#efe9dd", "#b3803f"] },
+];
+
+const DARK_THEMES: { value: string; label: string; swatch: [string, string] }[] = [
+  { value: "zeron-dark", label: "Zeron Dark", swatch: ["#0d0d0d", "#8e7cf6"] },
+  { value: "dark-plus", label: "Dark+", swatch: ["#1e1e1e", "#007acc"] },
+  { value: "catppuccin-mocha", label: "Catppuccin Mocha", swatch: ["#1e1e2e", "#cba6f7"] },
+  { value: "tokyo-night", label: "Tokyo Night", swatch: ["#1a1b26", "#7aa2f7"] },
+  { value: "dracula", label: "Dracula", swatch: ["#282a36", "#bd93f9"] },
+  { value: "github-dark", label: "GitHub Dark", swatch: ["#0d1117", "#58a6ff"] },
+  { value: "ayu-dark", label: "Ayu Dark", swatch: ["#0a0e14", "#ffb454"] },
+  { value: "ayu-mirage", label: "Ayu Mirage", swatch: ["#1f2430", "#ffcc66"] },
+  { value: "gruvbox-dark", label: "Gruvbox Dark", swatch: ["#282828", "#b8bb26"] },
+  { value: "rose-pine-moon", label: "Rosé Pine Moon", swatch: ["#232136", "#ea9a97"] },
+  { value: "nord", label: "Nord", swatch: ["#2e3440", "#88c0d0"] },
+  { value: "one-dark-pro", label: "One Dark Pro", swatch: ["#282c34", "#61afef"] },
+  { value: "atom-one-dark", label: "Atom One Dark", swatch: ["#21252b", "#528bff"] },
+  { value: "night-owl", label: "Night Owl", swatch: ["#011627", "#82aaff"] },
+  {
+    value: "winter-is-coming-dark-blue",
+    label: "Winter is Coming Dark Blue",
+    swatch: ["#0e1c36", "#6a9fb5"],
+  },
+  { value: "palenight", label: "Palenight", swatch: ["#292d3e", "#c792ea"] },
+  { value: "synthwave-84", label: "SynthWave '84", swatch: ["#262335", "#ff7edb"] },
+  { value: "shades-of-purple", label: "Shades of Purple", swatch: ["#2d2b55", "#fad000"] },
+  { value: "cobalt2", label: "Cobalt2", swatch: ["#193549", "#ffc600"] },
+  { value: "andromeda", label: "Andromeda", swatch: ["#23262e", "#c74ded"] },
+  { value: "midnight", label: "Midnight", swatch: ["#02040a", "#8ca0ff"] },
+];
+
+const ACCENTS = [
+  { value: "default", label: "Theme default" },
+  { value: "#8e7cf6", label: "Purple" },
+  { value: "#818cf8", label: "Indigo" },
+  { value: "#60a5fa", label: "Blue" },
+  { value: "#22d3ee", label: "Cyan" },
+  { value: "#2dd4bf", label: "Teal" },
+  { value: "#34d399", label: "Green" },
+  { value: "#a3e635", label: "Lime" },
+  { value: "#f5c518", label: "Yellow" },
+  { value: "#f59e42", label: "Orange" },
+  { value: "#ef5350", label: "Red" },
+  { value: "#f472b6", label: "Pink" },
+  { value: "#fb7185", label: "Rose" },
+];
+
+const GLASS_OPTIONS: { value: GlassMode; label: string }[] = [
+  { value: "default", label: "Theme default" },
+  { value: "frosted", label: "Frosted" },
+  { value: "clear", label: "Clear" },
+  { value: "opaque", label: "No Glass" },
+];
+
+const BG_EFFECTS: { value: BgEffect; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "dither", label: "Dither" },
+  { value: "ascii", label: "ASCII" },
+  { value: "halftone", label: "Halftone" },
+  { value: "scanlines", label: "Scanlines" },
+];
+
+function AppearanceSection() {
+  const appearance = useEgant((s) => s.appearance);
+  const setAppearance = useEgant((s) => s.setAppearance);
+  const wallpaperUrl = useEgant((s) => s.wallpaperUrl);
+  const wallpaperName = useEgant((s) => s.snapshot?.settings.wallpaperName ?? null);
+  const wallpaperDim = useEgant((s) => s.snapshot?.settings.wallpaperDim ?? 0.55);
+  const chooseWallpaper = useEgant((s) => s.chooseWallpaper);
+  const clearWallpaper = useEgant((s) => s.clearWallpaper);
+  const cycleDim = useEgant((s) => s.cycleDim);
+
+  return (
+    <div>
+      <SectionHead
+        title="Appearance"
+        sub="Choose how egant looks. These settings stay on this device."
+      />
+
+      <div className="mb-4 text-[13px] font-semibold text-[var(--ink)]">Appearance</div>
+      <div className="mb-4 grid grid-cols-3 gap-3">
+        <ModeCard
+          label="System"
+          active={appearance.mode === "system"}
+          onClick={() => setAppearance({ mode: "system" })}
+        >
+          <div className="flex h-full">
+            <div className="flex w-1/2 gap-1 bg-[#f2f2f5] p-2">
+              <div className="flex w-[26px] shrink-0 flex-col gap-1">
+                <Bar dark={false} w="70%" />
+                <Bar dark={false} w="90%" />
+                <Bar dark={false} w="60%" />
+                <Bar dark={false} w="80%" />
+              </div>
+              <div className="flex flex-1 flex-col gap-1 rounded border border-black/10 bg-white p-1">
+                <Bar dark={false} w="55%" />
+                <Bar dark={false} w="80%" />
+                <Bar dark={false} w="65%" />
+                <Bar dark={false} w="40%" />
+              </div>
+            </div>
+            <div className="flex w-1/2 gap-1 bg-[#101014] p-2">
+              <div className="flex w-[26px] shrink-0 flex-col gap-1">
+                <Bar dark w="70%" />
+                <Bar dark w="90%" />
+                <Bar dark w="60%" />
+              </div>
+              <div className="flex flex-1 flex-col gap-1 rounded border border-white/10 bg-black/40 p-1">
+                <Bar dark w="80%" />
+                <Bar dark w="60%" />
+                <Bar dark w="70%" />
+              </div>
+            </div>
+          </div>
+        </ModeCard>
+        <ModeCard
+          label="Light"
+          active={appearance.mode === "light"}
+          onClick={() => setAppearance({ mode: "light" })}
+        >
+          <div className="flex h-full gap-1.5 bg-[#f2f2f5] p-2">
+            <div className="flex w-[52px] shrink-0 flex-col gap-1">
+              <Bar dark={false} w="70%" />
+              <Bar dark={false} w="90%" />
+              <Bar dark={false} w="60%" />
+            </div>
+            <div className="flex flex-1 flex-col gap-1.5 rounded border border-black/10 bg-white p-1.5">
+              <Bar dark={false} w="60%" />
+              <Bar dark={false} w="90%" />
+              <Bar dark={false} w="75%" />
+              <Bar dark={false} w="50%" />
+            </div>
+          </div>
+        </ModeCard>
+        <ModeCard
+          label="Dark"
+          active={appearance.mode === "dark"}
+          onClick={() => setAppearance({ mode: "dark" })}
+        >
+          <div className="flex h-full gap-1.5 bg-[#0b0b0e] p-2">
+            <div className="flex w-[52px] shrink-0 flex-col gap-1">
+              <Bar dark w="70%" />
+              <Bar dark w="90%" />
+              <Bar dark w="60%" />
+            </div>
+            <div className="flex flex-1 flex-col gap-1.5 rounded border border-white/10 bg-black/50 p-1.5">
+              <Bar dark w="85%" />
+              <Bar dark w="95%" />
+              <Bar dark w="70%" />
+              <Bar dark w="55%" />
+            </div>
+          </div>
+        </ModeCard>
+      </div>
+
+      <Card>
+        <Row
+          icon={SlidersHorizontal}
+          title="Light theme"
+          sub="Used whenever this appearance is active."
+          control={
+            <ThemeSelect
+              value={appearance.lightTheme}
+              options={LIGHT_THEMES}
+              onChange={(lightTheme) => setAppearance({ lightTheme })}
+            />
+          }
+        />
+        <Row
+          icon={SlidersHorizontal}
+          title="Dark theme"
+          sub="Used whenever this appearance is active."
+          control={
+            <ThemeSelect
+              value={appearance.darkTheme}
+              options={DARK_THEMES}
+              onChange={(darkTheme) => setAppearance({ darkTheme })}
+            />
+          }
+        />
+        <Row
+          icon={SlidersHorizontal}
+          title="Accent color"
+          sub="Theme default - Uses the palette's intended color."
+          control={
+            <div className="flex max-w-[260px] flex-wrap items-start justify-end gap-2">
+              {ACCENTS.map((a) =>
+                a.value === "default" ? (
+                  <button
+                    key={a.value}
+                    type="button"
+                    title={a.label}
+                    onClick={() => setAppearance({ accent: "default" })}
+                    className="cursor-pointer"
+                  >
+                    <span
+                      className={`flex h-6 w-6 items-end justify-center gap-[2.5px] rounded-md border pb-1 ${
+                        appearance.accent === "default"
+                          ? "border-[var(--accent)]"
+                          : "border-[var(--border)] hover:bg-[var(--hover)]"
+                      }`}
+                    >
+                      <span className="w-[3px] rounded-full bg-[var(--muted)]" style={{ height: 8 }} />
+                      <span className="w-[3px] rounded-full bg-[var(--muted)]" style={{ height: 13 }} />
+                      <span className="w-[3px] rounded-full bg-[var(--muted)]" style={{ height: 6 }} />
+                      <span className="w-[3px] rounded-full bg-[var(--muted)]" style={{ height: 11 }} />
+                    </span>
+                    <span
+                      className={`mt-1 block h-[2px] rounded-full ${
+                        appearance.accent === "default" ? "bg-[var(--accent)]" : "bg-transparent"
+                      }`}
+                    />
+                  </button>
+                ) : (
+                  <button
+                    key={a.value}
+                    type="button"
+                    title={a.label}
+                    onClick={() => setAppearance({ accent: a.value })}
+                    className="cursor-pointer"
+                  >
+                    <span
+                      className="block h-6 w-6 rounded-full border border-black/30"
+                      style={{ background: a.value }}
+                    />
+                    <span
+                      className="mt-1 block h-[2px] rounded-full"
+                      style={{
+                        background:
+                          appearance.accent === a.value ? a.value : "transparent",
+                      }}
+                    />
+                  </button>
+                ),
+              )}
+            </div>
+          }
+        />
+        <Row
+          icon={LayoutGrid}
+          title="Glass"
+          sub="No Glass is a flat, solid IDE look — no blur or transparency."
+          control={
+            <Pills
+              options={GLASS_OPTIONS}
+              value={appearance.glass}
+              onChange={(glass) => setAppearance({ glass })}
+            />
+          }
+        />
+        <div className="flex items-center gap-3.5 px-4 py-3.5">
+          <span className="h-9 w-9 shrink-0 overflow-hidden rounded-lg border border-[var(--border)]">
+            {wallpaperUrl ? (
+              <img src={wallpaperUrl} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <span className="block h-full w-full bg-gradient-to-br from-purple-900 via-indigo-950 to-black" />
+            )}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-semibold text-[var(--ink)]">
+              New thread composer background
+            </div>
+            <div className="mt-0.5 truncate text-[12px] text-[var(--muted)]">
+              {wallpaperName ?? "No image chosen"}
+              <Dot />
+              Softened automatically on frosted themes.
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {wallpaperUrl && (
+              <button
+                type="button"
+                title="Cycle the wallpaper's dim level"
+                onClick={() => void cycleDim()}
+                className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+              >
+                Dim {Math.round(wallpaperDim * 100)}%
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void chooseWallpaper()}
+              className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              Replace image
+            </button>
+            {wallpaperUrl && (
+              <button
+                type="button"
+                onClick={() => void clearWallpaper()}
+                className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--danger)] hover:bg-[var(--hover)]"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+        <Row
+          icon={SlidersHorizontal}
+          title="Background effect"
+          sub="Shows the original artwork."
+          control={
+            <Pills
+              options={BG_EFFECTS}
+              value={appearance.bgEffect}
+              onChange={(bgEffect) => setAppearance({ bgEffect })}
+            />
+          }
+        />
+        <Row
+          icon={Folder}
+          title="Theme library"
+          sub="Import or link custom themes."
+          control={
+            <button
+              type="button"
+              title="Custom themes aren't supported yet"
+              className="shrink-0 cursor-pointer rounded-lg bg-white px-3.5 py-1.5 text-[13px] font-medium text-black hover:bg-white/85"
+            >
+              Add theme
+            </button>
+          }
+        />
+      </Card>
+    </div>
+  );
+}
+
+function ModeCard({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button type="button" onClick={onClick} className="cursor-pointer">
+      <span
+        className={`block h-[104px] overflow-hidden rounded-lg border transition-colors ${
+          active ? "border-[var(--accent)]" : "border-[var(--border)]"
+        }`}
+      >
+        {children}
+      </span>
+      <span
+        className={`mt-2 block text-center text-[12px] ${
+          active ? "font-medium text-[var(--accent)]" : "text-[var(--muted)]"
+        }`}
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
+function Bar({ dark, w }: { dark?: boolean; w: string }) {
+  return (
+    <span
+      className={`h-1 rounded-full ${dark ? "bg-white/20" : "bg-black/15"}`}
+      style={{ width: w }}
+    />
+  );
+}
+
+/** The theme picker seen in Appearance > Light/Dark theme: a swatch-and-label
+ * button that opens a scrollable popover of every palette, checkmarking the
+ * active one — same anchored-menu pattern as `ProjectMenu`. Picking a row
+ * calls `onChange`, which flows into `setAppearance` and — via
+ * `applyAppearance` — repaints `data-palette` on `<html>` immediately, so the
+ * whole window re-skins on click rather than just recording a preference. */
+function ThemeSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: { value: string; label: string; swatch: [string, string] }[];
+  onChange: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const current = options.find((o) => o.value === value) ?? options[0];
+
+  const toggle = () => {
+    if (!open) {
+      setOpenUpward(shouldOpenUpward(rootRef, Math.min(360, window.innerHeight * 0.6)));
+    }
+    setOpen((o) => !o);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={current?.label ?? "Theme"}
+        aria-expanded={open}
+        className="flex cursor-pointer items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] py-1.5 pr-2.5 pl-2.5 text-[13px] text-[var(--ink)] outline-none hover:bg-[var(--hover)]"
+      >
+        <ThemeSwatch colors={current.swatch} />
+        <span className="max-w-[150px] truncate">{current?.label}</span>
+        <ArrowUpDown size={12} className="shrink-0 text-[var(--faint)]" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} />
+          <div
+            style={{ transformOrigin: openUpward ? "bottom right" : "top right" }}
+            className={`menu absolute right-0 z-50 flex max-h-[min(360px,60vh)] w-[248px] flex-col overflow-y-auto rounded-xl p-1.5 text-xs ${
+              openUpward ? "menu-pop-up bottom-full mb-1.5" : "menu-pop top-full mt-1.5"
+            }`}
+          >
+            {options.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onChange(o.value);
+                }}
+                className={`flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
+                  o.value === value ? "bg-[var(--selected)] text-[var(--ink)]" : "text-[var(--muted)]"
+                }`}
+              >
+                <ThemeSwatch colors={o.swatch} />
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                {o.value === value && <Check size={12} strokeWidth={2} className="shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ThemeSwatch({ colors }: { colors: [string, string] }) {
+  return (
+    <span className="block h-3.5 w-3.5 shrink-0 overflow-hidden rounded-[3px] border border-black/20">
+      <span className="flex h-full">
+        <span className="w-1/2" style={{ background: colors[0] }} />
+        <span className="w-1/2" style={{ background: colors[1] }} />
+      </span>
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+const FONT_SIZES = [
+  { value: "10", label: "10 px" },
+  { value: "11.5", label: "11.5 px" },
+  { value: "13", label: "13 px" },
+  { value: "15", label: "15 px" },
+  { value: "17", label: "17 px" },
+];
+
+function FilesSection() {
+  const [autosave, setAutosave] = usePersistentState("egant.files.autosave", true);
+  const [fontSize, setFontSize] = usePersistentState("egant.files.fontSize", "13");
+  const [wordWrap, setWordWrap] = usePersistentState("egant.files.wordWrap", true);
+  const [showAll, setShowAll] = usePersistentState("egant.files.showAll", true);
+
+  return (
+    <div>
+      <SectionHead
+        title="Files"
+        sub="Control how workspace files are displayed and saved while you edit."
+      />
+      <Card>
+        <Row
+          icon={Folder}
+          title="Autosave"
+          sub="Save edited workspace files to disk automatically."
+          control={<Toggle on={autosave} onChange={setAutosave} label="Autosave" />}
+        />
+        <div className="px-4 py-3.5">
+          <div className="flex items-center gap-3.5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted)]">
+              <SlidersHorizontal size={16} strokeWidth={2} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold text-[var(--ink)]">
+                Editor font size
+              </div>
+              <div className="mt-0.5 text-[12px] text-[var(--muted)]">
+                Set the text size in workspace file editors.
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 ml-[50px]">
+            <Pills options={FONT_SIZES} value={fontSize} onChange={setFontSize} />
+          </div>
+        </div>
+        <Row
+          icon={AlignLeft}
+          title="Word wrap"
+          sub="Wrap long lines in every workspace file."
+          control={<Toggle on={wordWrap} onChange={setWordWrap} label="Word wrap" />}
+        />
+        <Row
+          icon={Eye}
+          title="Show all files"
+          sub="Include hidden and ignored files in every file tree."
+          control={<Toggle on={showAll} onChange={setShowAll} label="Show all files" />}
+        />
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+function NotificationsSection() {
+  const [sounds, setSounds] = usePersistentState("egant.notify.sounds", true);
+  const [completed, setCompleted] = usePersistentState("egant.notify.completed", true);
+  const [input, setInput] = usePersistentState("egant.notify.input", true);
+  const [errors, setErrors] = usePersistentState("egant.notify.errors", true);
+  const [desktop, setDesktop] = usePersistentState("egant.notify.desktop", true);
+  const [background, setBackground] = usePersistentState("egant.notify.background", true);
+
+  return (
+    <div>
+      <SectionHead
+        title="Notifications"
+        sub="Choose which session events can play a sound, and when desktop notifications appear."
+      />
+      <Card>
+        <Row
+          icon={Volume2}
+          title="Session sounds"
+          sub="Allow sounds for the selected session events below."
+          control={<Toggle on={sounds} onChange={setSounds} label="Session sounds" />}
+        />
+        <Row
+          icon={Check}
+          title="Task completed"
+          sub="Play a sound when an agent finishes a run."
+          control={<Toggle on={completed} onChange={setCompleted} label="Task completed" />}
+        />
+        <Row
+          icon={MessageCircle}
+          title="Input required"
+          sub="Play a sound when an agent needs your response."
+          control={<Toggle on={input} onChange={setInput} label="Input required" />}
+        />
+        <Row
+          icon={AlertTriangle}
+          title="Errors and disconnections"
+          sub="Play a sound when a run fails or the connection remains unavailable."
+          control={<Toggle on={errors} onChange={setErrors} label="Errors and disconnections" />}
+        />
+        <Row
+          icon={Bell}
+          title="Desktop notifications"
+          sub="Show a system banner on the same events, so pings reach you while egant is in the background."
+          control={<Toggle on={desktop} onChange={setDesktop} label="Desktop notifications" />}
+        />
+        <Row
+          icon={AppWindow}
+          title="Only when in the background"
+          sub="Skip the banner while an egant window is focused."
+          control={
+            <Toggle
+              on={background}
+              onChange={setBackground}
+              label="Only when in the background"
+            />
+          }
+        />
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Placeholders
+// ---------------------------------------------------------------------------
+
+const SHORTCUTS: [string, string][] = [
+  ["New conversation", "⌘N"],
+  ["Filter conversations", "⌘K"],
+  ["Focus composer", "⌘L"],
+  ["Toggle sidebar", "⌘B"],
+  ["Open settings", "⌘,"],
+  ["Close settings", "Esc"],
+];
+
+function ShortcutsSection() {
+  return (
+    <div>
+      <SectionHead
+        title="Shortcuts"
+        sub="Keys that drive the window. They work wherever the window is focused."
+      />
+      <Card>
+        {SHORTCUTS.map(([label, keys]) => (
+          <div key={label} className="flex items-center justify-between px-4 py-3">
+            <span className="text-[13px] text-[var(--ink)]">{label}</span>
+            <span className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 text-[12px] text-[var(--muted)]">
+              {keys}
+            </span>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+function Placeholder({ text }: { text: string }) {
+  return (
+    <div className="flex h-[40vh] items-center justify-center text-[13px] text-[var(--faint)]">
+      {text}
+    </div>
+  );
+}

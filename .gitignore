@@ -1,0 +1,13 @@
+/target
+src-tauri/target/
+**/*.rs.bk
+.DS_Store
+
+# Frontend.
+node_modules/
+dist/
+
+# Local scratch: agent worktrees live under ~/.egant, but a dev override may
+# point them here.
+/.egant
+.opencode/plugins/emdash-notifications.js
