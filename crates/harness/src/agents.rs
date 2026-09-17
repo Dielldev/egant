@@ -392,8 +392,20 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
 /// Resolve one CLI without spawning anything. Order: `$ENV_OVERRIDE` →
 /// `PATH` → login-shell `PATH` → known install dirs → version-manager bins.
 pub fn resolve_executable(desc: &AgentDescriptor) -> Option<PathBuf> {
-    let exe = exe_name(desc.cli);
-    if let Some(path) = std::env::var_os(desc.env_override)
+    resolve_cli(desc.cli, Some(desc.env_override), desc.extra_paths)
+}
+
+/// [`resolve_executable`] for callers that hold the pieces rather than a
+/// descriptor — the install catalog, whose entries cover CLIs with no
+/// harness behind them.
+pub fn resolve_cli(
+    cli: &str,
+    env_override: Option<&str>,
+    extra_paths: &[&str],
+) -> Option<PathBuf> {
+    let exe = exe_name(cli);
+    if let Some(path) = env_override
+        .and_then(std::env::var_os)
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
     {
@@ -404,8 +416,7 @@ pub fn resolve_executable(desc: &AgentDescriptor) -> Option<PathBuf> {
         }
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let extra: Vec<PathBuf> = desc
-        .extra_paths
+    let extra: Vec<PathBuf> = extra_paths
         .iter()
         .map(|p| expand_home(p, home.as_deref()))
         .collect();
@@ -499,6 +510,80 @@ pub fn login_shell_path() -> Option<&'static OsStr> {
 
 #[cfg(unix)]
 fn capture_login_shell_path() -> Option<OsString> {
+    let buf = run_in_login_shell("printf '__EGANT_PATH_BEGIN__%s__EGANT_PATH_END__' \"$PATH\"")?;
+    let text = String::from_utf8_lossy(&buf);
+    let (_, rest) = text.split_once("__EGANT_PATH_BEGIN__")?;
+    let (path, _) = rest.split_once("__EGANT_PATH_END__")?;
+    let path = path.trim();
+    (!path.is_empty()).then(|| OsString::from(path))
+}
+
+#[cfg(not(unix))]
+fn capture_login_shell_path() -> Option<OsString> {
+    None
+}
+
+/// The whole environment the user's login shell exports, captured once per
+/// process — not just `PATH`.
+///
+/// [`login_shell_path`] is enough to *find* a CLI; it is not enough to *run*
+/// one the way the user's own terminal would. Plenty of these agents read
+/// their key from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+/// `OPENROUTER_API_KEY`), and an app launched from the Dock inherits none of
+/// the exports in `.zshrc`/`.zprofile` that put them there. Handing a
+/// terminal session a CLI that reports "no API key" for an agent that works
+/// perfectly in Terminal.app is the whole failure this avoids.
+///
+/// Empty on Windows, when `EGANT_NO_LOGIN_SHELL` is set, or when the shell
+/// produced nothing parseable — the caller then keeps the process's own
+/// environment, which is the pre-existing behaviour.
+pub fn login_shell_env() -> &'static [(String, String)] {
+    static CACHE: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    CACHE.get_or_init(capture_login_shell_env)
+}
+
+#[cfg(unix)]
+fn capture_login_shell_env() -> Vec<(String, String)> {
+    // NUL-separated, so a value with newlines in it (a multi-line key, a
+    // shell function exported into the environment) cannot be mistaken for
+    // the start of the next variable.
+    let Some(buf) = run_in_login_shell("env -0") else {
+        return Vec::new();
+    };
+    buf.split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter_map(|entry| entry.split_once('='))
+        // An rc file that chats on stdout puts its noise in front of the
+        // first variable; anything that isn't a well-formed name is that
+        // noise rather than an export, so it is dropped instead of being
+        // passed to a child process as a bogus variable.
+        .filter(|(name, _)| is_env_name(name))
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn capture_login_shell_env() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(unix)]
+fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Runs one script through the user's login shell and returns its stdout.
+///
+/// `-lic`: interactive login, so nvm/fnm and rc-file exports load. Both the
+/// child and the reader are on bounded waits — a grandchild inheriting the
+/// pipe must not be able to wedge startup — and every caller caches its
+/// result, so at most one stray thread per process survives a timeout.
+#[cfg(unix)]
+fn run_in_login_shell(script: &str) -> Option<Vec<u8>> {
     use std::io::Read;
 
     if std::env::var_os("EGANT_NO_LOGIN_SHELL").is_some_and(|v| !v.is_empty()) {
@@ -514,10 +599,8 @@ fn capture_login_shell_path() -> Option<OsString> {
                 .map(PathBuf::from)
                 .find(|p| p.exists())
         })?;
-    // `-lic`: interactive login, so nvm/fnm and rc-file exports load. Markers
-    // guard against rc files that chat on stdout.
     let mut child = std::process::Command::new(&shell)
-        .args(["-lic", "printf '__EGANT_PATH_BEGIN__%s__EGANT_PATH_END__' \"$PATH\""])
+        .args(["-lic", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -544,20 +627,7 @@ fn capture_login_shell_path() -> Option<OsString> {
             Err(_) => break,
         }
     }
-    // Bounded wait for the reader: a grandchild inheriting the pipe must not
-    // wedge detection. The snapshot cache means at most one stray thread per
-    // process even when this trips.
-    let buf = rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
-    let text = String::from_utf8_lossy(&buf);
-    let (_, rest) = text.split_once("__EGANT_PATH_BEGIN__")?;
-    let (path, _) = rest.split_once("__EGANT_PATH_END__")?;
-    let path = path.trim();
-    (!path.is_empty()).then(|| OsString::from(path))
-}
-
-#[cfg(not(unix))]
-fn capture_login_shell_path() -> Option<OsString> {
-    None
+    Some(rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +767,24 @@ mod tests {
         assert!(dirs.contains(&PathBuf::from("/extra/mycli")));
         // Our own PATH always contributes.
         assert!(dirs.iter().any(|p| p.ends_with("mycli")));
+    }
+
+    /// The login shell's stdout is not guaranteed to be only `env -0`'s
+    /// output: an rc file that prints a banner puts its noise in front of the
+    /// first variable, and that noise must not reach a child process as a
+    /// bogus name. Anything that isn't a well-formed variable name is that.
+    #[cfg(unix)]
+    #[test]
+    fn env_names_are_told_apart_from_rc_file_noise() {
+        assert!(is_env_name("PATH"));
+        assert!(is_env_name("_hidden"));
+        assert!(is_env_name("ANTHROPIC_API_KEY"));
+        assert!(is_env_name("X1"));
+        assert!(!is_env_name(""));
+        assert!(!is_env_name("1PATH"));
+        assert!(!is_env_name("has space"));
+        assert!(!is_env_name("Welcome back! PATH"));
+        assert!(!is_env_name("BASH_FUNC_foo%%"));
     }
 
     #[test]

@@ -18,7 +18,7 @@ export type Entry =
   /** `at` is stamped by the fold when the reply opens, so it is absent on
    * entries restored from a backend snapshot. */
   | { kind: "assistant"; text: string; streaming: boolean; at?: number }
-  | { kind: "thinking"; text: string; streaming: boolean }
+  | { kind: "thinking"; text: string; streaming: boolean; at?: number; elapsedMs?: number }
   | {
       kind: "tool";
       id: string;
@@ -77,6 +77,10 @@ export interface SessionUsage {
  * scanning the whole transcript — same role as in the Rust fold. */
 export interface TranscriptState extends TranscriptDto {
   toolIndex: Record<string, number>;
+  /** When the turn now in flight started, or `null` while idle. Frontend-only:
+   * the backend reports a turn's duration once it has ended, but the status
+   * line has to count up *during* one, so the window stamps its own start. */
+  turnStartedAt: number | null;
 }
 
 /** One streaming event, as emitted on `session-event`. Mirrors `HarnessEvent`
@@ -106,6 +110,8 @@ export interface SessionEventPayload {
   event: HarnessEvent;
 }
 
+export type SessionKind = "chat" | "cli";
+
 export interface SessionInfo {
   id: number;
   title: string;
@@ -115,7 +121,12 @@ export interface SessionInfo {
   startedUnixMs: number;
   /** CLI flag form: `auto` | `manual` | `plan` | `acceptEdits` | `bypassPermissions`. */
   permissionMode: string;
-  /** Agent running the session: `claude` | `codex` | `opencode`. */
+  /** `chat` — egant renders the turns — or `cli`, where the stage is a
+   * terminal running the agent's own CLI and there is no transcript at all. */
+  kind: SessionKind;
+  /** Agent running the session. A chat session names one of the harnesses
+   * (`claude` | `codex` | `opencode`); a CLI session names any agent in the
+   * install catalog (`pi`, `goose`, …). */
   agent: string;
   /** Model override requested at creation, if any. */
   modelOverride: string | null;
@@ -146,6 +157,63 @@ export interface AgentStatus {
   email: string | null;
 }
 
+/** One published way to install an agent — npm, Homebrew, the vendor's curl
+ * script. Mirrors emdash's `installCommands`: several sources per agent, one
+ * of them recommended. */
+export interface AgentInstallOption {
+  method: string;
+  command: string;
+  /** What "Install latest" runs. Never empty: an explicit update command,
+   * the derived `npm …@latest`, or the install command itself. */
+  updateCommand: string;
+  recommended: boolean;
+}
+
+/** One row of `list_agent_catalog`: an agent the Agents tab can offer to
+ * install, and whether this machine already has its CLI. Wider than
+ * `AgentStatus`, which only covers the agents egant can drive. */
+export interface AgentCatalogEntry {
+  id: string;
+  name: string;
+  /** The binary actually probed for — often not the product name (Antigravity
+   * installs `agy`, Continue installs `cn`). */
+  cli: string;
+  /** Brand key for `ProviderLogo`; unknown keys fall back to a letter tile. */
+  vendor: string;
+  website: string;
+  supports: string[];
+  /** egant renders this agent's turns in the chat UI, rather than it being a
+   * terminal-only CLI. */
+  chatUi: boolean;
+  recommended: boolean;
+  /** Empty when the vendor publishes no unattended install. */
+  installOptions: AgentInstallOption[];
+  installed: boolean;
+  executable: string | null;
+  /** The command line that opens this agent's own CLI, as a person would
+   * type it (`pi`, `goose session`). */
+  launchCommand: string;
+}
+
+/** What `install_agent` / `update_agent` report: the command's exit, its log
+ * tail, and the freshly re-probed catalog row. */
+export interface AgentInstallOutcome {
+  success: boolean;
+  output: string;
+  status: AgentCatalogEntry;
+}
+
+/** `check_agent_update` — `latest` is `null` when the CLI has no registry we
+ * read, or the lookup failed, in which case no badge is shown. */
+export interface AgentUpdate {
+  id: string;
+  current: string | null;
+  latest: string | null;
+  updateAvailable: boolean;
+  /** The install source "Install latest" runs. */
+  method: string | null;
+}
+
 /** One row of `list_models`: a model the agent can run. */
 export interface AgentModel {
   id: string;
@@ -156,8 +224,35 @@ export interface AgentModel {
   description: string;
   /** Context window in tokens (0 = unknown, hides the token badge). */
   context: number;
-  /** Reasoning variants the model advertises (opencode only). */
+  /** The widest window this model can be asked for, which is what it actually
+   * runs with here — Claude's larger models take a million through the `[1m]`
+   * suffix on their id. Equal to `context` for everything that has no wider
+   * window to ask for. */
+  maxContext: number;
+  /** Reasoning variants the model advertises. */
   variants: string[];
+  /** The effort the model runs at when nothing asks for one, where the CLI
+   * says (Codex does, per model); `""` otherwise. */
+  defaultVariant: string;
+  /** Whether this is the model the CLI itself would pick — what the picker's
+   * "Default" row resolves to. Only Codex reports it. */
+  cliDefault: boolean;
+}
+
+/** One rolling or weekly window's usage (`claude_usage_limits`). */
+export interface UsageWindow {
+  usedPercent: number;
+  /** ISO 8601, or `null` when the endpoint didn't report one. */
+  resetsAt: string | null;
+}
+
+/** Claude's 5-hour and weekly usage, for the composer's limit pill. `null`
+ * fields mean the endpoint didn't report that window; the whole call comes
+ * back `null` when Claude isn't logged in on this device. */
+export interface ClaudeUsage {
+  fiveHour: UsageWindow | null;
+  sevenDay: UsageWindow | null;
+  sevenDaySonnet: UsageWindow | null;
 }
 
 /** 200000 → "200K", 1048576 → "1M", 0 → "". Used for the composer's

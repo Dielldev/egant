@@ -318,7 +318,13 @@ pub struct SessionDto {
     pub started_unix_ms: u64,
     /// The CLI flag form (`default`, `plan`, `acceptEdits`, `bypassPermissions`).
     pub permission_mode: &'static str,
-    /// The agent running this session (`claude`, `codex`, `opencode`).
+    /// `chat` — egant renders the turns — or `cli`, where the stage is a
+    /// terminal running the agent's own CLI and there is no transcript to
+    /// render at all.
+    pub kind: &'static str,
+    /// The agent running this session. A chat session names one of the
+    /// harnesses (`claude`, `codex`, `opencode`); a CLI session names any
+    /// agent in the install catalog (`pi`, `goose`, …).
     pub agent: String,
     /// Model override requested at creation, if any.
     pub model_override: Option<String>,
@@ -351,6 +357,46 @@ pub struct StateDto {
     /// account's plan can't run). The picker flags these rather than letting
     /// the same failure happen twice in one sitting; it resets every launch.
     pub bad_models: std::collections::HashMap<String, Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// Claude usage limits
+// ---------------------------------------------------------------------------
+
+/// One rolling or weekly window's usage, for the composer's limit pill.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindowDto {
+    pub used_percent: f64,
+    /// ISO 8601, or `null` when the endpoint didn't report one.
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeUsageDto {
+    pub five_hour: Option<UsageWindowDto>,
+    pub seven_day: Option<UsageWindowDto>,
+    pub seven_day_sonnet: Option<UsageWindowDto>,
+}
+
+impl From<egant_harness::usage_limits::UsageWindow> for UsageWindowDto {
+    fn from(window: egant_harness::usage_limits::UsageWindow) -> Self {
+        Self {
+            used_percent: window.used_percent,
+            resets_at: window.resets_at,
+        }
+    }
+}
+
+impl From<egant_harness::usage_limits::ClaudeUsage> for ClaudeUsageDto {
+    fn from(usage: egant_harness::usage_limits::ClaudeUsage) -> Self {
+        Self {
+            five_hour: usage.five_hour.map(UsageWindowDto::from),
+            seven_day: usage.seven_day.map(UsageWindowDto::from),
+            seven_day_sonnet: usage.seven_day_sonnet.map(UsageWindowDto::from),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

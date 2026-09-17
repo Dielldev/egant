@@ -516,13 +516,7 @@ fn render_entry(index: usize, entry: &TranscriptEntry) -> AnyElement {
             })
             .into_any_element(),
 
-        TranscriptEntry::Thinking { text, .. } => div()
-            .w_full()
-            .text_xs()
-            .italic()
-            .text_color(theme::faint())
-            .child(text.clone())
-            .into_any_element(),
+        TranscriptEntry::Thinking { .. } => div().into_any_element(),
 
         TranscriptEntry::Tool(call) => v_flex()
             .w_full()

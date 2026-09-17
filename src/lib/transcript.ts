@@ -26,6 +26,7 @@ export function emptyTranscript(): TranscriptState {
     lastTurnMs: 0,
     usage: emptyUsage(),
     toolIndex: {},
+    turnStartedAt: null,
   };
 }
 
@@ -71,23 +72,50 @@ export function fromDto(dto: TranscriptDto): TranscriptState {
   dto.entries.forEach((entry, index) => {
     if (entry.kind === "tool") toolIndex[entry.id] = index;
   });
-  return { ...dto, toolIndex };
+  // A turn already in flight when the window adopts the snapshot started
+  // before this clock existed; counting from now is the honest answer
+  // available, and it only ever affects a mid-turn reload.
+  return { ...dto, toolIndex, turnStartedAt: dto.state === "idle" ? null : Date.now() };
 }
 
 /** Records a turn the user just sent, before the agent has replied. The
  * backend applies the same echo, and both folds are deterministic, so they
  * agree — this is what makes the message appear on keypress. */
 export function pushUser(prev: TranscriptState, text: string): TranscriptState {
-  return { ...prev, entries: [...prev.entries, { kind: "user", text }], state: "running" };
+  return {
+    ...prev,
+    entries: [...prev.entries, { kind: "user", text }],
+    state: "running",
+    // The turn starts on keypress, not on the agent's first byte — that gap is
+    // exactly the part of the wait the status line exists to account for.
+    turnStartedAt: prev.turnStartedAt ?? Date.now(),
+  };
 }
 
 /** Clears a permission prompt the user just answered. The backend applies the
  * same transition; no event will restate it. */
 export function resolvePermission(prev: TranscriptState): TranscriptState {
-  return { ...prev, pending: null, state: "running" };
+  return {
+    ...prev,
+    pending: null,
+    state: "running",
+    turnStartedAt: prev.turnStartedAt ?? Date.now(),
+  };
 }
 
+/** Folds one event, then keeps the turn clock in step with the state the fold
+ * landed on: a turn that is running has a start stamp, an idle one has none.
+ * Done once out here rather than in nine branches — every event that moves the
+ * state passes through this. */
 export function applyEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState {
+  const next = foldEvent(prev, event);
+  if (next.state === "idle") {
+    return next.turnStartedAt === null ? next : { ...next, turnStartedAt: null };
+  }
+  return next.turnStartedAt === null ? { ...next, turnStartedAt: Date.now() } : next;
+}
+
+function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState {
   // Shallow copies; the helpers below mutate the copies, never `prev`.
   const s: TranscriptState = {
     ...prev,
@@ -227,7 +255,7 @@ function appendStreaming(s: TranscriptState, delta: string, thinking: boolean): 
   }
   s.entries.push(
     thinking
-      ? { kind: "thinking", text: delta, streaming: true }
+      ? { kind: "thinking", text: delta, streaming: true, at: Date.now() }
       : { kind: "assistant", text: delta, streaming: true, at: Date.now() },
   );
 }
@@ -238,7 +266,10 @@ function settleStreaming(entries: Entry[]): void {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if ((entry.kind === "assistant" || entry.kind === "thinking") && entry.streaming) {
-      entries[i] = { ...entry, streaming: false };
+      entries[i] =
+        entry.kind === "thinking" && entry.at !== undefined
+          ? { ...entry, streaming: false, elapsedMs: Date.now() - entry.at }
+          : { ...entry, streaming: false };
     } else {
       break;
     }
@@ -340,6 +371,53 @@ export function modeLabel(mode: string): string {
   }
 }
 
+/** The words the status line cycles through while a turn is in flight. They
+ * say nothing about what the agent is doing — that is the point: the line is
+ * there to prove the turn is alive, and a rotating word does that without
+ * pretending to narrate work the window can't see. */
+const STATUS_VERBS = [
+  "Thinking",
+  "Pondering",
+  "Musing",
+  "Noodling",
+  "Percolating",
+  "Ruminating",
+  "Cogitating",
+  "Simmering",
+  "Brewing",
+  "Mulling",
+  "Deliberating",
+  "Conjuring",
+  "Tinkering",
+  "Puzzling",
+  "Spelunking",
+  "Marinating",
+  "Churning",
+  "Working",
+];
+
+/** How long one word holds before the next takes over. Slow enough to read,
+ * quick enough that the line never looks frozen. */
+const VERB_HOLD_MS = 3400;
+
+/** Which word the status line is on, `elapsedMs` into a turn that started at
+ * `startedAt`. Derived rather than stored, so every re-render of the same
+ * moment agrees — and seeded off the start stamp so two turns in a row don't
+ * open on the same word. */
+export function statusVerb(startedAt: number, elapsedMs: number): string {
+  const seed = Math.floor(Math.max(0, startedAt) / 1000);
+  const step = Math.floor(Math.max(0, elapsedMs) / VERB_HOLD_MS);
+  return STATUS_VERBS[(seed + step) % STATUS_VERBS.length]!;
+}
+
+/** A turn's age, as the status line writes it: `4s`, then `1m 12s` once
+ * seconds alone stop being readable at a glance. */
+export function elapsedLabel(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
 export function stateLabel(state: TurnState, ended: boolean): string {
   if (ended) return "Ended";
   switch (state) {
@@ -407,13 +485,15 @@ export function normalizeEdit(
   };
 }
 
-/** Strips the `cat -n`-style line-number prefix the `Read` tool's output
- * carries (`"    12\tconst x = 1;"` → `"const x = 1;"`). Left alone when a
- * line doesn't match, so odd output degrades to showing the raw text. */
+/** Strips a leading line-number prefix from the `Read` tool's output —
+ * Claude's own `cat -n` style (`"    12\tconst x = 1;"`) and the `"12: "`
+ * style the harness normalizes opencode's `read` tool down to. Left alone
+ * when a line doesn't match, so odd output degrades to showing the raw
+ * text. */
 export function stripLineNumbers(text: string): string {
   return text
     .split("\n")
-    .map((line) => line.replace(/^\s*\d+\t/, ""))
+    .map((line) => line.replace(/^\s*\d+(?:\t|: )/, ""))
     .join("\n");
 }
 

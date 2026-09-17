@@ -33,6 +33,16 @@ pub fn run() {
         .manage(Mutex::new(pty::Terminals::default()))
         .invoke_handler(commands::handlers())
         .setup(|_app| {
+            // Warm the login-shell environment snapshot off the main thread.
+            // Opening an agent's CLI needs it, and capturing it costs a shell
+            // that sources the user's rc files — a second or more on a busy
+            // profile. Paid here, at launch, it is already cached by the time
+            // anyone clicks "Start"; paid on demand it would be a visible
+            // stall between the dialog and the terminal.
+            std::thread::spawn(|| {
+                let _ = egant_harness::agents::login_shell_env();
+            });
+
             // The window opens transparent (see `tauri.conf.json`); on macOS this
             // paints a real frosted-glass blur of whatever is behind it, which is
             // what makes the transparent stage read as glass instead of a hole.

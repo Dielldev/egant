@@ -92,6 +92,7 @@ pub fn spawn_session(
         branch: branch_of(&cwd),
         started_unix_ms: unix_now_ms(),
         agent,
+        cli_agent: None,
         model: model.clone(),
         context,
         permission_mode: PermissionMode::Auto,
@@ -143,6 +144,86 @@ pub fn spawn_session(
     );
     state.order.push(id);
     state.active_session = Some(id);
+    state.persist_session(id);
+    Ok(id)
+}
+
+/// Opens a session that *is* an agent's own CLI, in the given project.
+///
+/// Nothing is spawned here. A CLI session has no harness, no driver and no
+/// listener — its whole content is a terminal the frontend opens onto the
+/// agent's binary (`pty_spawn_agent`), which is also what lets the process
+/// live and die with the view rather than with this record. What the backend
+/// owns is the row itself: the sidebar entry, the project it belongs to, the
+/// working directory the panel's files and git read from, and the fact that
+/// it survives a relaunch.
+///
+/// The CLI is resolved up front so an agent that isn't installed fails here,
+/// as an error the picker can show, instead of opening an empty terminal
+/// that immediately says "command not found".
+pub fn spawn_cli_session(
+    state: &mut AppState,
+    project_id: usize,
+    agent: &str,
+) -> Result<u64, String> {
+    let launch = egant_harness::catalog::launch(agent)?;
+    let project = state
+        .project(project_id)
+        .cloned()
+        .ok_or_else(|| "unknown project".to_string())?;
+    let cwd = project.fs_path();
+
+    // Numbered per agent, not per project: "Pi CLI" beside "Claude Code CLI"
+    // reads as two different things, which is what they are.
+    let count = state
+        .order
+        .iter()
+        .filter_map(|sid| state.sessions.get(sid))
+        .filter(|session| {
+            session.meta.project_id == project_id
+                && session.meta.cli_agent.as_deref() == Some(launch.id)
+        })
+        .count();
+    let title = if count == 0 {
+        format!("{} CLI", launch.name)
+    } else {
+        format!("{} CLI {}", launch.name, count + 1)
+    };
+
+    let id = state.next_session_id;
+    state.next_session_id += 1;
+
+    let meta = SessionMeta {
+        id,
+        title,
+        project_id,
+        cwd: cwd.clone(),
+        branch: branch_of(&cwd),
+        started_unix_ms: unix_now_ms(),
+        // Placeholder. `cli_agent` is what every reader of a CLI session
+        // actually looks at — see [`crate::state::SessionMeta::cli_agent`].
+        agent: AgentId::from_str(launch.id).unwrap_or(AgentId::Claude),
+        cli_agent: Some(launch.id.to_string()),
+        model: None,
+        context: None,
+        permission_mode: PermissionMode::Auto,
+        // Live for as long as the row exists: "ended" is a statement about a
+        // harness, and there isn't one. The terminal reports its own CLI's
+        // exit, in the terminal, where it happened.
+        ended: false,
+    };
+
+    state.sessions.insert(
+        id,
+        crate::state::ManagedSession {
+            meta,
+            transcript: Transcript::new(),
+            commands: None,
+        },
+    );
+    state.order.push(id);
+    state.active_session = Some(id);
+    state.active_project = Some(project_id);
     state.persist_session(id);
     Ok(id)
 }
@@ -205,16 +286,26 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 let Some(session) = guard.sessions.get_mut(&id) else {
                     break; // the session is gone
                 };
-                let bad_model = harness_event_error_text(&event)
+                let error_text = harness_event_error_text(&event);
+                let bad_model = error_text
                     .filter(|text| looks_like_a_bad_model_error(text))
                     .and_then(|_| session.meta.model.clone())
                     .map(|model| (session.meta.agent, model));
+                // Asking for the million-token window is this app's default,
+                // so a refusal has to teach it something — otherwise every
+                // session with that model would walk into the same wall.
+                let denied_wide_window = error_text
+                    .filter(|text| looks_like_a_long_context_rejection(text))
+                    .and_then(|_| session.meta.model.clone());
                 session.transcript.apply(event);
                 if ended {
                     session.meta.ended = true;
                 }
                 if let Some((agent, model)) = bad_model {
                     guard.mark_model_bad(agent, model);
+                }
+                if let Some(model) = denied_wide_window {
+                    egant_harness::models::deny_wide_context(&model);
                 }
                 if worth_persisting {
                     guard.persist_session(id);
@@ -339,6 +430,17 @@ pub fn send_text(
 ) -> Result<Option<String>, String> {
     if text.trim().is_empty() {
         return Ok(None);
+    }
+    // A CLI session's input goes to its terminal, not through here. Without
+    // this it would look revivable (no command channel) and `revive` would
+    // start a *second*, harness-driven agent behind a view that shows a
+    // terminal — a turn running somewhere the user cannot see.
+    if let Some(session) = state.sessions.get(&id) {
+        if let Some(agent) = &session.meta.cli_agent {
+            return Err(format!(
+                "this session runs the {agent} CLI — type into its terminal instead"
+            ));
+        }
     }
     let needs_revive = state
         .sessions
@@ -561,11 +663,25 @@ fn start_harness(
     let cwd = cwd.to_path_buf();
     match agent {
         AgentId::Claude => {
+            // The big window is the default, not a setting: Claude's larger
+            // models all run at a million tokens when asked (measured — see
+            // `models::claude_models`), and a session that quietly took a
+            // fifth of what the model can hold is the kind of thing nobody
+            // thinks to go and turn on. An explicit choice still wins, which
+            // is the only way to ask for less.
+            let context_window = context.or_else(|| {
+                model
+                    .as_deref()
+                    .and_then(|id| egant_harness::models::max_context(AgentId::Claude, id))
+            });
             let (harness, pump) = ClaudeCode::spawn(ClaudeOptions {
                 program: resolve_cli(agent)?,
                 cwd,
                 model,
                 effort: variant,
+                // Claude takes the wider window as a model-id suffix rather
+                // than a flag; `ClaudeOptions::to_args` applies it.
+                context_window,
                 // Claude judges each action itself, asking through the UI's
                 // permission prompt only when it decides to. Matches Claude
                 // Code Desktop's own default mode.
@@ -660,6 +776,16 @@ fn looks_like_a_bad_model_error(message: &str) -> bool {
     NEEDLES.iter().any(|needle| lower.contains(needle))
 }
 
+/// Whether a turn failed because the model was asked for the million-token
+/// window and this account, model or auth style may not have it. Measured
+/// wording, not a guess: `claude --model claude-haiku-4-5[1m]` answers `API
+/// Error: 400 This authentication style is incompatible with the long context
+/// beta header`. Kept as narrow as the bad-model matcher next to it — a false
+/// positive here silently shrinks a window that was working.
+fn looks_like_a_long_context_rejection(message: &str) -> bool {
+    message.to_lowercase().contains("long context beta")
+}
+
 fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -675,7 +801,10 @@ fn _sender_is_send() {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_title, harness_event_error_text, looks_like_a_bad_model_error};
+    use super::{
+        derive_title, harness_event_error_text, looks_like_a_bad_model_error,
+        looks_like_a_long_context_rejection,
+    };
     use egant_harness::HarnessEvent;
 
     #[test]
@@ -690,6 +819,17 @@ mod tests {
             "The 'gpt-5.4' model is NOT SUPPORTED when using Codex with a ChatGPT account."
         ));
         assert!(looks_like_a_bad_model_error("Model metadata for `gpt-5.4-mini` not found."));
+    }
+
+    #[test]
+    fn a_refused_wide_window_is_recognized_but_is_not_a_bad_model() {
+        const REFUSAL: &str =
+            "API Error: 400 This authentication style is incompatible with the long context beta header.";
+        assert!(looks_like_a_long_context_rejection(REFUSAL));
+        // It says nothing about the model itself, so it must not grey the
+        // model out in the picker.
+        assert!(!looks_like_a_bad_model_error(REFUSAL));
+        assert!(!looks_like_a_long_context_rejection("model_not_found"));
     }
 
     #[test]

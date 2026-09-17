@@ -47,6 +47,13 @@ pub struct ClaudeOptions {
     /// Reasoning effort for the turn (`low`, `medium`, `high`, `xhigh`,
     /// `max`). `None` keeps the CLI default.
     pub effort: Option<String>,
+    /// Context window to run with, in tokens. Claude's CLI has no flag for
+    /// this — it takes the wider window as a suffix on the model id
+    /// (`--model claude-sonnet-5[1m]`), which is why this is applied in
+    /// [`ClaudeOptions::to_args`] rather than pushed as an argument of its
+    /// own. `None`, or anything under a million, leaves the model's standard
+    /// window alone.
+    pub context_window: Option<u64>,
     pub permission_mode: PermissionMode,
     /// Continue an earlier conversation instead of starting fresh.
     pub resume: Option<SessionId>,
@@ -61,6 +68,19 @@ pub struct ClaudeOptions {
     pub extra_args: Vec<String>,
 }
 
+/// The model id as `--model` should receive it: `claude-opus-5` normally,
+/// `claude-opus-5[1m]` when a million-token window was asked for. An id that
+/// already carries a suffix is left exactly as typed — a custom id is the
+/// user's own words, and rewriting it would be guessing.
+fn one_million_suffix(model: &str, context_window: Option<u64>) -> String {
+    let wants_1m = context_window.is_some_and(|tokens| tokens >= 1_000_000);
+    if wants_1m && !model.contains('[') {
+        format!("{model}[1m]")
+    } else {
+        model.to_string()
+    }
+}
+
 impl Default for ClaudeOptions {
     fn default() -> Self {
         Self {
@@ -68,6 +88,7 @@ impl Default for ClaudeOptions {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             model: None,
             effort: None,
+            context_window: None,
             permission_mode: PermissionMode::default(),
             resume: None,
             session_id: None,
@@ -96,7 +117,7 @@ impl ClaudeOptions {
         }
         if let Some(model) = &self.model {
             args.push("--model".into());
-            args.push(model.clone());
+            args.push(one_million_suffix(model, self.context_window));
         }
         if let Some(effort) = &self.effort {
             args.push("--effort".into());
@@ -578,6 +599,38 @@ mod tests {
         let args = options.to_args();
         let index = args.iter().position(|a| a == "--effort").unwrap();
         assert_eq!(args[index + 1], "xhigh");
+    }
+
+    #[test]
+    fn million_token_context_becomes_a_model_suffix() {
+        let options = ClaudeOptions {
+            model: Some("claude-sonnet-5".into()),
+            context_window: Some(1_000_000),
+            ..Default::default()
+        };
+        let args = options.to_args();
+        let index = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(args[index + 1], "claude-sonnet-5[1m]");
+
+        // The standard window is the CLI's own default — no suffix, no flag.
+        let standard = ClaudeOptions {
+            model: Some("claude-sonnet-5".into()),
+            context_window: Some(200_000),
+            ..Default::default()
+        };
+        let args = standard.to_args();
+        let index = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(args[index + 1], "claude-sonnet-5");
+
+        // An id that already asks for it isn't asked twice.
+        let explicit = ClaudeOptions {
+            model: Some("claude-opus-5[1m]".into()),
+            context_window: Some(1_000_000),
+            ..Default::default()
+        };
+        let args = explicit.to_args();
+        let index = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(args[index + 1], "claude-opus-5[1m]");
     }
 
     #[test]

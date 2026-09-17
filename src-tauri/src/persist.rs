@@ -106,6 +106,11 @@ pub struct PersistedMeta {
     pub branch: Option<String>,
     pub started_unix_ms: u64,
     pub agent: AgentId,
+    /// Catalog id when this session runs the agent's own CLI in a terminal.
+    /// `#[serde(default)]` so sessions written before CLI sessions existed
+    /// still load — they are all chat sessions.
+    #[serde(default)]
+    pub cli_agent: Option<String>,
     pub model: Option<String>,
     pub context: Option<u64>,
     pub permission_mode: PermissionMode,
@@ -236,6 +241,7 @@ mod tests {
             branch: Some("main".into()),
             started_unix_ms: 12345,
             agent: AgentId::Claude,
+            cli_agent: None,
             model: Some("sonnet".into()),
             context: None,
             permission_mode: PermissionMode::Auto,
@@ -252,6 +258,41 @@ mod tests {
         assert_eq!(back.meta.title, meta.title);
         assert_eq!(back.transcript.session_id, transcript.session_id);
         assert_eq!(back.transcript.entries.len(), transcript.entries.len());
+    }
+
+    /// Every session on disk today predates `cli_agent`. Loading one has to
+    /// go on working, as the chat session it is — which is what the field's
+    /// `#[serde(default)]` buys, and what would silently break without it.
+    #[test]
+    fn a_session_written_before_cli_sessions_still_loads_as_chat() {
+        let meta = PersistedMeta {
+            id: 3,
+            title: "Old session".into(),
+            project_path: PathBuf::from("/tmp/project"),
+            cwd: PathBuf::from("/tmp/project"),
+            branch: None,
+            started_unix_ms: 1,
+            agent: AgentId::Claude,
+            cli_agent: None,
+            model: None,
+            context: None,
+            permission_mode: PermissionMode::Auto,
+        };
+        let mut value = serde_json::to_value(&PersistedSession {
+            meta,
+            transcript: Transcript::new(),
+        })
+        .expect("serializes");
+        // Exactly what an older egant wrote: the key simply isn't there.
+        value["meta"]
+            .as_object_mut()
+            .expect("meta is an object")
+            .remove("cli_agent")
+            .expect("the field was written");
+
+        let back: PersistedSession = serde_json::from_value(value).expect("deserializes");
+        assert_eq!(back.meta.cli_agent, None);
+        assert_eq!(back.meta.agent, AgentId::Claude);
     }
 
     #[test]

@@ -18,7 +18,13 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
   const active = snapshot?.sessions.find((s) => s.id === snapshot?.activeSession);
   const project = snapshot?.projects.find((p) => p.id === active?.projectId);
   const agents = useEgant((s) => s.agents);
+  const catalog = useEgant((s) => s.catalog);
   const sidebarVisible = snapshot?.sidebarVisible ?? true;
+  // The catalog names every agent, including the ones with no harness behind
+  // them; `agentName` alone would print a bare `goose` for a CLI session.
+  const agentLabel = active?.agent
+    ? (catalog.find((c) => c.id === active.agent)?.name ?? agentName(agents, active.agent))
+    : "";
 
   return (
     <div className="flex w-full shrink-0 flex-col">
@@ -44,7 +50,8 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
           {project && (
             <span className="min-w-0 flex-1 truncate text-xs text-[var(--faint)]">
               {project.name} @ {snapshot?.machineName ?? ""}
-              {active?.agent && ` · ${agentName(agents, active.agent)}`}
+              {agentLabel !== "" &&
+                ` · ${agentLabel}${active?.kind === "cli" ? " CLI" : ""}`}
             </span>
           )}
           {active?.busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}

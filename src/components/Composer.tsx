@@ -1,12 +1,13 @@
-import { ArrowUp, Paperclip, Square, TriangleAlert } from "lucide-react";
+import { ArrowUp, Paperclip, Square, TerminalSquare, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { pickAttachments } from "../lib/api";
 import { formatContext } from "../lib/types";
 import { prettyClaudeModelId } from "../lib/transcript";
-import { selectNextAgent, useEgant } from "../store";
+import { selectNextAgent, useEgant, usesChatUi } from "../store";
 import { AGENT_ACCENT, AGENT_PROVIDER, AgentPicker, agentName } from "./AgentPicker";
 import { ModeInfo } from "./ModeInfo";
 import { ProviderGlyph } from "./ProviderLogo";
+import { UsageMeter } from "./UsageMeter";
 
 /** The one control that drives the window, in the two shapes it takes.
  *
@@ -34,6 +35,11 @@ export function Composer({
   const openSettings = useEgant((s) => s.openSettings);
   const snapshot = useEgant((s) => s.snapshot);
   const composerAgentPick = useEgant((s) => s.composerAgent);
+  const claudeUsage = useEgant((s) => s.claudeUsage);
+  const fetchClaudeUsage = useEgant((s) => s.fetchClaudeUsage);
+  const catalog = useEgant((s) => s.catalog);
+  const chatUiAgents = useEgant((s) => s.chatUiAgents);
+  const askCliLaunch = useEgant((s) => s.askCliLaunch);
 
   const [text, setText] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -91,16 +97,47 @@ export function Composer({
   // silently promising a model this device isn't actually logged into.
   const nextAgentId = sessionId == null ? selectNextAgent(snapshot, composerAgentPick) : null;
   const nextAgentStatus = nextAgentId ? agents.find((a) => a.id === nextAgentId) : undefined;
+  // The agent the next session would start *as a CLI* rather than as chat —
+  // either one egant has no harness for, or one whose chat UI the picker's
+  // toggle has been turned off for. There is no message to compose for it:
+  // its own prompt is the composer, so this box hands over to the terminal
+  // instead of pretending it will send something.
+  const cliAgent =
+    nextAgentId && !usesChatUi(catalog, chatUiAgents, nextAgentId) ? nextAgentId : null;
   const connectionNotice =
-    nextAgentStatus == null
-      ? null
+    nextAgentStatus == null || cliAgent != null
+      ? // A CLI-only agent has no login state egant tracks (`pi` is never
+        // "connected"), so the sign-in warning would be permanent and wrong.
+        // Whether the binary is there is the launch dialog's business.
+        null
       : !nextAgentStatus.installed
         ? `${nextAgentStatus.name} isn't installed on this device.`
         : !nextAgentStatus.connected
           ? `${nextAgentStatus.name} isn't connected on this device — sign in before sending.`
           : null;
+  const cliAgentName = cliAgent
+    ? (catalog.find((c) => c.id === cliAgent)?.name ?? agentName(agents, cliAgent))
+    : "";
+
+  // Only Claude has a usage endpoint to poll. Fetches once whenever the
+  // composer starts pointing at Claude (a fresh launch screen, a switch in
+  // the picker, or an existing Claude session mounting), then every five
+  // minutes while it keeps pointing there — same cadence community
+  // status-line tools use to avoid hammering the endpoint.
+  const claudeActive = (sessionId == null ? nextAgentId : agent) === "claude";
+  useEffect(() => {
+    if (!claudeActive) return;
+    void fetchClaudeUsage();
+    const timer = setInterval(() => void fetchClaudeUsage(), 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [claudeActive, fetchClaudeUsage]);
 
   const submit = () => {
+    // In CLI mode the button is the way into the terminal, not a send.
+    if (cliAgent) {
+      askCliLaunch(cliAgent);
+      return;
+    }
     if (!hasText || ended) return;
     if (hero || sessionId == null) void sendOnLaunch(text);
     else void send(sessionId, text);
@@ -121,7 +158,7 @@ export function Composer({
       ref={areaRef}
       value={text}
       rows={hero ? 3 : 1}
-      disabled={ended}
+      disabled={ended || cliAgent != null}
       onChange={(e) => setText(e.target.value)}
       onKeyDown={(e) => {
         // Plain Enter sends without inserting a newline; shift-Enter still
@@ -131,18 +168,23 @@ export function Composer({
           submit();
         }
       }}
-      placeholder="Do anything…"
+      placeholder={
+        cliAgent ? `${cliAgentName} runs in its own terminal` : "Do anything…"
+      }
       className="max-h-[240px] w-full resize-none bg-transparent text-sm leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--faint)] disabled:opacity-50"
     />
   );
 
   const picker =
     sessionId == null ? (
+      // Nothing to meter before a session exists — the launch screen offers
+      // only the agent/model pick, same as Claude Code Desktop's own.
       <AgentPicker />
     ) : (
       // The agent is fixed once a session starts, so this is a plain label —
-      // the mode pill beside it is the only interactive control here now.
-      <div className="flex min-w-0 max-w-[300px] items-center gap-1">
+      // the mode pill and the usage meter are the only interactive controls
+      // here now.
+      <div className="flex min-w-0 max-w-[340px] items-center gap-1">
         <span
           title={`${agentDisplay} session`}
           className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs"
@@ -158,6 +200,13 @@ export function Composer({
           )}
         </span>
         {agent != null && <ModeInfo sessionId={sessionId} agent={agent} mode={mode} />}
+        {transcript && (
+          <UsageMeter
+            usage={transcript.usage}
+            costUsd={transcript.totalCostUsd}
+            claudeUsage={claudeActive ? claudeUsage : null}
+          />
+        )}
       </div>
     );
 
@@ -183,18 +232,24 @@ export function Composer({
           <Square size={12} strokeWidth={2} fill="currentColor" />
         </button>
       ) : (
-        // Always there, visibly inert until the message is worth sending.
+        // Always there, visibly inert until the message is worth sending —
+        // except in CLI mode, where it is always live, because opening the
+        // terminal needs no message.
         <button
           type="button"
-          title="Send · ⏎"
+          title={cliAgent ? `Open the ${cliAgentName} CLI` : "Send · ⏎"}
           onClick={submit}
           className={`flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full hover:opacity-85 ${
-            hasText && !ended
+            cliAgent || (hasText && !ended)
               ? "bg-[#f2f2f5] text-[#0c0c0e]"
               : "bg-[rgba(255,255,255,0.1)] text-[var(--faint)]"
           }`}
         >
-          <ArrowUp size={16} strokeWidth={2.5} />
+          {cliAgent ? (
+            <TerminalSquare size={15} strokeWidth={2.5} />
+          ) : (
+            <ArrowUp size={16} strokeWidth={2.5} />
+          )}
         </button>
       )}
     </>

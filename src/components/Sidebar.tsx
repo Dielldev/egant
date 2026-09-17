@@ -1,4 +1,4 @@
-import { Check, GitBranch, ListFilter, Search, X } from "lucide-react";
+import { Check, GitBranch, ListFilter, Search, TerminalSquare, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ageLabel } from "../lib/transcript";
 import { shouldOpenUpward } from "../lib/popover";
@@ -17,6 +17,7 @@ import { WindowBar } from "./WindowBar";
 export function Sidebar() {
   const snapshot = useEgant((s) => s.snapshot);
   const agents = useEgant((s) => s.agents);
+  const catalog = useEgant((s) => s.catalog);
   const filter = useEgant((s) => s.filter);
   const filterOpen = useEgant((s) => s.filterOpen);
   const setFilter = useEgant((s) => s.setFilter);
@@ -127,8 +128,14 @@ export function Sidebar() {
     selected: session.id === snapshot?.activeSession,
     busy: session.busy,
     agent: session.agent,
+    cli: session.kind === "cli",
     branch: sidebarShowBranch ? session.branch : null,
-    harnessLabel: sidebarShowHarness ? agentName(agents, session.agent) : null,
+    // The catalog knows every agent's display name; the harness registry
+    // only knows the ones it can drive, and would print a bare `goose`.
+    harnessLabel: sidebarShowHarness
+      ? (catalog.find((c) => c.id === session.agent)?.name ??
+        agentName(agents, session.agent))
+      : null,
     onClick: () => void selectSession(session.id),
     onClose: () => void closeSession(session.id),
   });
@@ -340,6 +347,7 @@ function SessionRow({
   selected,
   busy,
   agent,
+  cli,
   branch,
   harnessLabel,
   onClick,
@@ -351,6 +359,8 @@ function SessionRow({
   selected: boolean;
   busy: boolean;
   agent: string;
+  /** This session is the agent's own CLI in a terminal, not a chat. */
+  cli?: boolean;
   branch?: string | null;
   harnessLabel?: string | null;
   onClick: () => void;
@@ -406,6 +416,15 @@ function SessionRow({
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
           {title}
         </span>
+        {/* Two rows can otherwise look identical — same agent, same project —
+          while one is a transcript and the other a live terminal. */}
+        {cli && (
+          <TerminalSquare
+            size={11}
+            strokeWidth={2}
+            className="shrink-0 text-[var(--faint)]"
+          />
+        )}
       </span>
     </div>
   );

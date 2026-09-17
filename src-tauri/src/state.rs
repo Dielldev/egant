@@ -30,6 +30,16 @@ pub struct SessionMeta {
     /// Which agent runs this session. Fixed at creation: switching mid-stream
     /// would orphan the backend's own session on the other CLI.
     pub agent: AgentId,
+    /// Set when this session is the agent's *own* CLI running in a terminal
+    /// rather than a harness feeding the chat UI, holding the install
+    /// catalog's id for it (`pi`, `goose`, `claude`, …).
+    ///
+    /// A separate field rather than a flag on `agent` because the catalog is
+    /// wider than [`AgentId`]: egant can open a terminal onto any CLI it
+    /// knows how to find, including the two dozen it has no harness for. For
+    /// those, `agent` is only a placeholder — nothing reads it, because
+    /// nothing drives a CLI session's turns.
+    pub cli_agent: Option<String>,
     /// Model override requested at creation (`--model`/`-m`). `None` keeps
     /// the CLI default.
     pub model: Option<String>,
@@ -110,6 +120,7 @@ impl AppState {
                 branch: persisted.meta.branch,
                 started_unix_ms: persisted.meta.started_unix_ms,
                 agent: persisted.meta.agent,
+                cli_agent: persisted.meta.cli_agent,
                 model: persisted.meta.model,
                 context: persisted.meta.context,
                 permission_mode: persisted.meta.permission_mode,
@@ -190,6 +201,7 @@ impl AppState {
             branch: session.meta.branch.clone(),
             started_unix_ms: session.meta.started_unix_ms,
             agent: session.meta.agent,
+            cli_agent: session.meta.cli_agent.clone(),
             model: session.meta.model.clone(),
             context: session.meta.context,
             permission_mode: session.meta.permission_mode,
@@ -327,7 +339,15 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
         branch: meta.branch.clone(),
         started_unix_ms: meta.started_unix_ms,
         permission_mode: permission_mode_name(meta.permission_mode),
-        agent: meta.agent.as_str().to_string(),
+        // A CLI session names the catalog agent it opened, which is often
+        // one `AgentId` has no variant for; everything downstream (the
+        // sidebar glyph, the header's label) keys off this string, so it is
+        // the one place the two registries have to agree.
+        kind: if meta.cli_agent.is_some() { "cli" } else { "chat" },
+        agent: meta
+            .cli_agent
+            .clone()
+            .unwrap_or_else(|| meta.agent.as_str().to_string()),
         model_override: meta.model.clone(),
         context: meta.context,
         ended: meta.ended,

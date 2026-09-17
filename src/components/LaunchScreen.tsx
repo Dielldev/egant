@@ -8,7 +8,7 @@ import { ProjectMenu } from "./ProjectMenu";
  * screen of its own — it is the conversation with nothing in it yet, which is
  * why the header, the tab strip and the wallpaper around it belong to the
  * stage in `App` rather than to this. */
-export function LaunchScreen() {
+export function LaunchScreen({ exiting }: { exiting?: boolean }) {
   const machine = useEgant((s) => s.snapshot?.machineName ?? "");
 
   return (
@@ -16,7 +16,7 @@ export function LaunchScreen() {
       className="flex min-h-0 flex-1 flex-col items-center px-6"
       style={{ paddingTop: "32vh" }}
     >
-      <div className="rise w-full max-w-[735px]">
+      <div className={`w-full max-w-[735px] ${exiting ? "dock-exit" : "rise"}`}>
         {/* Where the next turn will run, right-aligned to the composer it
           belongs to. Deliberately unpositioned (no z-index of its own):
           the composer below establishes its own stacking context (its

@@ -9,12 +9,12 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
-    ChangeDto, DiffHunkDto, DiffLineDto, RepoStatusDto, StateDto, TranscriptDto,
+    ChangeDto, ClaudeUsageDto, DiffHunkDto, DiffLineDto, RepoStatusDto, StateDto, TranscriptDto,
 };
 use crate::sessions;
 use crate::settings::{SettingsDto, is_supported_image};
 use crate::state::AppState;
-use egant_harness::{AgentId, AgentModel, AgentStatus};
+use egant_harness::{AgentId, AgentModel, AgentStatus, CatalogStatus, InstallOutcome, UpdateInfo};
 
 type BackendState<'a> = State<'a, Mutex<AppState>>;
 
@@ -98,6 +98,22 @@ fn create_session(
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
     sessions::spawn_session(&app, &mut guard, project, requested, model, variant, context)?;
+    Ok(guard.snapshot())
+}
+
+/// Opens a session that runs `agent`'s own CLI in a terminal instead of
+/// driving it through a harness — the only way to reach the agents egant has
+/// no harness for, and the opt-out for the three it does.
+///
+/// Errors when the CLI isn't installed, so the picker can say which agent
+/// and why rather than opening a terminal onto "command not found".
+#[tauri::command]
+fn create_cli_session(state: BackendState<'_>, agent: String) -> Result<StateDto, String> {
+    let mut guard = state.lock().unwrap();
+    let Some(project) = guard.active_project else {
+        return Err("open a folder first".to_string());
+    };
+    sessions::spawn_cli_session(&mut guard, project, &agent)?;
     Ok(guard.snapshot())
 }
 
@@ -238,10 +254,15 @@ fn list_agents() -> Vec<AgentStatus> {
 /// Accounts calls this on open, on "Refresh", and while polling after
 /// "Add account" — never the composer's hot paths, which stay on the cheap
 /// presence-based `list_agents`.
+/// Spawns the CLI's own status command, so it runs off the command thread —
+/// a plain `fn` command is executed on the main thread, where a slow CLI
+/// freezes the whole window until it answers.
 #[tauri::command]
-fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
+async fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
-    Ok(egant_harness::agents::verify_agent(id))
+    tauri::async_runtime::spawn_blocking(move || egant_harness::agents::verify_agent(id))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Starts an agent's sign-in flow (a browser OAuth tab, or a Terminal window
@@ -250,16 +271,93 @@ fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
 #[tauri::command]
 fn connect_agent(agent: String) -> Result<(), String> {
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
+    // A new login can change what the account is allowed to run (Codex asks
+    // the signed-in account for its catalog), so the cached one is dropped
+    // rather than served to the picker for the rest of its lifetime.
+    egant_harness::models::invalidate_models(id);
     egant_harness::agents::connect(id)
 }
 
-/// The models one agent can run. opencode answers live from its own
-/// catalog; Codex and Claude serve curated lists. Slow enough (one CLI
-/// spawn) to call on picker open rather than on snapshot.
+/// Every coding-agent CLI the Agents tab lists, with whether this machine
+/// already has it. A filesystem probe like `list_agents`, just over the wider
+/// install catalog rather than only the agents egant can drive.
+///
+/// Async despite being "just" a filesystem probe: resolving a CLI can fall
+/// through to the login-shell `PATH` snapshot, which spawns a shell and
+/// waits up to six seconds the first time. On the command thread that is a
+/// frozen window.
 #[tauri::command]
-fn list_models(agent: String) -> Result<Vec<AgentModel>, String> {
+async fn list_agent_catalog() -> Result<Vec<CatalogStatus>, String> {
+    tauri::async_runtime::spawn_blocking(egant_harness::catalog::list)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Run one catalog entry's own install command. The command comes from the
+/// backend's table, never from the caller — the frontend sends an agent id
+/// and nothing else. Slow (a network install), so it runs off the command
+/// thread; the outcome carries the re-probed row, so the tab can flip the
+/// badge without a second round trip.
+#[tauri::command]
+async fn install_agent(agent: String, method: Option<String>) -> Result<InstallOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_harness::catalog::install(&agent, method.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// "Install latest": the same source's update command for an agent that is
+/// already here but behind its published release. Separate from
+/// `install_agent` because for a package manager the two differ — re-running
+/// a bare `npm install -g <pkg>` on a machine that already has it is a
+/// no-op.
+#[tauri::command]
+async fn update_agent(agent: String, method: Option<String>) -> Result<InstallOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_harness::catalog::update(&agent, method.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Whether an installed agent's CLI is behind its published release. Two
+/// spawns and a network lookup, so the tab calls it per installed agent in
+/// the background rather than as part of `list_agent_catalog`.
+#[tauri::command]
+async fn check_agent_update(agent: String) -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || egant_harness::catalog::check_update(&agent))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The models one agent can run. opencode answers live from its own catalog
+/// and Codex asks the signed-in account for its; both cost a CLI spawn, which
+/// is why this is `async` + `spawn_blocking` rather than a plain `fn`: a
+/// synchronous Tauri command runs on the main thread, so the old version
+/// stalled the entire window — every paint, every keystroke — for as long as
+/// `opencode models --verbose` or `codex app-server` took to answer. The
+/// catalog itself is cached in-process for ten minutes (see
+/// `models::list_models`), so repeat calls don't spawn anything at all.
+#[tauri::command]
+async fn list_models(agent: String) -> Result<Vec<AgentModel>, String> {
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
-    egant_harness::models::list_models(id)
+    tauri::async_runtime::spawn_blocking(move || egant_harness::models::list_models(id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Claude's 5-hour and weekly usage, for the composer's limit pill. `Ok(None)`
+/// means Claude isn't logged in on this device — the composer just hides the
+/// pill rather than treating it as an error. A network call, so it runs off
+/// the command thread the same way the git remote ops do.
+#[tauri::command]
+async fn claude_usage_limits() -> Result<Option<ClaudeUsageDto>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        egant_harness::usage_limits::fetch().map(|usage| usage.map(ClaudeUsageDto::from))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// The wallpaper as a data URL for an `<img>` tag. Reading it here (rather
@@ -597,6 +695,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         toggle_sidebar,
         clear_active_project,
         create_session,
+        create_cli_session,
         select_session,
         close_session,
         send_message,
@@ -610,9 +709,14 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         cycle_dim,
         set_default_agent,
         list_agents,
+        list_agent_catalog,
+        install_agent,
+        update_agent,
+        check_agent_update,
         check_agent_login,
         connect_agent,
         list_models,
+        claude_usage_limits,
         wallpaper_data_url,
         sync_window_appearance,
         crate::files::list_dir,
@@ -624,6 +728,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::github::open_url,
         crate::files::read_file,
         crate::pty::pty_spawn,
+        crate::pty::pty_spawn_agent,
         crate::pty::pty_write,
         crate::pty::pty_resize,
         crate::pty::pty_kill,

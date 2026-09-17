@@ -29,17 +29,42 @@ interface LiveTerminal {
 
 const live = new Map<string, LiveTerminal>();
 
-/** Tears down the terminals whose tabs are gone. The store has already killed
- * their shells; this is the frontend half — the xterm instances themselves. */
+/** Key a CLI session's terminal is registered under. Prefixed so a session
+ * and a panel tab can never collide in the one shared registry. */
+export function cliTerminalKey(sessionId: number): string {
+  return `cli:${sessionId}`;
+}
+
+/** Tears down the terminals whose *panel tabs* are gone. The store has already
+ * killed their shells; this is the frontend half — the xterm instances
+ * themselves. CLI sessions are skipped: they are keyed into the same registry
+ * but their lifetime is a session's, not a panel tab's, and closing the Files
+ * tab must not kill an agent running on the stage. */
 export function disposeTerminalsExcept(ids: string[]): void {
   const keep = new Set(ids);
   for (const [id, entry] of live) {
-    if (keep.has(id)) continue;
-    for (const off of entry.unlisten) off();
-    entry.term.dispose();
-    entry.host.remove();
-    live.delete(id);
+    if (id.startsWith("cli:") || keep.has(id)) continue;
+    dispose(id, entry, false);
   }
+}
+
+/** The same for CLI sessions, given the ids of the ones still open. Unlike a
+ * panel tab, nothing else has ended these processes — closing a CLI session
+ * removes the row and this is what stops the agent it was running. */
+export function disposeCliTerminals(liveSessionIds: number[]): void {
+  const keep = new Set(liveSessionIds.map(cliTerminalKey));
+  for (const [id, entry] of live) {
+    if (!id.startsWith("cli:") || keep.has(id)) continue;
+    dispose(id, entry, true);
+  }
+}
+
+function dispose(id: string, entry: LiveTerminal, killPty: boolean): void {
+  if (killPty && entry.ptyId != null) void api.ptyKill(entry.ptyId).catch(() => {});
+  for (const off of entry.unlisten) off();
+  entry.term.dispose();
+  entry.host.remove();
+  live.delete(id);
 }
 
 /** xterm's palette, read from the app's own CSS variables so the shell sits in
@@ -72,16 +97,27 @@ function refit(entry: LiveTerminal): void {
   }
 }
 
-/** One terminal tab's shell. `active` is how the panel hides a tab without
- * unmounting it. */
+/** One terminal tab's shell — or, with `agent` set, one agent's own CLI.
+ *
+ * The two are the same terminal: the only difference is what gets spawned on
+ * the other end of the PTY, which is why a CLI session gets the scrollback
+ * retention, the theming, the resize handling and the restart button for
+ * free. `active` is how the panel hides a tab without unmounting it. */
 export function TerminalPane({
   tabId,
   cwd,
   active,
+  agent,
+  label,
 }: {
   tabId: string;
   cwd: string;
   active: boolean;
+  /** Catalog id of an agent CLI to run instead of the user's shell. */
+  agent?: string;
+  /** What to call the process when it exits ("Claude Code", "Pi"). Defaults
+   * to the shell, which is what a plain panel terminal runs. */
+  label?: string;
 }) {
   const mount = useRef<HTMLDivElement>(null);
   const attachPty = useEgant((s) => s.attachPty);
@@ -89,13 +125,16 @@ export function TerminalPane({
   const appearance = useEgant((s) => s.appearance);
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const name = label ?? "shell";
 
   /** Opens a PTY for an already-wired terminal and flushes whatever its shell
    * said before the id came back. Safe to call again on restart: the terminal
    * itself is wired once, at creation. */
   async function spawn(entry: LiveTerminal): Promise<void> {
     try {
-      const ptyId = await api.ptySpawn(cwd, entry.term.cols, entry.term.rows);
+      const ptyId = agent
+        ? await api.ptySpawnAgent(cwd, agent, entry.term.cols, entry.term.rows)
+        : await api.ptySpawn(cwd, entry.term.cols, entry.term.rows);
       entry.ptyId = ptyId;
       attachPty(tabId, ptyId);
       for (const payload of entry.pending) {
@@ -162,7 +201,7 @@ export function TerminalPane({
         created.unlisten.push(
           await listen<PtyExit>("pty-exit", ({ payload }) => {
             if (payload.id !== created.ptyId) return;
-            created.term.write("\r\n\x1b[2m[shell exited]\x1b[0m\r\n");
+            created.term.write(`\r\n\x1b[2m[${name} exited]\x1b[0m\r\n`);
             created.ptyId = null;
             markPtyExited(payload.id);
             setExited(true);
@@ -224,7 +263,9 @@ export function TerminalPane({
       )}
       {exited && !error && (
         <div className="flex shrink-0 items-center gap-2 px-2.5 pb-2 text-[11px] text-[var(--faint)]">
-          <span className="min-w-0 flex-1 truncate">Shell exited</span>
+          <span className="min-w-0 flex-1 truncate">
+            {name.charAt(0).toUpperCase() + name.slice(1)} exited
+          </span>
           <button
             type="button"
             onClick={restart}

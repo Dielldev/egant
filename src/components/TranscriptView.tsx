@@ -1,12 +1,12 @@
-import { Check, ChevronDown, ChevronRight, Copy, FolderOpen, Sparkles } from "lucide-react";
+import { Check, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { emptyUsage, permissionSummary, timeLabel, truncate } from "../lib/transcript";
+import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
 import type { Entry, PendingPermission } from "../lib/types";
 import { useEgant } from "../store";
 import { Composer } from "./Composer";
-import { ContextMeter } from "./ContextMeter";
 import { Markdown } from "./Markdown";
-import { ToolCard } from "./ToolCards";
+import { StatusLine } from "./StatusLine";
+import { groupEntries, ReadGroupCard, ToolCard } from "./ToolCards";
 
 /** The stage's content: the conversation, and the composer that drives it.
  * Reads the active session's transcript mirror on render, which is what makes
@@ -27,26 +27,29 @@ export function TranscriptView() {
   const stickRef = useRef(true);
 
   const transcript = activeId != null ? transcripts[activeId] : undefined;
-  const entries = transcript?.entries ?? [];
+  // Reasoning is dropped rather than drawn. The status line at the tail
+  // already says the turn is thinking, and once the answer is there a
+  // scrollback of settled "Thought for 4s" rows is just noise between the
+  // things that actually happened. Filtered here rather than in `RenderEntry`
+  // so the grouping below never sees one either — an entry that renders
+  // nothing would still split two neighbouring Reads into separate cards, for
+  // a reason invisible on screen.
+  const entries = (transcript?.entries ?? []).filter((entry) => entry.kind !== "thinking");
   const pending = transcript?.pending;
 
-  // The gap between "user hit send" and the first delta/tool call has no
-  // entry to show yet — a dedicated indicator fills it instead of leaving
-  // the transcript looking stalled.
-  const lastEntry = entries[entries.length - 1];
-  const awaitingFirstToken =
-    transcript?.state === "running" &&
-    !pending &&
-    !(lastEntry?.kind === "assistant" && lastEntry.streaming) &&
-    !(lastEntry?.kind === "thinking" && lastEntry.streaming) &&
-    !(lastEntry?.kind === "tool" && lastEntry.output == null);
+  // The status line at the tail of the transcript covers the whole turn — the
+  // gap before the first token included — so there is never a stretch of the
+  // wait with nothing on screen accounting for it.
+  const busy = transcript?.state === "running" || transcript?.state === "awaiting_permission";
 
   // Stay pinned to the bottom while the user is already there; never yank them
-  // back once they scroll up to read.
+  // back once they scroll up to read. Deliberately every render rather than on
+  // a dependency list: a streaming reply grows the column without changing the
+  // entry count, and the status line trailing it has to stay in view too.
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [entries.length, pending, transcript?.state, activeId]);
+  });
 
   if (!snapshot) return <div className="size-full" />;
 
@@ -71,13 +74,17 @@ export function TranscriptView() {
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        className="flex flex-1 items-start justify-center overflow-y-auto px-6 pt-4 pb-2"
+        className="rise flex flex-1 items-start justify-center overflow-y-auto px-6 pt-4 pb-2"
+        style={{ animationDelay: "90ms" }}
       >
         <div className="flex w-full max-w-[735px] flex-col gap-5">
-          {entries.map((entry, index) => (
-            <RenderEntry key={index} entry={entry} />
-          ))}
-          {awaitingFirstToken && <ThinkingIndicator />}
+          {groupEntries(entries).map((item) =>
+            item.kind === "read-group" ? (
+              <ReadGroupCard key={item.index} entries={item.entries} />
+            ) : (
+              <RenderEntry key={item.index} entry={item.entry} />
+            ),
+          )}
           {pending && (
             <PermissionCard
               pending={pending}
@@ -85,10 +92,19 @@ export function TranscriptView() {
               onDeny={() => void answerPermission(active.id, false)}
             />
           )}
+          {/* Trailing the transcript, the way Claude Code puts it: directly
+            under the text still being generated rather than docked to the
+            composer. The pull-up trims the column's own gap so it reads as
+            part of the reply above it, not as a separate block. */}
+          {busy && transcript && (
+            <div className="-mt-2.5">
+              <StatusLine state={transcript.state} startedAt={transcript.turnStartedAt} />
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="flex w-full shrink-0 flex-col items-center px-6 pb-2">
+      <div className="rise flex w-full shrink-0 flex-col items-center px-6 pb-2">
         <div className="flex w-full max-w-[735px] flex-col">
           {error && (
             <button
@@ -101,14 +117,6 @@ export function TranscriptView() {
             </button>
           )}
           <Composer sessionId={active.id} />
-          {/* The one thing the old status bar carried that the window still
-            needs: how much room is left in the conversation. */}
-          <div className="flex h-[22px] w-full items-center justify-end pr-1">
-            <ContextMeter
-              usage={transcript?.usage ?? emptyUsage()}
-              costUsd={transcript?.totalCostUsd ?? 0}
-            />
-          </div>
         </div>
       </div>
     </div>
@@ -176,8 +184,11 @@ function RenderEntry({ entry }: { entry: Entry }) {
         </div>
       );
 
+    // Never reached — `TranscriptView` filters these out before grouping. The
+    // case stays so the switch is still exhaustive over `Entry`, and so the
+    // next person sees where reasoning went.
     case "thinking":
-      return <ThinkingEntry entry={entry} />;
+      return null;
 
     case "tool":
       return <ToolCard entry={entry} />;
@@ -195,54 +206,6 @@ function RenderEntry({ entry }: { entry: Entry }) {
         </div>
       );
   }
-}
-
-/** A collapsible "Thinking" block. Opens on its own while the model is
- * actively reasoning, then stays wherever the user leaves it once the block
- * settles — no auto-collapse timer, just a toggle. */
-function ThinkingEntry({ entry }: { entry: Extract<Entry, { kind: "thinking" }> }) {
-  const [expanded, setExpanded] = useState(entry.streaming);
-
-  return (
-    <div className="flex w-full flex-col gap-1">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--faint)]"
-      >
-        <Sparkles size={12} strokeWidth={2} />
-        <span>{entry.streaming ? "Thinking…" : "Thinking"}</span>
-        {expanded ? (
-          <ChevronDown size={12} strokeWidth={2} />
-        ) : (
-          <ChevronRight size={12} strokeWidth={2} />
-        )}
-      </button>
-      {expanded && (
-        <div className="w-full pl-[18px] text-xs leading-5 whitespace-pre-wrap text-[var(--faint)] italic">
-          {entry.streaming ? `${entry.text}▌` : entry.text}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Fills the gap between "user hit send" and the first token or tool call —
- * otherwise the transcript looks stalled with no feedback at all. */
-function ThinkingIndicator() {
-  return (
-    <div className="flex items-center gap-1 px-0.5">
-      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--busy)]" />
-      <span
-        className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--busy)]"
-        style={{ animationDelay: "0.15s" }}
-      />
-      <span
-        className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--busy)]"
-        style={{ animationDelay: "0.3s" }}
-      />
-    </div>
-  );
 }
 
 /** Confirms in place rather than with a toast: the check is where the click

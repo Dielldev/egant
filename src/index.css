@@ -371,15 +371,14 @@ html[data-glass="clear"] .stage-glass {
   background: color-mix(in srgb, var(--stage) 5%, transparent);
 }
 
-/* No Glass: the stage goes fully solid (the IDE look). Sidebar, composer
- * and menus intentionally stay frosted glass, exactly as before. */
+/* No Glass: the stage goes fully solid (the IDE look). The sidebar and
+ * composer intentionally stay frosted glass, exactly as before; menus are
+ * opaque everywhere. */
 
-/* Clear: composer and menus go extra translucent to match the stage. */
+/* Clear: the composer goes extra translucent to match the stage. Menus
+ * deliberately don't follow it — see `.menu`. */
 html[data-glass="clear"] .composer {
   background: rgba(22, 22, 27, 0.38);
-}
-html[data-glass="clear"] .menu {
-  background: rgba(20, 20, 24, 0.72);
 }
 
 /* The launch-screen wallpaper's entrance: a slow dissolve in rather than a
@@ -531,14 +530,17 @@ input {
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-/* Popovers hanging off the sidebar header and the composer's chips. The
- * model picker is fully opaque (not frosted-translucent) so launch-screen
- * labels can never bleed through it — that was the overlap in the bugshot. */
+/* Popovers hanging off the sidebar header and the composer's chips. Fully
+ * opaque in every Glass mode, including Clear: a menu is a transient overlay
+ * you read once and dismiss, and whatever it happens to cover — conversation
+ * rows, transcript text, the launch screen's labels — shows straight through
+ * a tinted panel and turns its own rows into noise. The glass modes belong to
+ * the surfaces you actually look *at* (sidebar, stage, composer), not to the
+ * thing sitting on top of them. No `backdrop-filter` either: there is nothing
+ * left to blur behind an opaque fill. */
 .menu {
-  background: rgba(20, 20, 24, 0.98);
+  background: #16161a;
   border: 1px solid rgba(255, 255, 255, 0.09);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
   box-shadow:
     0 16px 48px rgba(0, 0, 0, 0.55),
     0 0 0 1px rgba(0, 0, 0, 0.4);
@@ -593,18 +595,6 @@ input {
   animation: row-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
-@keyframes row-picked-flash {
-  0% {
-    background-color: rgba(142, 124, 246, 0.28);
-  }
-  100% {
-    background-color: var(--selected);
-  }
-}
-.row-picked {
-  animation: row-picked-flash 0.45s ease-out;
-}
-
 @keyframes check-pop {
   0% {
     opacity: 0;
@@ -637,6 +627,117 @@ input {
   animation: model-switch 0.22s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
+/* The status line's word, while a turn is in flight: a bright band sweeping
+ * back and forth across dim text, like a wave rolling along it. The band is a
+ * gradient wider than the text itself, clipped to the glyphs and slid across
+ * them — `alternate` is what makes it travel back rather than snap and repeat,
+ * and the ease-in-out is what makes it settle at each end instead of bouncing.
+ * Colours come from the palette, so it re-skins with everything else. */
+@keyframes text-wave {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 100% 50%;
+  }
+}
+
+/* The one band both the status line and the launch mark ride, so the two can
+ * never drift into being two different loading effects. It is wider than
+ * whatever it crosses (see `background-size` below), which is what keeps dim
+ * on both sides of the bright part all the way across. */
+:root {
+  --wave-band: linear-gradient(
+    95deg,
+    var(--faint) 0%,
+    var(--faint) 34%,
+    var(--ink) 48%,
+    var(--ink) 52%,
+    var(--faint) 66%,
+    var(--faint) 100%
+  );
+}
+
+.shimmer {
+  background-image: var(--wave-band);
+  background-size: 260% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-wave 2.6s ease-in-out infinite alternate;
+}
+
+/* The launch loader: the same band, the same 2.6s beat, rolling across the
+ * app's mark instead of a word. Text clips the gradient to its glyphs with
+ * `background-clip: text`; a shape has no glyphs, so the mark's silhouette
+ * becomes a mask and the identical gradient is painted through it — the mark
+ * goes white as the band passes and falls back to `--faint` behind it, which
+ * is the whole tell that something is still happening. The mask image itself
+ * is set inline, by whoever renders it, so this stays artwork-agnostic. */
+.logo-wave {
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  background-image: var(--wave-band);
+  background-size: 260% 100%;
+  background-repeat: no-repeat;
+  animation: text-wave 2.6s ease-in-out infinite alternate;
+}
+
+/* Unmasked, the gradient would paint as a bare rectangle across the stage —
+ * worse than no mark at all, so it paints nothing instead. */
+@supports not ((-webkit-mask-image: url(x)) or (mask-image: url(x))) {
+  .logo-wave {
+    background-image: none;
+    animation: none;
+  }
+}
+
+/* The splash fades up rather than being there in the window's first frame —
+ * a mark that is simply present before anything else has drawn reads as a
+ * still image, and the wave crossing it reads as a loader. */
+@keyframes loader-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.loader-fade {
+  animation: loader-in 0.3s ease;
+}
+
+/* A webview without `background-clip: text` would paint nothing at all, since
+ * the text itself is transparent — so it gets a plain readable label. */
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .shimmer {
+    background-image: none;
+    color: var(--muted);
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background-image: none;
+    color: var(--muted);
+  }
+
+  /* Still a mark, still masked — just holding one flat colour instead of
+   * travelling. */
+  .logo-wave {
+    animation: none;
+    background-image: none;
+    background-color: var(--muted);
+  }
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -652,6 +753,43 @@ input {
   /* `backwards`, not `both`: a retained fill would keep a stacking context
    * alive forever and trap the header popovers under the composer. */
   animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* The launch composer's hand-off to the conversation (see `App.tsx`'s
+ * `docking` stage): the hero composer sinks a little and dissolves while the
+ * real, bottom-docked composer and the first bubble rise into place under
+ * `.rise`. `pointer-events: none` so a stray click or repeat Enter can't
+ * land on a control that is already on its way out. */
+@keyframes dock-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+}
+
+.dock-exit {
+  animation: dock-exit 0.36s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  pointer-events: none;
+}
+
+/* The launch wallpaper dissolving into the conversation's flat stage tint
+ * underneath it, instead of the picture cutting out in one frame. */
+@keyframes dissolve-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.dissolve-out {
+  animation: dissolve-out 0.42s ease-out forwards;
+  pointer-events: none;
 }
 
 /* Quiet scrollbars that match the chrome. */

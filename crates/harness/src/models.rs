@@ -9,8 +9,10 @@
 //! `claude/catalog.rs` does.
 
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::agents::AgentId;
@@ -35,14 +37,73 @@ pub struct AgentModel {
     /// Curated lists hardcode it; the live opencode catalog reads
     /// `limit.context`. Zero means unknown and hides the token badge.
     pub context: u64,
+    /// The widest window this model can actually be asked for, which is what
+    /// the picker shows and what a session gets unless something explicitly
+    /// asks for less. For most agents it's the same as `context`; Claude's
+    /// larger models take a million-token window through the `[1m]` suffix on
+    /// their id, so theirs is higher than the window they default to.
+    pub max_context: u64,
     /// Reasoning/effort variants the model advertises: opencode's live
     /// catalog per model, and a fixed curated list for Claude
     /// (`--effort`) and Codex (`-c model_reasoning_effort=`). Empty hides
     /// the reasoning picker.
     pub variants: Vec<String>,
+    /// The effort this model runs at when nothing asks for one — Codex
+    /// reports it per model (`defaultReasoningEffort`). Empty where the CLI
+    /// doesn't say, which is everywhere else.
+    pub default_variant: String,
+    /// Whether this is the model the CLI itself would pick, so the picker's
+    /// "Default" row can say which model that actually is and offer that
+    /// model's efforts. Only Codex reports it (`isDefault` in `model/list`);
+    /// Claude and opencode have no equivalent and leave it false.
+    pub cli_default: bool,
 }
 
+/// How long a discovered catalog is reused before it's looked up again.
+/// Discovery costs a CLI spawn each for Codex (`codex app-server`) and
+/// opencode (`opencode models --verbose`), and catalogs change on the scale of
+/// CLI releases, not seconds — so paying that on every picker open, every tab
+/// switch and every Settings visit was buying nothing.
+const CATALOG_TTL: Duration = Duration::from_secs(10 * 60);
+
+fn catalog_cache() -> &'static Mutex<HashMap<AgentId, (Instant, Vec<AgentModel>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<AgentId, (Instant, Vec<AgentModel>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The agent's catalog, from this process's cache when it's still fresh.
+/// Only successful discoveries are cached: a failure (CLI missing, a wedged
+/// spawn) must stay retryable, or one bad moment would freeze an empty list in
+/// place for ten minutes.
 pub fn list_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
+    if let Some(models) = cached_models(agent) {
+        return Ok(models);
+    }
+    let models = discover_models(agent)?;
+    if let Ok(mut cache) = catalog_cache().lock() {
+        cache.insert(agent, (Instant::now(), models.clone()));
+    }
+    Ok(models)
+}
+
+/// Drops the cached catalog for one agent, so the next [`list_models`] pays
+/// for a live look again — what a deliberate "refresh" means.
+pub fn invalidate_models(agent: AgentId) {
+    if let Ok(mut cache) = catalog_cache().lock() {
+        cache.remove(&agent);
+    }
+}
+
+fn cached_models(agent: AgentId) -> Option<Vec<AgentModel>> {
+    let cache = catalog_cache().lock().ok()?;
+    let (at, models) = cache.get(&agent)?;
+    if at.elapsed() > CATALOG_TTL {
+        return None;
+    }
+    Some(models.clone())
+}
+
+fn discover_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
     match agent {
         AgentId::Opencode => opencode_models(),
         AgentId::Codex => Ok(codex_models_or_fallback()),
@@ -183,7 +244,10 @@ fn codex_models() -> Vec<AgentModel> {
             provider_name: provider_name("openai"),
             description: desc.to_string(),
             context: 400_000,
+            max_context: 400_000,
             variants: codex_variants(),
+            default_variant: String::new(),
+            cli_default: false,
         })
         .collect()
 }
@@ -332,13 +396,29 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
     Ok(models)
 }
 
+/// The context window for a discovered Codex model. `model/list` carries no
+/// window of its own — checked against a live `codex app-server`, whose rows
+/// are exactly id / model / displayName / description /
+/// supportedReasoningEfforts / defaultReasoningEffort / inputModalities /
+/// isDefault and friends, with nothing about limits anywhere — so the number
+/// the picker shows has to come from compiled-in knowledge. That is the same
+/// 400K the static fallback catalog asserts for this generation; an id from
+/// outside it that still looks like one of these models is given the same
+/// benefit, and anything else reports unknown rather than inventing a figure.
+fn codex_context(id: &str) -> u64 {
+    if codex_models().iter().any(|model| model.id == id) || id.starts_with("gpt-") {
+        400_000
+    } else {
+        0
+    }
+}
+
 /// Parses one `model/list` page: `(model, is_default)` pairs plus the
 /// pagination cursor. Hidden models are dropped; an unparseable row is
 /// skipped rather than failing the whole page, matching zeron's own
-/// tolerance for whatever a future app-server version adds. Context window
-/// is not part of this response, so it comes back `0` (hides the composer's
-/// token badge, the same convention `AgentModel::context` already uses for
-/// "unknown").
+/// tolerance for whatever a future app-server version adds. The context
+/// window is not part of this response at all, so it is filled in from
+/// [`codex_context`] rather than left at the `0` that means "unknown".
 fn parse_codex_model_list_page(
     result: &serde_json::Value,
 ) -> (Vec<(AgentModel, bool)>, Option<String>) {
@@ -388,7 +468,13 @@ fn parse_codex_model_list_page(
             })
             .map(str::to_string)
             .collect();
+        let default_variant = item
+            .get("defaultReasoningEffort")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let is_default = item.get("isDefault").and_then(serde_json::Value::as_bool) == Some(true);
+        let context = codex_context(id);
         models.push((
             AgentModel {
                 id: id.to_string(),
@@ -396,8 +482,11 @@ fn parse_codex_model_list_page(
                 provider: "openai".to_string(),
                 provider_name: provider_name("openai"),
                 description,
-                context: 0,
+                context,
+                max_context: context,
                 variants,
+                default_variant,
+                cli_default: is_default,
             },
             is_default,
         ));
@@ -453,31 +542,107 @@ fn claude_models() -> Vec<AgentModel> {
     // particular account's plan doesn't have usage credits for — a
     // different failure than a bad id, and not something either CLI can be
     // asked about ahead of time.
-    const MODELS: &[(&str, &str, &str)] = &[
+    //
+    // The fourth column is the widest window the model actually runs with,
+    // and it is measured, not assumed: each id was asked for its own usage
+    // with `claude --print --output-format json --model '<id>[1m]' hi` on
+    // 2026-09-17, and the reply's `modelUsage[...].contextWindow` is what is
+    // recorded here. Opus 5, Opus 4.8, Opus 4.7 and Sonnet 5 all came back
+    // with a literal 1000000. Haiku 4.5 came back `400 This authentication
+    // style is incompatible with the long context beta header`, so it is the
+    // one row held at the standard window. Fable's two rows can't be measured
+    // from this account (they answer "requires usage credits" with or without
+    // the suffix); they're listed at a million because every other non-Haiku
+    // model here is, and a wrong guess degrades rather than fails — see
+    // `deny_wide_context`.
+    const MODELS: &[(&str, &str, &str, u64)] = &[
         (
             "claude-fable-5-1",
             "Fable 5.1",
             "Most intelligent model for building agents",
+            1_000_000,
         ),
-        ("claude-fable-5", "Fable 5", "Previous generation Fable"),
-        ("claude-opus-5", "Opus 5", "Powerful model for complex work"),
-        ("claude-opus-4-8", "Opus 4.8", "Previous generation Opus"),
-        ("claude-opus-4-7", "Opus 4.7", "Older generation Opus"),
-        ("claude-sonnet-5", "Sonnet 5", "Balanced speed and intelligence"),
-        ("claude-haiku-4-5", "Haiku 4.5", "Fastest model for everyday tasks"),
+        ("claude-fable-5", "Fable 5", "Previous generation Fable", 1_000_000),
+        ("claude-opus-5", "Opus 5", "Powerful model for complex work", 1_000_000),
+        ("claude-opus-4-8", "Opus 4.8", "Previous generation Opus", 1_000_000),
+        ("claude-opus-4-7", "Opus 4.7", "Older generation Opus", 1_000_000),
+        (
+            "claude-sonnet-5",
+            "Sonnet 5",
+            "Balanced speed and intelligence",
+            1_000_000,
+        ),
+        (
+            "claude-haiku-4-5",
+            "Haiku 4.5",
+            "Fastest model for everyday tasks",
+            200_000,
+        ),
     ];
     MODELS
         .iter()
-        .map(|(id, name, desc)| AgentModel {
+        .map(|(id, name, desc, max_context)| AgentModel {
             id: id.to_string(),
             name: name.to_string(),
             provider: "anthropic".to_string(),
             provider_name: provider_name("anthropic"),
             description: desc.to_string(),
             context: 200_000,
+            max_context: if wide_context_denied(id) { 200_000 } else { *max_context },
             variants: claude_variants(),
+            default_variant: String::new(),
+            cli_default: false,
         })
         .collect()
+}
+
+/// Models that asked for the million-token window and were refused, so the
+/// rest of this run stops asking. Populated from the turn error the CLI
+/// reports (see `sessions::looks_like_a_long_context_rejection`), which is the
+/// only authority on what a given account and auth style may actually use —
+/// a plan change or a different login makes the answer different, which is
+/// why this lives for one run rather than on disk.
+fn wide_context_denials() -> &'static Mutex<std::collections::HashSet<String>> {
+    static DENIED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    DENIED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn wide_context_denied(model: &str) -> bool {
+    wide_context_denials()
+        .lock()
+        .map(|denied| denied.contains(base_model_id(model)))
+        .unwrap_or(false)
+}
+
+/// Records that this model may not be asked for the wider window again. Takes
+/// the id as it was sent (`claude-haiku-4-5[1m]`) and remembers the bare one,
+/// since that is what the catalog and the next session will carry.
+pub fn deny_wide_context(model: &str) {
+    if let Ok(mut denied) = wide_context_denials().lock() {
+        denied.insert(base_model_id(model).to_string());
+    }
+    // The catalog's `max_context` is derived from this, so the copy the picker
+    // is holding has to be looked up again.
+    invalidate_models(AgentId::Claude);
+}
+
+/// `claude-opus-5[1m]` → `claude-opus-5`.
+fn base_model_id(model: &str) -> &str {
+    model.split('[').next().unwrap_or(model).trim()
+}
+
+/// The widest window `model` can be asked for, when that is wider than the
+/// window it would otherwise run with — `None` when there is nothing to ask
+/// for, which is every agent but Claude and Claude's own Haiku row. Reads the
+/// curated list directly, so it never spawns anything: the caller is session
+/// startup, where a CLI probe would stall the first message.
+pub fn max_context(agent: AgentId, model: &str) -> Option<u64> {
+    if agent != AgentId::Claude {
+        return None;
+    }
+    let id = base_model_id(model);
+    let row = claude_models().into_iter().find(|m| m.id == id)?;
+    (row.max_context > row.context).then_some(row.max_context)
 }
 
 /// Bound on `opencode models --verbose`. The catalog is cached by the CLI, so
@@ -639,7 +804,12 @@ fn model_from(header: &str, detail: &str) -> AgentModel {
         provider_name: provider_display,
         description,
         context,
+        // opencode reports one window per model and offers no way to ask for
+        // a wider one, so the most it can do is the most it advertises.
+        max_context: context,
         variants,
+        default_variant: String::new(),
+        cli_default: false,
     }
 }
 

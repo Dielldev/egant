@@ -91,6 +91,7 @@ impl CodexExec {
             ready_sent: false,
             turn: TurnAcc::default(),
             seen_tools: HashSet::new(),
+            settled: false,
         };
         Ok(Self {
             runner: Runner::spawn(translator),
@@ -181,6 +182,9 @@ struct CodexTranslator {
     ready_sent: bool,
     turn: TurnAcc,
     seen_tools: HashSet<String>,
+    /// Whether `turn.completed` has already settled this turn, so the process
+    /// exiting afterwards isn't reported as a second turn ending.
+    settled: bool,
 }
 
 /// `--sandbox` (or the bypass flag, which drops the sandbox entirely) for one
@@ -202,6 +206,35 @@ fn sandbox_args(mode: PermissionMode) -> Vec<String> {
         PermissionMode::BypassPermissions => {
             vec!["--dangerously-bypass-approvals-and-sandbox".into()]
         }
+    }
+}
+
+impl CodexTranslator {
+    /// Ends the turn: one `TurnEnded` carrying whatever the turn accumulated,
+    /// and the accounting reset behind it. Called once per turn — either by
+    /// `turn.completed` on the wire or, when that never came, by the process
+    /// exiting — and the `settled` flag is what keeps it to once.
+    fn settle(&mut self, result: Option<String>, is_error: bool) -> Vec<HarnessEvent> {
+        let turn = std::mem::take(&mut self.turn);
+        self.settled = true;
+        vec![HarnessEvent::TurnEnded {
+            result,
+            is_error,
+            duration_ms: turn
+                .started
+                .map(|s| s.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0),
+            // `exec` reports usage, not cost.
+            cost_usd: 0.0,
+            // This wire accounts for prompt and reply only; it says nothing
+            // about cache splits or the window, which stay at zero rather
+            // than being invented here.
+            usage: crate::TurnUsage {
+                input_tokens: turn.input_tokens,
+                output_tokens: turn.output_tokens,
+                ..Default::default()
+            },
+        }]
     }
 }
 
@@ -239,6 +272,7 @@ impl TurnTranslator for CodexTranslator {
             ..TurnAcc::default()
         };
         self.seen_tools.clear();
+        self.settled = false;
         TurnRequest {
             program: self.program.clone(),
             args,
@@ -275,7 +309,12 @@ impl TurnTranslator for CodexTranslator {
                         .and_then(Value::as_u64)
                         .unwrap_or(0);
                 }
-                Vec::new()
+                // `codex exec` says this the moment the turn is genuinely over,
+                // then spends another second or so tearing the process down.
+                // Waiting for the exit would leave the window claiming the
+                // agent is still working long after it has stopped, so the
+                // turn settles here and `end_turn` stays quiet about the exit.
+                self.settle(None, false)
             }
             Some("turn.failed") => {
                 self.turn.failed = true;
@@ -303,14 +342,15 @@ impl TurnTranslator for CodexTranslator {
     }
 
     fn end_turn(&mut self, interrupted: bool, exit: Option<i32>) -> Vec<HarnessEvent> {
-        let turn = std::mem::take(&mut self.turn);
-        let duration_ms = turn
-            .started
-            .map(|s| s.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
-            .unwrap_or(0);
+        // A turn `turn.completed` already settled: the process winding down
+        // afterwards is not news. An interrupt or a bad exit still is, and
+        // falls through to the report below.
+        if self.settled && !interrupted && exit.unwrap_or(0) == 0 {
+            return Vec::new();
+        }
         let (result, is_error) = if interrupted {
             (Some("Interrupted.".to_string()), true)
-        } else if turn.failed {
+        } else if self.turn.failed {
             // Already surfaced as an error notice mid-turn; settle quietly.
             (None, true)
         } else if exit.is_some_and(|code| code != 0) {
@@ -324,21 +364,7 @@ impl TurnTranslator for CodexTranslator {
         } else {
             (None, false)
         };
-        vec![HarnessEvent::TurnEnded {
-            result,
-            is_error,
-            duration_ms,
-            // `exec` reports usage, not cost.
-            cost_usd: 0.0,
-            // This wire accounts for prompt and reply only; it says nothing
-            // about cache splits or the window, which stay at zero rather
-            // than being invented here.
-            usage: crate::TurnUsage {
-                input_tokens: turn.input_tokens,
-                output_tokens: turn.output_tokens,
-                ..Default::default()
-            },
-        }]
+        self.settle(result, is_error)
     }
 
     fn take_ready(&mut self) -> Option<HarnessEvent> {
@@ -472,6 +498,7 @@ mod tests {
             thread: None,
             mode: Arc::new(Mutex::new(PermissionMode::Auto)),
             ready_sent: false,
+            settled: false,
             turn: TurnAcc::default(),
             seen_tools: HashSet::new(),
         }
@@ -601,15 +628,53 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
 
-        t.build("next");
-        t.push_line(r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#);
-        match &t.end_turn(false, Some(0))[0] {
+    }
+
+    /// `codex exec` prints `turn.completed` and then spends another second or
+    /// so exiting, so the turn has to settle on that line — otherwise the
+    /// window claims the agent is still working through the whole teardown.
+    /// The exit that follows must not settle the same turn twice.
+    #[test]
+    fn turn_completed_settles_before_the_process_exits() {
+        let mut t = translator();
+        t.build("hi");
+        let events =
+            t.push_line(r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
             HarnessEvent::TurnEnded {
                 usage, is_error, ..
             } => {
                 assert_eq!(usage.input_tokens, 7);
                 assert_eq!(usage.output_tokens, 3);
                 assert!(!is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // The process exiting cleanly afterwards is not a second turn ending.
+        assert!(t.end_turn(false, Some(0)).is_empty());
+
+        // A turn that settled and *then* died still gets reported.
+        t.build("next");
+        t.push_line(r#"{"type":"turn.completed","usage":{}}"#);
+        match &t.end_turn(false, Some(3))[0] {
+            HarnessEvent::TurnEnded {
+                result, is_error, ..
+            } => {
+                assert!(result.as_deref().is_some_and(|text| text.contains("status 3")));
+                assert!(is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // So does an interrupt mid-turn, with no `turn.completed` at all.
+        t.build("third");
+        match &t.end_turn(true, None)[0] {
+            HarnessEvent::TurnEnded {
+                result, is_error, ..
+            } => {
+                assert_eq!(result.as_deref(), Some("Interrupted."));
+                assert!(is_error);
             }
             other => panic!("unexpected {other:?}"),
         }

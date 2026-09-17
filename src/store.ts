@@ -9,8 +9,10 @@ import { api, pickProjectFolder, pickWallpaperImage } from "./lib/api";
 import { applyEvent, emptyTranscript, fromDto, pushUser, resolvePermission } from "./lib/transcript";
 import { parseContext } from "./lib/types";
 import type {
+  AgentCatalogEntry,
   AgentModel,
   AgentStatus,
+  ClaudeUsage,
   GitChange,
   GitChangeStatus,
   SessionEventPayload,
@@ -282,6 +284,11 @@ interface EgantStore {
   setComposerVariant: (variant: string) => void;
   setComposerContext: (context: string) => void;
   fetchAgents: () => Promise<void>;
+  /** `list_agent_catalog`: every agent egant knows how to install, with CLI
+   * presence. Wider than `agents`, which only covers the drivable registry —
+   * the picker needs it to show an installed agent that has no harness. */
+  catalog: AgentCatalogEntry[];
+  fetchCatalog: () => Promise<void>;
   /** Like `fetchAgents`, but follows the cheap presence-based list with a
    * live login recheck for the agents the CLI can answer fast (Claude,
    * Codex) — the same live check "Refresh" runs. `list_agents` alone only
@@ -296,12 +303,46 @@ interface EgantStore {
   modelsAgent: string | null;
   modelsLoading: boolean;
   fetchModels: (agent: string) => Promise<void>;
+  /** Every catalog fetched, keyed by agent, and persisted to localStorage so
+   * a fresh launch paints the list it showed last time instead of waiting on
+   * a CLI. Switching tabs in the picker draws from here instantly and
+   * revalidates behind it. */
+  modelCache: Record<string, AgentModel[]>;
+  /** Refreshes `modelCache` for an agent the picker isn't showing yet, so the
+   * other tabs are already warm by the time they're clicked. Best-effort and
+   * silent: failures surface through `fetchModels` if that tab is opened. */
+  warmModels: (agent: string) => Promise<void>;
+
+  /** Claude's 5-hour and weekly usage, for the composer's limit pill. `null`
+   * before the first fetch, or when Claude isn't logged in on this device.
+   * Refetched after a Claude turn ends and on a slow poll while a Claude
+   * composer is showing — see `Composer`'s effect. */
+  claudeUsage: ClaudeUsage | null;
+  fetchClaudeUsage: () => Promise<void>;
 
   /** Which agents the composer offers (`egant.agents` in localStorage).
    * Settings > Agents writes it; the picker reads it. Defaults enable the
    * three drivable agents. */
   enabledAgents: Record<string, boolean>;
   setAgentEnabled: (id: string, on: boolean) => void;
+  /** Which of the agents egant *can* render in the chat UI the user still
+   * wants it to (`egant.chatUi` in localStorage). On by default — turning
+   * one off is what makes picking that agent open its own CLI instead.
+   * Agents egant has no harness for are never in here: `usesChatUi` reads
+   * the catalog's `chatUi` first, and that is not a preference. */
+  chatUiAgents: Record<string, boolean>;
+  setChatUi: (id: string, on: boolean) => void;
+
+  /** The agent whose CLI the launch dialog is offering to open, or `null`
+   * when no dialog is up. Opening a terminal onto an agent is not something
+   * to do on a stray click — the dialog is the confirmation, and it is the
+   * one place that says what is about to run. */
+  cliLaunch: string | null;
+  askCliLaunch: (agent: string) => void;
+  cancelCliLaunch: () => void;
+  /** Opens a CLI session for `agent` in the active project and selects it.
+   * Resolves `false` when it couldn't start — the error toast carries why. */
+  startCliSession: (agent: string) => Promise<boolean>;
   /** Per-agent default model (`""` = CLI default). Settings > Agents writes
    * it; session creation falls back to it when the composer has no override. */
   defaultModels: Record<string, string>;
@@ -313,8 +354,8 @@ interface EgantStore {
    * ("200K"); parsed with `parseContext` when read. */
   defaultContexts: Record<string, string>;
   setDefaultContext: (agent: string, context: string) => void;
-  /** Starred models (`${agent}:${modelId}` → true). Powers the ★ tab and the
-   * per-row star toggle in the picker. */
+  /** Starred models (`${agent}:${modelId}` → true). Floats those models to
+   * the top of the picker's list, and backs its per-row star toggle. */
   starredModels: Record<string, boolean>;
   toggleStarred: (agent: string, modelId: string) => void;
 
@@ -322,7 +363,11 @@ interface EgantStore {
    * shows. Frontend-only; the sections themselves persist what they need. */
   settingsOpen: boolean;
   settingsSection: SettingsSection;
-  openSettings: (section?: SettingsSection) => void;
+  openSettings: (section?: SettingsSection, agentId?: string) => void;
+  /** Which agent's sheet Settings > Agents should open on arrival, so the
+   * composer's picker can deep-link into one. Cleared once consumed. */
+  agentSheetId: string | null;
+  setAgentSheetId: (id: string | null) => void;
   closeSettings: () => void;
   setSettingsSection: (section: SettingsSection) => void;
 
@@ -436,6 +481,46 @@ function loadBoolRecord(key: string, fallback: Record<string, boolean>): Record<
   }
 }
 
+/** Catalogs from earlier runs (`egant.modelCache`). Discovery costs a CLI
+ * spawn for Codex and opencode, so the first open of a session used to sit on
+ * "Loading models…" every single launch; with this it paints the list it
+ * showed last time and refreshes behind it. Entries are shape-checked, since a
+ * stale or hand-edited value would otherwise reach the picker's renderer. */
+function loadModelCache(): Record<string, AgentModel[]> {
+  try {
+    const raw = localStorage.getItem("egant.modelCache");
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof parsed !== "object" || parsed === null) return {};
+    const out: Record<string, AgentModel[]> = {};
+    for (const [agent, models] of Object.entries(parsed)) {
+      if (
+        Array.isArray(models) &&
+        models.every(
+          (m) =>
+            m != null &&
+            typeof m.id === "string" &&
+            typeof m.name === "string" &&
+            Array.isArray(m.variants),
+        )
+      ) {
+        out[agent] = models as AgentModel[];
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveModelCache(cache: Record<string, AgentModel[]>) {
+  try {
+    localStorage.setItem("egant.modelCache", JSON.stringify(cache));
+  } catch {
+    // Unavailable storage: the run keeps its in-memory cache.
+  }
+}
+
 function loadStarred(): Record<string, boolean> {
   try {
     const raw = localStorage.getItem("egant.starredModels");
@@ -513,11 +598,47 @@ export function selectLaunching(
   if (startingNewSession) return true;
   const activeId = snapshot?.activeSession;
   if (activeId == null) return true;
+  // A CLI session's transcript is empty and always will be — its content is
+  // a terminal, not a list of turns. Reading that emptiness as "hasn't
+  // started yet" would bury the terminal under the launch composer forever.
+  if (selectActiveSession(snapshot)?.kind === "cli") return false;
   const transcript = transcripts[activeId];
   return (
     transcript !== undefined && transcript.entries.length === 0 && !transcript.pending
   );
 }
+
+/** The session on the stage, if there is one. */
+export function selectActiveSession(snapshot: WindowState | null): SessionInfo | null {
+  if (!snapshot || snapshot.activeSession == null) return null;
+  return snapshot.sessions.find((s) => s.id === snapshot.activeSession) ?? null;
+}
+
+/** Whether picking `agent` starts a chat session or opens its own CLI.
+ *
+ * Two different questions, deliberately resolved in one place: *can* egant
+ * render this agent's turns (the catalog's `chatUi`, a fact about which
+ * harnesses exist) and *does the user want it to* (`chatUiAgents`, a
+ * preference that only applies to the agents where the first is true). An
+ * agent egant has no harness for can only ever open its CLI, whatever the
+ * preference record happens to hold for it. */
+export function usesChatUi(
+  catalog: AgentCatalogEntry[],
+  chatUiAgents: Record<string, boolean>,
+  agent: string,
+): boolean {
+  const entry = catalog.find((c) => c.id === agent);
+  // Unknown to the catalog but known to the harness registry — the catalog
+  // hasn't loaded yet, in practice. The three harnessed agents are the ones
+  // this can be true of, so defaulting them to chat keeps the composer from
+  // flickering into CLI mode on a cold start.
+  const capable = entry ? entry.chatUi : HARNESSED.includes(agent);
+  return capable && (chatUiAgents[agent] ?? true);
+}
+
+/** Agents egant ships a chat harness for. Mirrors the catalog's `chatUi`
+ * column; only used before the catalog has crossed the IPC boundary. */
+export const HARNESSED: readonly string[] = ["claude", "codex", "opencode"];
 
 /** Where the workspace panel points: the active conversation's working
  * directory, else the selected project, else the first project open. The
@@ -647,7 +768,12 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // The agent has just stopped editing: whatever the Changes tab is showing
     // is now out of date. Cheaper and steadier than watching the filesystem,
     // and it lands exactly when the user looks back at the panel.
-    if (event.type === "turn_ended") get().refreshChanges();
+    if (event.type === "turn_ended") {
+      get().refreshChanges();
+      // Only a Claude turn moves Claude's own usage windows.
+      const session = get().snapshot?.sessions.find((s) => s.id === sessionId);
+      if (session?.agent === "claude") void get().fetchClaudeUsage();
+    }
   }
 
   return {
@@ -766,18 +892,28 @@ export const useEgant = create<EgantStore>()((set, get) => {
         panelTab: panelTab === id ? neighbour?.id ?? null : panelTab,
       });
     },
-    attachPty: (id, ptyId) =>
+    // Both of these are also called by a CLI session's terminal, which has no
+    // panel tab behind it — the early return keeps that from replacing the
+    // tab list with an identical copy on every spawn, which the panel would
+    // then re-run its whole tab-teardown effect over.
+    attachPty: (id, ptyId) => {
+      const panelTabs = get().panelTabs;
+      if (!panelTabs.some((tab) => tab.id === id)) return;
       set({
-        panelTabs: get().panelTabs.map((tab) =>
+        panelTabs: panelTabs.map((tab) =>
           tab.id === id ? { ...tab, ptyId, exited: false } : tab,
         ),
-      }),
-    markPtyExited: (ptyId) =>
+      });
+    },
+    markPtyExited: (ptyId) => {
+      const panelTabs = get().panelTabs;
+      if (!panelTabs.some((tab) => tab.ptyId === ptyId)) return;
       set({
-        panelTabs: get().panelTabs.map((tab) =>
+        panelTabs: panelTabs.map((tab) =>
           tab.ptyId === ptyId ? { ...tab, exited: true } : tab,
         ),
-      }),
+      });
+    },
 
     stageTabs: {},
     stageTab: {},
@@ -842,6 +978,15 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ composerContext });
       saveString("egant.composerContext", composerContext || null);
     },
+    catalog: [],
+    fetchCatalog: async () => {
+      try {
+        set({ catalog: await api.listAgentCatalog() });
+      } catch {
+        // The picker falls back to the drivable registry; no toast for a
+        // list that only adds rows.
+      }
+    },
     fetchAgents: async () => {
       try {
         set({ agents: await api.listAgents() });
@@ -868,15 +1013,49 @@ export const useEgant = create<EgantStore>()((set, get) => {
     models: [],
     modelsAgent: null,
     modelsLoading: false,
+    modelCache: loadModelCache(),
     fetchModels: async (agent) => {
-      set({ modelsLoading: true });
+      const cached = get().modelCache[agent];
+      // A cached catalog shows immediately and refreshes underneath; only an
+      // agent never fetched this run gets the loading state.
+      set({ models: cached ?? [], modelsAgent: agent, modelsLoading: cached == null });
       try {
-        set({ models: await api.listModels(agent), modelsAgent: agent });
+        const fresh = await api.listModels(agent);
+        const modelCache = { ...get().modelCache, [agent]: fresh };
+        set({ modelCache });
+        saveModelCache(modelCache);
+        if (get().modelsAgent === agent) set({ models: fresh });
       } catch (error) {
-        fail(set, error);
-        set({ models: [], modelsAgent: agent });
+        // A failed refresh is no reason to empty a list that worked a moment
+        // ago — only a first, cache-less fetch reports and clears.
+        if (cached == null) {
+          fail(set, error);
+          if (get().modelsAgent === agent) set({ models: [] });
+        }
       } finally {
-        set({ modelsLoading: false });
+        if (get().modelsAgent === agent) set({ modelsLoading: false });
+      }
+    },
+    warmModels: async (agent) => {
+      try {
+        const fresh = await api.listModels(agent);
+        const modelCache = { ...get().modelCache, [agent]: fresh };
+        set({ modelCache });
+        saveModelCache(modelCache);
+        if (get().modelsAgent === agent) set({ models: fresh, modelsLoading: false });
+      } catch {
+        // Best-effort: the tab's own fetch reports it if it's ever opened.
+      }
+    },
+
+    claudeUsage: null,
+    // Silent on failure: an expired token or a network blip shouldn't pop
+    // the same error toast a failed send would. The pill just stays hidden.
+    fetchClaudeUsage: async () => {
+      try {
+        set({ claudeUsage: await api.claudeUsageLimits() });
+      } catch {
+        set({ claudeUsage: null });
       }
     },
 
@@ -892,6 +1071,51 @@ export const useEgant = create<EgantStore>()((set, get) => {
         localStorage.setItem("egant.agents", JSON.stringify(enabledAgents));
       } catch {
         // keep in-memory choice
+      }
+    },
+
+    chatUiAgents: loadBoolRecord("egant.chatUi", {}),
+    setChatUi: (id, on) => {
+      const chatUiAgents = { ...get().chatUiAgents, [id]: on };
+      set({ chatUiAgents });
+      try {
+        localStorage.setItem("egant.chatUi", JSON.stringify(chatUiAgents));
+      } catch {
+        // keep in-memory choice
+      }
+    },
+
+    cliLaunch: null,
+    askCliLaunch: (agent) => set({ cliLaunch: agent }),
+    cancelCliLaunch: () => set({ cliLaunch: null }),
+
+    startCliSession: async (agent) => {
+      // Same rule as a chat session: there is nothing to run a CLI *in*
+      // until a folder is open, so ask for one first rather than failing.
+      if (get().snapshot?.activeProject == null) {
+        const path = await pickProjectFolder().catch((error: unknown) => {
+          fail(set, error);
+          return null;
+        });
+        if (!path) return false;
+        try {
+          // The project has to exist before the CLI session can name it, and
+          // `addProject` starts a chat session of its own on the way in —
+          // that one is left as the launch screen's empty session, exactly as
+          // it would be if the folder had been opened from the sidebar.
+          applySnapshot(await api.addProject(path));
+        } catch (error) {
+          fail(set, error);
+          return false;
+        }
+      }
+      try {
+        applySnapshot(await api.createCliSession(agent));
+        set({ cliLaunch: null, startingNewSession: false });
+        return true;
+      } catch (error) {
+        fail(set, error);
+        return false;
       }
     },
     defaultModels: loadRecord("egant.defaultModels"),
@@ -946,10 +1170,13 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     settingsOpen: false,
     settingsSection: "devices",
-    openSettings: (section) =>
+    agentSheetId: null,
+    setAgentSheetId: (agentSheetId) => set({ agentSheetId }),
+    openSettings: (section, agentId) =>
       set((s) => ({
         settingsOpen: true,
         settingsSection: section ?? s.settingsSection,
+        agentSheetId: agentId ?? null,
       })),
     closeSettings: () => set({ settingsOpen: false }),
     setSettingsSection: (settingsSection) => set({ settingsSection }),
@@ -980,6 +1207,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const snapshot = await api.getState();
       applySnapshot(snapshot);
       void get().verifyAgents();
+      // A filesystem probe, no spawns — and it is what names the agents the
+      // harness registry has never heard of. Without it a restored Goose CLI
+      // session sits in the sidebar labelled `goose` until something else
+      // happens to open the agent picker.
+      void get().fetchCatalog();
       return await listen<SessionEventPayload>("session-event", (e) => onSessionEvent(e.payload));
     },
 

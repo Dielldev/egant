@@ -1,4 +1,4 @@
-import { MessageSquare, X } from "lucide-react";
+import { MessageSquare, TerminalSquare, X } from "lucide-react";
 import type { StageTab } from "../store";
 import { CHAT_TAB, diffGroupSuffix, useEgant } from "../store";
 import { ChangeStatusIcon } from "./ChangeStatus";
@@ -17,16 +17,25 @@ export function StageTabs({ sessionKey }: { sessionKey: number }) {
   const showing = useEgant((s) => s.stageTab[sessionKey] ?? CHAT_TAB);
   const setStageTab = useEgant((s) => s.setStageTab);
   const closeStageTab = useEgant((s) => s.closeStageTab);
-  const title = useEgant(
-    (s) => s.snapshot?.sessions.find((session) => session.id === sessionKey)?.title,
+  const session = useEgant((s) =>
+    s.snapshot?.sessions.find((entry) => entry.id === sessionKey),
   );
+  const title = session?.title;
 
   if (tabs.length === 0) return null;
 
   return (
     <div className="flex w-full shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--border)] px-3 pb-1.5">
       <Tab
-        icon={<MessageSquare size={12} strokeWidth={2} />}
+        // The first tab is whatever the session *is* — a transcript for a
+        // chat session, the agent's terminal for a CLI one.
+        icon={
+          session?.kind === "cli" ? (
+            <TerminalSquare size={12} strokeWidth={2} />
+          ) : (
+            <MessageSquare size={12} strokeWidth={2} />
+          )
+        }
         label={title ?? "Chat"}
         active={showing === CHAT_TAB}
         onClick={() => setStageTab(sessionKey, CHAT_TAB)}

@@ -310,10 +310,16 @@ impl OpencodeTranslator {
             .to_string();
         let mut events = Vec::new();
         if self.seen_tools.insert(id.clone()) {
+            let raw_input = part
+                .get("state")
+                .and_then(|s| s.get("input"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let (display_name, display_input) = normalize_tool_call(&name, raw_input);
             events.push(HarnessEvent::ToolUse {
                 id: id.clone(),
-                name,
-                input: part.get("state").and_then(|s| s.get("input")).cloned().unwrap_or(Value::Null),
+                name: display_name,
+                input: display_input,
             });
         }
         let status = part
@@ -325,12 +331,58 @@ impl OpencodeTranslator {
             let state = part.get("state");
             events.push(HarnessEvent::ToolResult {
                 id,
-                output: tool_output(state),
+                output: normalize_tool_output(&name, tool_output(state)),
                 is_error: status != "completed",
             });
         }
         events
     }
+}
+
+/// opencode names its own tools and shapes their arguments differently than
+/// Claude does — lowercase `read` with a camelCase `filePath`, vs. Claude's
+/// `Read` with `file_path` — even where they mean the same thing to the
+/// user. Converging the well-known ones here, rather than teaching every
+/// tool card in the frontend each agent's dialect, means the read preview,
+/// the grouped "Read N files" view, and the per-file icon all just work, for
+/// any agent.
+fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
+    match name {
+        "read" => {
+            let file_path = input.get("filePath").and_then(Value::as_str).unwrap_or("");
+            (
+                "Read".to_string(),
+                serde_json::json!({ "file_path": file_path }),
+            )
+        }
+        _ => (name.to_string(), input),
+    }
+}
+
+/// opencode's `read` tool wraps its result in `<path>…</path><type>…</type>
+/// <content>1: line one\n…</content>` (or `<entries>…</entries>` for a
+/// directory). Claude's own `Read` just returns the numbered text directly,
+/// which is what the transcript's read preview expects — so the envelope
+/// comes off here, once, rather than in the UI. Anything that doesn't match
+/// the shape (an error string, say) passes through untouched.
+fn normalize_tool_output(name: &str, output: String) -> String {
+    if name != "read" {
+        return output;
+    }
+    match extract_tag(&output, "content").or_else(|| extract_tag(&output, "entries")) {
+        Some(content) => content.trim_matches('\n').to_string(),
+        None => output,
+    }
+}
+
+/// The text strictly between `<tag>` and `</tag>`, or `None` when either
+/// side is missing.
+fn extract_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)?;
+    Some(&text[start..start + end])
 }
 
 fn tool_output(state: Option<&Value>) -> String {
@@ -458,6 +510,36 @@ mod tests {
             r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"ls"},"output":"a"}}}"#,
         );
         assert_eq!(events.len(), 1);
+    }
+
+    /// opencode's `read` tool reports `filePath` and wraps its output in an
+    /// XML envelope; the frontend's read cards only know Claude's shape
+    /// (`file_path`, plain numbered text), so this is what makes them work
+    /// for an opencode session too.
+    #[test]
+    fn read_tool_normalizes_to_claudes_shape() {
+        let mut t = translator();
+        let events = t.push_line(
+            r#"{"type":"tool_use","part":{"type":"tool","tool":"read","callID":"c1","state":{"status":"completed","input":{"filePath":"/a/b.rs"},"output":"<path>/a/b.rs</path>\n<type>file</type>\n<content>\n1: fn main() {}\n\n(End of file - total 1 lines)\n</content>"}}}"#,
+        );
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            HarnessEvent::ToolUse { name, input, .. } => {
+                assert_eq!(name, "Read");
+                assert_eq!(
+                    input.get("file_path").and_then(Value::as_str),
+                    Some("/a/b.rs")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &events[1] {
+            HarnessEvent::ToolResult { output, is_error, .. } => {
+                assert_eq!(output, "1: fn main() {}\n\n(End of file - total 1 lines)");
+                assert!(!is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

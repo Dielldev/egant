@@ -4,8 +4,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
+  AgentCatalogEntry,
+  AgentInstallOutcome,
   AgentModel,
   AgentStatus,
+  AgentUpdate,
+  ClaudeUsage,
   DiffHunk,
   FileContent,
   FileEntry,
@@ -40,6 +44,10 @@ export const api = {
     context?: number | null,
   ) =>
     invoke<WindowState>("create_session", { agent, model, variant, context }),
+  /** Opens a session that runs the agent's own CLI in a terminal instead of
+   * driving it through a harness. Rejects when that CLI isn't installed. */
+  createCliSession: (agent: string) =>
+    invoke<WindowState>("create_cli_session", { agent }),
   selectSession: (id: number) => invoke<WindowState>("select_session", { id }),
   closeSession: (id: number) => invoke<WindowState>("close_session", { id }),
   /** Returns the session's new title when this turn renamed it away from
@@ -63,6 +71,21 @@ export const api = {
   setDefaultAgent: (agent: string) =>
     invoke<SettingsState>("set_default_agent", { agent }),
   listAgents: () => invoke<AgentStatus[]>("list_agents"),
+  /** Every agent the Agents tab lists, with CLI presence. A filesystem
+   * probe like `listAgents`, over the wider install catalog. */
+  listAgentCatalog: () => invoke<AgentCatalogEntry[]>("list_agent_catalog"),
+  /** Runs the catalog's own install command for one agent. Only the id
+   * crosses the boundary — the command itself lives in the backend's table,
+   * so nothing here can ask it to run arbitrary shell. Slow: a real install. */
+  installAgent: (agent: string, method?: string | null) =>
+    invoke<AgentInstallOutcome>("install_agent", { agent, method: method ?? null }),
+  /** "Install latest" — the same source's update command, which for a package
+   * manager differs from its install command. */
+  updateAgent: (agent: string, method?: string | null) =>
+    invoke<AgentInstallOutcome>("update_agent", { agent, method: method ?? null }),
+  /** Whether an installed CLI is behind its published release. A network
+   * lookup — called per installed agent in the background, never on render. */
+  checkAgentUpdate: (agent: string) => invoke<AgentUpdate>("check_agent_update", { agent }),
   /** A live, spawn-based recheck of one agent's login — used by Settings >
    * Accounts (open, Refresh, and polling after "Add account"), never the
    * composer's hot paths, which stay on the cheap `listAgents` above. */
@@ -72,6 +95,10 @@ export const api = {
    * succeeds — poll `checkAgentLogin` to see when it lands. */
   connectAgent: (agent: string) => invoke<void>("connect_agent", { agent }),
   listModels: (agent: string) => invoke<AgentModel[]>("list_models", { agent }),
+  /** Claude's 5-hour and weekly usage, straight from Anthropic's usage
+   * endpoint. `null` when Claude isn't logged in on this device. A network
+   * call — the composer polls it, not the hot render path. */
+  claudeUsageLimits: () => invoke<ClaudeUsage | null>("claude_usage_limits"),
   wallpaperDataUrl: () => invoke<string | null>("wallpaper_data_url"),
   /** Keeps the native window's titlebar theme and macOS frosted-glass blur
    * in step with the Appearance setting (see `applyAppearance`). */
@@ -88,6 +115,11 @@ export const api = {
   // rather than as a return value, which is what makes the shell live.
   ptySpawn: (cwd: string, cols: number, rows: number) =>
     invoke<number>("pty_spawn", { cwd, cols, rows }),
+  /** The same, but running one agent's own CLI rather than a shell — what a
+   * CLI session's stage opens onto. Resolves the binary from the install
+   * catalog and hands it the user's login-shell environment. */
+  ptySpawnAgent: (cwd: string, agent: string, cols: number, rows: number) =>
+    invoke<number>("pty_spawn_agent", { cwd, agent, cols, rows }),
   ptyWrite: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
   ptyResize: (id: number, cols: number, rows: number) =>
     invoke<void>("pty_resize", { id, cols, rows }),

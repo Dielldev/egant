@@ -1,10 +1,16 @@
-//! Terminals — one real PTY per terminal tab in the workspace panel.
+//! Terminals — one real PTY per terminal on screen: every tab in the
+//! workspace panel, and every CLI session on the stage.
 //!
-//! The panel's terminal is a shell, not a command runner: `portable-pty` opens
-//! a pseudo-terminal, the user's login shell is spawned into it with the
-//! session's working directory, and the bytes it writes are pushed at the
+//! `portable-pty` opens a pseudo-terminal, something is spawned into it with
+//! the session's working directory, and the bytes it writes are pushed at the
 //! webview as `pty-output` events for xterm.js to render. Keystrokes come back
 //! the other way through [`pty_write`].
+//!
+//! What gets spawned is the only difference between the two callers. The
+//! panel's tabs run the user's own login shell ([`pty_spawn`]) — a shell, not
+//! a command runner. A CLI session runs one agent's binary directly
+//! ([`pty_spawn_agent`]), so the agent is the process the terminal owns and
+//! its exit is the terminal's exit, with nothing in between to misreport it.
 //!
 //! Ownership is split deliberately. The registry here holds only what the
 //! frontend needs to reach into a live terminal — the writer, the master (for
@@ -68,6 +74,71 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
 ) -> Result<u64, String> {
+    let mut command = CommandBuilder::new(shell());
+    #[cfg(unix)]
+    command.arg("-l");
+    open(app, state, &cwd, cols, rows, command)
+}
+
+/// Opens one agent's own CLI in `cwd` — what a CLI session's stage runs
+/// instead of the chat transcript.
+///
+/// The binary is resolved from the install catalog rather than run by name,
+/// and the child is handed the environment the user's own login shell
+/// exports: a CLI that reads its key from `ANTHROPIC_API_KEY` has to see the
+/// same key here that it sees in Terminal.app, or the session opens straight
+/// onto an auth error for an agent that works fine outside the app.
+///
+/// Async because both of those cost a subprocess on a cold cache, and a
+/// blocking command would freeze the window while the shell sourced its rc
+/// files. The PTY registry's lock is taken after the await, never across it.
+#[tauri::command]
+pub async fn pty_spawn_agent(
+    app: AppHandle,
+    state: PtyState<'_>,
+    cwd: String,
+    agent: String,
+    cols: u16,
+    rows: u16,
+) -> Result<u64, String> {
+    let (launch, env) = tauri::async_runtime::spawn_blocking(move || {
+        let launch = egant_harness::catalog::launch(&agent)?;
+        Ok::<_, String>((launch, egant_harness::agents::login_shell_env()))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    let mut command = CommandBuilder::new(launch.program);
+    for arg in &launch.args {
+        command.arg(arg);
+    }
+    for (name, value) in env {
+        // The shell snapshot was taken in the user's home directory and under
+        // whatever terminal captured it; carrying its idea of where it is, or
+        // what it is drawing into, over the ones set below would tell the CLI
+        // the wrong thing about the session it is actually running in.
+        if matches!(
+            name.as_str(),
+            "PWD" | "OLDPWD" | "SHLVL" | "_" | "TERM" | "COLORTERM"
+        ) {
+            continue;
+        }
+        command.env(name, value);
+    }
+    open(app, state, &cwd, cols, rows, command)
+}
+
+/// Opens `command` on a fresh PTY and registers it. Everything both spawn
+/// paths share: the pseudo-terminal itself, the colour advertisement, the
+/// reader thread, and the id the frontend addresses the result by.
+fn open(
+    app: AppHandle,
+    state: PtyState<'_>,
+    cwd: &str,
+    cols: u16,
+    rows: u16,
+    mut command: CommandBuilder,
+) -> Result<u64, String> {
     let pair = NativePtySystem::default()
         .openpty(PtySize {
             rows: rows.max(1),
@@ -77,10 +148,12 @@ pub fn pty_spawn(
         })
         .map_err(|error| error.to_string())?;
 
-    let mut command = CommandBuilder::new(shell());
-    #[cfg(unix)]
-    command.arg("-l");
-    command.cwd(start_dir(&cwd));
+    let dir = start_dir(cwd);
+    // `PWD` alongside the real working directory: a login shell sets its own,
+    // but a CLI spawned directly would otherwise inherit the app process's —
+    // and anything that prints `$PWD` would name the wrong folder.
+    command.env("PWD", &dir);
+    command.cwd(dir);
     // xterm.js speaks full 256-colour/truecolor; say so, or the shell and
     // everything it runs will assume a dumb terminal and drop the colour.
     command.env("TERM", "xterm-256color");
