@@ -5,6 +5,9 @@
 // token instead of a full snapshot per token.
 
 import type {
+  DecisionOption,
+  DecisionRequest,
+  DecisionResponse,
   Entry,
   HarnessEvent,
   SessionUsage,
@@ -22,6 +25,7 @@ export function emptyTranscript(): TranscriptState {
     model: null,
     tools: [],
     pending: null,
+    pendingList: [],
     totalCostUsd: 0,
     lastTurnMs: 0,
     usage: emptyUsage(),
@@ -68,14 +72,35 @@ export function recordUsage(session: SessionUsage, turn: TurnUsage): SessionUsag
 
 /** A snapshot fetched over IPC gains its tool index by scanning once. */
 export function fromDto(dto: TranscriptDto): TranscriptState {
+  // The backend only ever stores plain assistant text — a decision request
+  // embedded in it (see `extractDecisions` below) is entirely a frontend
+  // reading of that text, so a restored snapshot has to be split exactly the
+  // same way the live fold splits it, or a reload would show the raw fence
+  // instead of the card.
+  const entries = dto.entries.flatMap((entry) =>
+    entry.kind === "assistant" && !entry.streaming ? splitAssistant(entry) : [entry],
+  );
   const toolIndex: Record<string, number> = {};
-  dto.entries.forEach((entry, index) => {
+  entries.forEach((entry, index) => {
     if (entry.kind === "tool") toolIndex[entry.id] = index;
   });
+  // Snapshots from backends written before the table carry `pending` but no
+  // `pendingList` — mirror the single row so the table still renders it.
+  const pendingList =
+    dto.pendingList ??
+    (dto.pending != null ? [{ ...dto.pending }] : []);
+  const pending = pendingList[0] ?? dto.pending ?? null;
   // A turn already in flight when the window adopts the snapshot started
   // before this clock existed; counting from now is the honest answer
   // available, and it only ever affects a mid-turn reload.
-  return { ...dto, toolIndex, turnStartedAt: dto.state === "idle" ? null : Date.now() };
+  return {
+    ...dto,
+    entries,
+    pending,
+    pendingList,
+    toolIndex,
+    turnStartedAt: dto.state === "idle" ? null : Date.now(),
+  };
 }
 
 /** Records a turn the user just sent, before the agent has replied. The
@@ -93,11 +118,41 @@ export function pushUser(prev: TranscriptState, text: string): TranscriptState {
 }
 
 /** Clears a permission prompt the user just answered. The backend applies the
- * same transition; no event will restate it. */
-export function resolvePermission(prev: TranscriptState): TranscriptState {
+ * same transition; no event will restate it. With a request id, clears just
+ * that table row (and keeps awaiting while rows remain); without one, clears
+ * the whole table (legacy single-card callers). */
+export function resolvePermission(
+  prev: TranscriptState,
+  requestId?: string,
+): TranscriptState {
+  if (requestId == null) {
+    return {
+      ...prev,
+      pending: null,
+      pendingList: [],
+      state: "running",
+      turnStartedAt: prev.turnStartedAt ?? Date.now(),
+    };
+  }
+  const pendingList = (prev.pendingList ?? []).filter((p) => p.requestId !== requestId);
+  const pending = pendingList[0] ?? null;
   return {
     ...prev,
-    pending: null,
+    pending,
+    pendingList,
+    state: pendingList.length > 0 ? "awaiting_permission" : "running",
+    turnStartedAt: prev.turnStartedAt ?? Date.now(),
+  };
+}
+
+/** Marks the turn as running without adding a transcript entry. Answering a
+ * decision prompt already has its own inline representation — the card
+ * flips into its completed state in place — so this drives the turn clock
+ * and status line the same way `pushUser` does for a typed message, without
+ * echoing a redundant user bubble underneath the card. */
+export function markRunning(prev: TranscriptState): TranscriptState {
+  return {
+    ...prev,
     state: "running",
     turnStartedAt: prev.turnStartedAt ?? Date.now(),
   };
@@ -159,6 +214,7 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
           at: Date.now(),
         });
       }
+      finalizeAssistantEntry(s.entries, s.entries.length - 1);
       settleStreaming(s.entries);
       return s;
     }
@@ -187,16 +243,27 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
       return s;
     }
 
-    case "permission_request":
+    case "permission_request": {
+      const incoming = {
+        requestId: event.request_id,
+        toolName: event.tool_name,
+        input: event.input,
+        patterns: event.patterns ?? [],
+        alwaysPatterns: event.always_patterns ?? [],
+      };
+      // Re-asks replace; new ids append — the table holds every outstanding
+      // prompt, and `pending` mirrors the first for legacy readers.
+      const pendingList = [...(s.pendingList ?? [])];
+      const at = pendingList.findIndex((p) => p.requestId === incoming.requestId);
+      if (at >= 0) pendingList[at] = incoming;
+      else pendingList.push(incoming);
       return {
         ...s,
         state: "awaiting_permission",
-        pending: {
-          requestId: event.request_id,
-          toolName: event.tool_name,
-          input: event.input,
-        },
+        pending: pendingList[0] ?? null,
+        pendingList,
       };
+    }
 
     case "turn_ended": {
       settleStreaming(s.entries);
@@ -261,19 +328,160 @@ function appendStreaming(s: TranscriptState, delta: string, thinking: boolean): 
 }
 
 /** Closes every still-open entry at the tail. Stops at the first settled one:
- * anything older was closed by an earlier call. */
+ * anything older was closed by an earlier call. An assistant entry that
+ * settles here goes through the same decision-fence split an explicit
+ * `assistant_message` gets — a streamed reply that never got one (the turn
+ * ended, or a tool call interrupted it) must not skip the split just because
+ * it closed a different way. */
 function settleStreaming(entries: Entry[]): void {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if ((entry.kind === "assistant" || entry.kind === "thinking") && entry.streaming) {
+    if (entry.kind === "assistant" && entry.streaming) {
+      entries[i] = { ...entry, streaming: false };
+      finalizeAssistantEntry(entries, i);
+      continue;
+    }
+    if (entry.kind === "thinking" && entry.streaming) {
       entries[i] =
-        entry.kind === "thinking" && entry.at !== undefined
+        entry.at !== undefined
           ? { ...entry, streaming: false, elapsedMs: Date.now() - entry.at }
           : { ...entry, streaming: false };
-    } else {
-      break;
+      continue;
     }
+    break;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Decision prompts embedded in assistant text — a ```decision fenced block
+// (or a ```json block that opts in with `"type": "decision"`) is the agent's
+// way of pausing to ask the user to choose. Recognized here, on the settled
+// text, rather than as a distinct wire event: it works identically across
+// every harness (Claude, Codex, opencode all stream plain assistant text the
+// same way) and survives a reload for free, since the Rust transcript only
+// ever has to remember the raw text.
+// ---------------------------------------------------------------------------
+
+const DECISION_FENCE_RE = /```(decision|json)[ \t]*\r?\n([\s\S]*?)\r?\n?```/gi;
+
+/** Small deterministic string hash (djb2-ish), used only to mint a stable id
+ * for a decision payload that didn't supply its own — same input, same id,
+ * across every reload. Not cryptographic; doesn't need to be. */
+function simpleHash(input: string): string {
+  let h = 0;
+  for (let i = 0; i < input.length; i++) {
+    h = (Math.imul(31, h) + input.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** Normalizes one fenced block's parsed JSON into a `DecisionRequest`, or
+ * `null` when it isn't one — malformed JSON, no options, or (for a bare
+ * ```json fence) no explicit `"type": "decision"` opt-in. The `json` fence
+ * has to opt in explicitly: unlike a ```decision fence, its language alone
+ * says nothing about intent, and treating every JSON example the agent shows
+ * as a live prompt would misfire on ordinary sample output. */
+function tryNormalizeDecision(lang: string, body: string, fallbackSeed: string): DecisionRequest | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const raw = parsed as Record<string, unknown>;
+  if (lang.toLowerCase() === "json" && raw.type !== "decision") return null;
+  if (!Array.isArray(raw.options)) return null;
+
+  const options: DecisionOption[] = [];
+  raw.options.forEach((item, i) => {
+    if (item === null || typeof item !== "object") return;
+    const o = item as Record<string, unknown>;
+    const label = typeof o.label === "string" && o.label.trim() ? o.label : null;
+    if (!label) return;
+    options.push({
+      id: typeof o.id === "string" && o.id ? o.id : `opt-${i}`,
+      label,
+      description: typeof o.description === "string" ? o.description : undefined,
+    });
+  });
+  if (options.length === 0) return null;
+
+  // Accepts the exact shape this app's own docs describe (`title`) as well
+  // as the shape a question-asking tool call would carry (`question`,
+  // `multiSelect`), so either convention an agent reaches for just works.
+  const title =
+    (typeof raw.title === "string" && raw.title.trim()) ||
+    (typeof raw.question === "string" && raw.question.trim()) ||
+    "Choose an option";
+  const multi = raw.selectionMode === "multiple" || raw.multiSelect === true;
+
+  return {
+    type: "decision",
+    id: typeof raw.id === "string" && raw.id ? raw.id : `dec-${simpleHash(body)}-${fallbackSeed}`,
+    title,
+    description: typeof raw.description === "string" ? raw.description : undefined,
+    options,
+    selectionMode: multi ? "multiple" : "single",
+    allowCustomInput: raw.allowCustomInput === true,
+  };
+}
+
+/** Pulls every decision fence out of an assistant message's text, returning
+ * the prose with those fences removed (trimmed) alongside the requests they
+ * parsed into. A fence that fails to parse — or isn't a decision — is left
+ * exactly as written, so it still renders as an ordinary code block instead
+ * of silently vanishing. */
+export function extractDecisions(text: string): { text: string; decisions: DecisionRequest[] } {
+  const decisions: DecisionRequest[] = [];
+  const cleaned = text.replace(DECISION_FENCE_RE, (match: string, lang: string, body: string) => {
+    const request = tryNormalizeDecision(lang, body.trim(), String(decisions.length));
+    if (!request) return match;
+    decisions.push(request);
+    return "";
+  });
+  return { text: cleaned.trim(), decisions };
+}
+
+/** Splits one settled assistant entry into the entries it should actually
+ * render as: itself, unchanged, when it carries no decision fence; otherwise
+ * its stripped prose (dropped entirely when nothing is left) followed by one
+ * `agent_request` entry per fence, in the order they appeared. Shared by the
+ * live fold and `fromDto`, so a freshly streamed reply and one restored from
+ * a snapshot always land on the same structure. */
+function splitAssistant(entry: Extract<Entry, { kind: "assistant" }>): Entry[] {
+  const { text, decisions } = extractDecisions(entry.text);
+  if (decisions.length === 0) return [entry];
+  const out: Entry[] = [];
+  if (text.length > 0) out.push({ ...entry, text });
+  for (const request of decisions) {
+    out.push({ kind: "agent_request", id: request.id, request, response: null });
+  }
+  return out;
+}
+
+/** Applies `splitAssistant` in place at `index`, growing `entries` in place
+ * when the entry there turns out to carry a decision fence. */
+function finalizeAssistantEntry(entries: Entry[], index: number): void {
+  const entry = entries[index];
+  if (entry?.kind !== "assistant") return;
+  const replacement = splitAssistant(entry);
+  if (replacement.length === 1 && replacement[0] === entry) return;
+  entries.splice(index, 1, ...replacement);
+}
+
+/** The plain-text turn a decision answer becomes on the wire — sending a new
+ * user turn is the one continuation mechanism every harness shares, so it's
+ * also how the agent "sees" the answer and carries on. The pick is already
+ * shown inline by the card itself, so this never has to also appear as its
+ * own chat bubble — see `markRunning`. */
+export function formatDecisionReply(prompt: DecisionRequest, response: DecisionResponse): string {
+  const picks = response.selectedOptionIds.map(
+    (id) => prompt.options.find((o) => o.id === id)?.label ?? id,
+  );
+  const lines = [`Decision — ${prompt.title}`, `Selected: ${picks.length > 0 ? picks.join(", ") : "(none)"}`];
+  if (response.customText) lines.push(`Note: ${response.customText}`);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

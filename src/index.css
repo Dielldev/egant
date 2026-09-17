@@ -378,7 +378,7 @@ html[data-glass="clear"] .stage-glass {
 /* Clear: the composer goes extra translucent to match the stage. Menus
  * deliberately don't follow it — see `.menu`. */
 html[data-glass="clear"] .composer {
-  background: rgba(22, 22, 27, 0.38);
+  background: color-mix(in srgb, var(--sidebar) 40%, transparent);
 }
 
 /* The launch-screen wallpaper's entrance: a slow dissolve in rather than a
@@ -516,18 +516,20 @@ input {
   color: #ffffff;
 }
 
-/* The composer, on both screens. Dark frosted glass rather than a fill: over
- * the launch wallpaper it reads as a pane you can see through, and over the
- * conversation's near-black stage as a pill lifted off the ground. One class
- * for both is the whole point — it is the same control either way. */
+/* The composer, on both screens. Frosted glass rather than a fill, tinted
+ * from the palette's own --sidebar color: over the launch wallpaper it reads
+ * as a pane you can see through, and over the conversation's stage as a pill
+ * lifted off the ground — in whichever palette (light or dark) is active.
+ * One class for both is the whole point — it is the same control either
+ * way. */
 .composer {
-  background: rgba(22, 22, 27, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: color-mix(in srgb, var(--sidebar) 64%, transparent);
+  border: 1px solid var(--border);
   backdrop-filter: blur(28px) saturate(1.5);
   -webkit-backdrop-filter: blur(28px) saturate(1.5);
   box-shadow:
     0 20px 60px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    inset 0 1px 0 var(--hover);
 }
 
 /* Popovers hanging off the sidebar header and the composer's chips. Fully
@@ -539,8 +541,11 @@ input {
  * thing sitting on top of them. No `backdrop-filter` either: there is nothing
  * left to blur behind an opaque fill. */
 .menu {
-  background: #16161a;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  /* --stage and --ink are solid colors in every palette (no alpha), so this
+   * mix is always fully opaque too — a raised panel a shade off the stage,
+   * in whichever palette is active. */
+  background: color-mix(in srgb, var(--stage) 92%, var(--ink) 8%);
+  border: 1px solid var(--border);
   box-shadow:
     0 16px 48px rgba(0, 0, 0, 0.55),
     0 0 0 1px rgba(0, 0, 0, 0.4);
@@ -802,11 +807,11 @@ input {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--ink) 20%, transparent);
 }
 
 /* ---------------------------------------------------------------------------
@@ -841,12 +846,14 @@ html[data-theme="light"] {
 
 /* The viewer is two panes on one monospace grid: the numbers and the code
  * must agree line for line, so they share every metric that decides where a
- * line sits. */
+ * line sits. The size follows Settings > Files > Editor font size, set as
+ * `--editor-font-size` on the viewer container — 12px is only the fallback
+ * before anything sets it. */
 .code-pane,
 .code-gutter {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
-  font-size: 12px;
+  font-size: var(--editor-font-size, 12px);
   line-height: 1.55;
   tab-size: 2;
   white-space: pre;
@@ -935,13 +942,14 @@ html[data-theme="light"] {
 }
 
 /* The diff viewer on the stage: the same monospace grid as the file viewer,
- * with a column of line numbers per side and git's own marker between them. */
+ * with a column of line numbers per side and git's own marker between them.
+ * Same setting-driven size as the file viewer (see above). */
 .code-diff-row {
   display: grid;
   grid-template-columns: 3.2rem 3.2rem 1rem 1fr;
   align-items: baseline;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
-  font-size: 12px;
+  font-size: var(--editor-font-size, 12px);
   line-height: 1.55;
 }
 

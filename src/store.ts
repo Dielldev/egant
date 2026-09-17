@@ -6,13 +6,24 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, pickProjectFolder, pickWallpaperImage } from "./lib/api";
-import { applyEvent, emptyTranscript, fromDto, pushUser, resolvePermission } from "./lib/transcript";
+import { log, preview } from "./lib/logger";
+import {
+  applyEvent,
+  emptyTranscript,
+  formatDecisionReply,
+  fromDto,
+  markRunning,
+  pushUser,
+  resolvePermission,
+} from "./lib/transcript";
 import { parseContext } from "./lib/types";
 import type {
   AgentCatalogEntry,
   AgentModel,
   AgentStatus,
   ClaudeUsage,
+  DecisionRequest,
+  DecisionResponse,
   GitChange,
   GitChangeStatus,
   SessionEventPayload,
@@ -213,6 +224,12 @@ interface EgantStore {
    * sensible range. Persisted so a resize survives reopening the window. */
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
+  /** Which project groups are collapsed in the "by project" sidebar, keyed
+   * by project id as a string (localStorage round-trips through JSON, which
+   * only has string keys). A project with a lot of history collapses down
+   * to just its header, the way a folder does. */
+  collapsedProjects: Record<string, boolean>;
+  toggleProjectCollapsed: (projectId: number) => void;
   /** The workspace panel on the right: the project's files and its
    * terminals. Closed until asked for — the window is a conversation first. */
   panelOpen: boolean;
@@ -279,10 +296,17 @@ interface EgantStore {
    * which itself falls back to the model's own window). Stored raw
    * ("200K"); parsed with `parseContext` when read. */
   composerContext: string;
+  /** Whether the next session should start in `bypassPermissions` — the
+   * picker's toggle, for before a session (and therefore its own Mode menu)
+   * exists yet. Applied right after creation in `sendOnLaunch` /
+   * `openFolderDialog`; an existing session flips it via `ModeInfo`'s own
+   * Bypass permissions row instead. */
+  composerBypass: boolean;
   setComposerAgent: (agent: string | null) => void;
   setComposerModel: (model: string) => void;
   setComposerVariant: (variant: string) => void;
   setComposerContext: (context: string) => void;
+  setComposerBypass: (bypass: boolean) => void;
   fetchAgents: () => Promise<void>;
   /** `list_agent_catalog`: every agent egant knows how to install, with CLI
    * presence. Wider than `agents`, which only covers the drivable registry —
@@ -379,6 +403,12 @@ interface EgantStore {
   setFilter: (filter: string) => void;
   openFilter: () => void;
   closeFilter: () => void;
+  /** The full-screen search modal — every session and project, not just the
+   * ones the sidebar's own scroll happens to have on screen. Separate from
+   * the sidebar's filter popover, which only narrows that one list. */
+  searchOpen: boolean;
+  openSearch: () => void;
+  closeSearch: () => void;
   requestFocusComposer: () => void;
   dismissError: () => void;
 
@@ -400,10 +430,21 @@ interface EgantStore {
   selectNextSession: () => Promise<void>;
   /** Send from the launch screen: opens a folder / session first if needed,
    * then delivers the text into the resulting session. */
-  sendOnLaunch: (text: string) => Promise<void>;
-  send: (id: number, text: string) => Promise<void>;
+  sendOnLaunch: (text: string, images?: string[]) => Promise<void>;
+  send: (id: number, text: string, images?: string[]) => Promise<void>;
   interrupt: (id: number) => Promise<void>;
-  answerPermission: (id: number, allow: boolean) => Promise<void>;
+  answerPermission: (id: number, requestId: string, decision: string) => Promise<void>;
+  /** Answers to `agent_request` entries the transcript fold pulled out of the
+   * agent's own text — keyed `${sessionId}:${decisionId}` so a reload or a
+   * session switch (which rebuilds the transcript mirror from a snapshot
+   * that carries no notion of "answered") still shows the card as completed.
+   * Persisted to localStorage; see `loadDecisionResponses`. */
+  decisionResponses: Record<string, DecisionResponse>;
+  answerDecision: (
+    sessionId: number,
+    decision: DecisionRequest,
+    response: DecisionResponse,
+  ) => Promise<void>;
   cycleMode: (id: number) => Promise<void>;
   /** Jumps straight to a named mode, for the mode-info popover's rows. */
   setMode: (id: number, mode: string) => Promise<void>;
@@ -415,6 +456,7 @@ interface EgantStore {
 
 function fail(set: (patch: Partial<EgantStore>) => void, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
+  log.error("store", message, error);
   set({ error: message });
 }
 
@@ -532,6 +574,43 @@ function loadStarred(): Record<string, boolean> {
   }
 }
 
+/** Decision-prompt answers, keyed `${sessionId}:${decisionId}` — local-only
+ * state, never round-tripped through the backend, so it survives a reload
+ * the same way the starred-models map does. Malformed or foreign entries
+ * (an older shape, hand-edited storage) are dropped rather than shown as a
+ * broken card. */
+function loadDecisionResponses(): Record<string, DecisionResponse> {
+  try {
+    const raw = localStorage.getItem("egant.decisionResponses");
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof parsed !== "object" || parsed === null) return {};
+    const out: Record<string, DecisionResponse> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (
+        value !== null &&
+        typeof value === "object" &&
+        (value as { type?: unknown }).type === "decision" &&
+        Array.isArray((value as { selectedOptionIds?: unknown }).selectedOptionIds)
+      ) {
+        out[key] = value as DecisionResponse;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveDecisionResponses(responses: Record<string, DecisionResponse>): void {
+  try {
+    localStorage.setItem("egant.decisionResponses", JSON.stringify(responses));
+  } catch {
+    // Unavailable storage: the answer still reached the agent; only the
+    // "already answered" replay across a reload is lost.
+  }
+}
+
 /** Model the next session for `agent` starts with: the composer's override,
  * else the per-agent default from Settings > Agents, else the CLI default. */
 export function selectNextModel(
@@ -604,7 +683,10 @@ export function selectLaunching(
   if (selectActiveSession(snapshot)?.kind === "cli") return false;
   const transcript = transcripts[activeId];
   return (
-    transcript !== undefined && transcript.entries.length === 0 && !transcript.pending
+    transcript !== undefined &&
+    transcript.entries.length === 0 &&
+    !transcript.pending &&
+    (transcript.pendingList ?? []).length === 0
   );
 }
 
@@ -681,6 +763,22 @@ export const useEgant = create<EgantStore>()((set, get) => {
     });
   }
 
+  /** Carries the picker's "Bypass permissions" pick onto a session that just
+   * started — the session itself always spawns in `auto` (the backend has no
+   * concept of the picker's pending choice), so this is the one call that
+   * actually applies it, right after creation and before the first turn goes
+   * out. Best-effort: the session still starts either way, and its Mode menu
+   * is still there to flip it from if this fails. */
+  async function applyComposerBypass(id: number): Promise<void> {
+    if (!get().composerBypass) return;
+    try {
+      const applied = await api.setPermissionMode(id, "bypassPermissions");
+      patchSession(id, { permissionMode: applied });
+    } catch (error) {
+      log.error("store", `apply composer bypass to session ${id} failed: ${String(error)}`, error);
+    }
+  }
+
   /** Adds a tab to the stage (or focuses the one already there) and shows it.
    * A tab's identity is its key, so re-opening the same file or the same side
    * of the same diff never stacks duplicates. */
@@ -702,6 +800,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const url = await api.wallpaperDataUrl();
       set({ wallpaperUrl: url });
     } catch (error) {
+      log.warn("store", `wallpaper load failed: ${error instanceof Error ? error.message : String(error)}`);
       fail(set, error);
     }
   }
@@ -754,6 +853,35 @@ export const useEgant = create<EgantStore>()((set, get) => {
   }
 
   function onSessionEvent({ sessionId, event }: SessionEventPayload): void {
+    // Lifecycle at info, everything per-token stays at debug (or off): deltas
+    // fire per token and would flood the console mid-reply.
+    switch (event.type) {
+      case "turn_ended":
+        if (event.is_error) log.error("session-event", `session ${sessionId} turn failed: ${event.result ?? "unknown error"}`);
+        else log.info("session-event", `session ${sessionId} turn ended`);
+        break;
+      case "exited":
+        log.info("session-event", `session ${sessionId} exited`);
+        break;
+      case "error":
+        log.error("session-event", `session ${sessionId} error: ${event.message}`);
+        break;
+      case "permission_request":
+        log.info("session-event", `session ${sessionId} permission: ${event.tool_name}`);
+        break;
+      case "tool_use":
+        log.info("session-event", `session ${sessionId} tool: ${event.name}`);
+        break;
+      case "ready":
+        log.info("session-event", `session ${sessionId} ready model=${event.model ?? "-"}`);
+        break;
+      case "assistant_message":
+        log.debug("session-event", `session ${sessionId} message (${event.text.length} chars)`);
+        break;
+      default:
+        log.debug("session-event", `session ${sessionId} ${event.type}`);
+        break;
+    }
     const prev = get().transcripts[sessionId] ?? emptyTranscript();
     const next = applyEvent(prev, event);
     set({ transcripts: { ...get().transcripts, [sessionId]: next } });
@@ -782,7 +910,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     wallpaperUrl: null,
     filter: "",
     filterOpen: false,
-    sidebarOrganize: (loadString("egant.sidebarOrganize") as SidebarOrganize | null) ?? "flat",
+    searchOpen: false,
+    sidebarOrganize: (loadString("egant.sidebarOrganize") as SidebarOrganize | null) ?? "byProject",
     setSidebarOrganize: (sidebarOrganize) => {
       set({ sidebarOrganize });
       saveString("egant.sidebarOrganize", sidebarOrganize);
@@ -807,6 +936,16 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const sidebarWidth = Math.round(Math.min(480, Math.max(200, width)));
       set({ sidebarWidth });
       saveString("egant.sidebarWidth", String(sidebarWidth));
+    },
+    collapsedProjects: loadBoolRecord("egant.collapsedProjects", {}),
+    toggleProjectCollapsed: (projectId) => {
+      const key = String(projectId);
+      const collapsedProjects = {
+        ...get().collapsedProjects,
+        [key]: !get().collapsedProjects[key],
+      };
+      set({ collapsedProjects });
+      localStorage.setItem("egant.collapsedProjects", JSON.stringify(collapsedProjects));
     },
     panelOpen: loadBool("egant.panelOpen", false),
     panelWidth: loadNumber("egant.panelWidth", 320),
@@ -978,23 +1117,34 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ composerContext });
       saveString("egant.composerContext", composerContext || null);
     },
+    composerBypass: loadBool("egant.composerBypass", false),
+    setComposerBypass: (composerBypass) => {
+      set({ composerBypass });
+      saveString("egant.composerBypass", String(composerBypass));
+    },
     catalog: [],
     fetchCatalog: async () => {
       try {
-        set({ catalog: await api.listAgentCatalog() });
+        const catalog = await api.listAgentCatalog();
+        log.debug("store", `catalog loaded (${catalog.length} entries)`);
+        set({ catalog });
       } catch {
         // The picker falls back to the drivable registry; no toast for a
         // list that only adds rows.
+        log.warn("store", "catalog load failed; picker falls back to registry");
       }
     },
     fetchAgents: async () => {
       try {
-        set({ agents: await api.listAgents() });
+        const agents = await api.listAgents();
+        log.debug("store", `agents loaded (${agents.length} known)`);
+        set({ agents });
       } catch (error) {
         fail(set, error);
       }
     },
     verifyAgents: async () => {
+      log.debug("store", "verifying agent logins");
       try {
         set({ agents: await api.listAgents() });
       } catch (error) {
@@ -1008,6 +1158,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         const fresh = live.find((status) => status?.id === agent.id);
         return fresh ?? agent;
       });
+      log.debug("store", "agent login recheck done");
       set({ agents });
     },
     models: [],
@@ -1016,11 +1167,13 @@ export const useEgant = create<EgantStore>()((set, get) => {
     modelCache: loadModelCache(),
     fetchModels: async (agent) => {
       const cached = get().modelCache[agent];
+      log.debug("store", `models for ${agent}${cached ? " (cached, refreshing)" : ""}`);
       // A cached catalog shows immediately and refreshes underneath; only an
       // agent never fetched this run gets the loading state.
       set({ models: cached ?? [], modelsAgent: agent, modelsLoading: cached == null });
       try {
         const fresh = await api.listModels(agent);
+        log.debug("store", `models for ${agent} refreshed (${fresh.length})`);
         const modelCache = { ...get().modelCache, [agent]: fresh };
         set({ modelCache });
         saveModelCache(modelCache);
@@ -1053,7 +1206,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // the same error toast a failed send would. The pill just stays hidden.
     fetchClaudeUsage: async () => {
       try {
-        set({ claudeUsage: await api.claudeUsageLimits() });
+        const usage = await api.claudeUsageLimits();
+        log.debug("store", usage ? "claude usage refreshed" : "claude usage unavailable");
+        set({ claudeUsage: usage });
       } catch {
         set({ claudeUsage: null });
       }
@@ -1090,6 +1245,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     cancelCliLaunch: () => set({ cliLaunch: null }),
 
     startCliSession: async (agent) => {
+      log.info("store", `starting CLI session for ${agent}`);
       // Same rule as a chat session: there is nothing to run a CLI *in*
       // until a folder is open, so ask for one first rather than failing.
       if (get().snapshot?.activeProject == null) {
@@ -1154,6 +1310,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         // keep in-memory choice
       }
     },
+    decisionResponses: loadDecisionResponses(),
     starredModels: loadStarred(),
     toggleStarred: (agent, modelId) => {
       const key = starKey(agent, modelId);
@@ -1200,11 +1357,18 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // Closing clears the needle too: a hidden filter that still narrows the
     // list would be a list with rows missing for no visible reason.
     closeFilter: () => set({ filterOpen: false, filter: "" }),
+    openSearch: () => set({ searchOpen: true }),
+    closeSearch: () => set({ searchOpen: false }),
     requestFocusComposer: () => set((s) => ({ focusComposerToken: s.focusComposerToken + 1 })),
     dismissError: () => set({ error: null }),
 
     init: async () => {
+      log.info("store", "initialising egant");
       const snapshot = await api.getState();
+      log.info(
+        "store",
+        `initialised (${snapshot.projects.length} projects, ${snapshot.sessions.length} sessions)`,
+      );
       applySnapshot(snapshot);
       void get().verifyAgents();
       // A filesystem probe, no spawns — and it is what names the agents the
@@ -1225,6 +1389,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     ensureTranscript: async (id) => {
       if (get().transcripts[id]) return;
+      log.debug("store", `fetching transcript for session ${id}`);
       try {
         const dto = await api.getTranscript(id);
         set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
@@ -1251,6 +1416,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
           agent,
         );
         applySnapshot(await api.addProject(path, agent, model, variant, context));
+        const id = get().snapshot?.activeSession;
+        if (id != null) await applyComposerBypass(id);
       } catch (error) {
         fail(set, error);
       }
@@ -1303,7 +1470,23 @@ export const useEgant = create<EgantStore>()((set, get) => {
     selectSession: async (id) => {
       set({ startingNewSession: false });
       try {
-        applySnapshot(await api.selectSession(id));
+        const snapshot = await api.selectSession(id);
+        applySnapshot(snapshot);
+        // Post-validation: selecting a session also moves the project
+        // selection to its owner on the backend — confirm both landed.
+        if (snapshot.activeSession !== id) {
+          fail(set, new Error("the conversation did not switch — try again"));
+        } else {
+          const session = snapshot.sessions.find((s) => s.id === id);
+          if (session && snapshot.activeProject !== session.projectId) {
+            fail(
+              set,
+              new Error(
+                `opened ${session.title} but the project still shows elsewhere — try again`,
+              ),
+            );
+          }
+        }
       } catch (error) {
         fail(set, error);
       }
@@ -1348,11 +1531,24 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
     },
 
-    sendOnLaunch: async (text) => {
-      if (!text.trim()) return;
+    sendOnLaunch: async (text, images) => {
+      if (!text.trim() && !images?.length) return;
+      log.info("store", `send on launch: ${preview(text)}`);
       try {
         const forceNew = get().startingNewSession;
         let id = forceNew ? null : get().snapshot?.activeSession ?? null;
+        // Defensive: never send into a session that belongs to another
+        // project. If the backend ever hands back a stale pairing again
+        // (sidebar on `meme-cam`, active thread still in `egant`), treat it
+        // as no session and create fresh in the selected project instead of
+        // continuing the wrong thread.
+        const snapshotBefore = get().snapshot;
+        if (id != null && snapshotBefore?.activeProject != null) {
+          const stale = snapshotBefore.sessions.find((s) => s.id === id);
+          if (stale && stale.projectId !== snapshotBefore.activeProject) {
+            id = null;
+          }
+        }
         if (id == null) {
           if (get().snapshot?.activeProject == null) {
             const path = await pickProjectFolder().catch((error: unknown) => {
@@ -1388,23 +1584,50 @@ export const useEgant = create<EgantStore>()((set, get) => {
           }
           id = get().snapshot?.activeSession ?? null;
           if (id == null) return;
+          await applyComposerBypass(id);
         }
         if (forceNew) set({ startingNewSession: false });
         await get().ensureTranscript(id);
-        await get().send(id, text);
+        await get().send(id, text, images);
       } catch (error) {
         fail(set, error);
       }
     },
 
-    send: async (id, text) => {
-      if (!text.trim()) return;
+    send: async (id, text, images) => {
+      if (!text.trim() && !images?.length) return;
+      log.info("store", `send to session ${id}: ${preview(text)}`);
+      // Never send into a session that belongs to another project. If the
+      // backend ever hands back a stale pairing again (sidebar on `Arka`,
+      // active thread still in `egant`), refuse rather than continuing the
+      // wrong thread — the agent would truthfully answer with its own folder
+      // and look like it doesn't know where it is.
+      const snapshot = get().snapshot;
+      if (snapshot?.activeProject != null) {
+        const stale = snapshot.sessions.find((s) => s.id === id);
+        if (stale && stale.projectId !== snapshot.activeProject) {
+          fail(
+            set,
+            new Error(
+              `not sending into ${stale.title} — it belongs to another project; select its project first`,
+            ),
+          );
+          // Roll back the optimistic echo above? It hasn't happened yet —
+          // return before echoing so the transcript stays clean.
+          return;
+        }
+      }
+      // An image-only turn still needs something in the bubble — matches the
+      // caption the backend synthesizes for the same case, so the optimistic
+      // echo below never flashes empty before the real transcript arrives.
+      const echoText =
+        text.trim() || (images?.length === 1 ? "Here's an image." : `Here are ${images?.length ?? 0} images.`);
       // Echo immediately so the message appears on keypress.
       const prev = get().transcripts[id] ?? emptyTranscript();
-      set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, text) } });
+      set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, echoText) } });
       patchSession(id, { busy: true });
       try {
-        const title = await api.sendMessage(id, text);
+        const title = await api.sendMessage(id, text, images);
         if (title) patchSession(id, { title });
       } catch (error) {
         fail(set, error);
@@ -1412,6 +1635,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     interrupt: async (id) => {
+      log.info("store", `interrupt session ${id}`);
       try {
         await api.interruptSession(id);
       } catch (error) {
@@ -1419,19 +1643,73 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
     },
 
-    answerPermission: async (id, allow) => {
+    answerPermission: async (id, requestId, decision) => {
+      // Stale rows (already resolved by an earlier click, or a snapshot that
+      // arrived mid-answer) carry nothing to send — bail before touching IPC
+      // so a double-click can never flash the error bar.
+      if (!requestId || !decision) return;
+      log.info("store", `answer permission session ${id} ${requestId} ${decision}`);
       const prev = get().transcripts[id];
       if (prev) {
-        set({ transcripts: { ...get().transcripts, [id]: resolvePermission(prev) } });
+        // Optimistic: drop the answered row so the table reacts on click.
+        // Reconciled against the backend below (opencode Allow clears the
+        // whole table and retries; Claude clears just the row).
+        set({
+          transcripts: { ...get().transcripts, [id]: resolvePermission(prev, requestId) },
+        });
+      }
+      // "Allow always" flips the session to bypassPermissions — reflect it
+      // immediately so the mode chip reads the mode the agent runs under,
+      // then reconcile with whatever the backend reports.
+      if (decision === "allow-always") {
+        patchSession(id, { permissionMode: "bypassPermissions" });
       }
       try {
-        await api.answerPermission(id, allow);
+        const newMode = await api.answerPermission(id, requestId, decision);
+        if (newMode) patchSession(id, { permissionMode: newMode });
+        const dto = await api.getTranscript(id);
+        set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+      } catch (error) {
+        // Seamless, never red: the click already updated the UI optimistically
+        // and the backend treats already-answered rows as no-ops, so a failure
+        // here is a transport blip, not something to shout about. Re-sync
+        // quietly; the row comes back if the answer never landed.
+        log.error("store", `answer permission failed: ${String(error)}`, error);
+        try {
+          const dto = await api.getTranscript(id);
+          set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+        } catch {
+          // Still quiet — the next session-event re-syncs anyway.
+        }
+      }
+    },
+
+    answerDecision: async (id, decision, response) => {
+      const key = `${id}:${decision.id}`;
+      // Already answered (a stale re-submit from a double click, or a second
+      // event for a request the store already resolved) — idempotent no-op
+      // rather than sending the agent the same decision twice.
+      if (get().decisionResponses[key]) return;
+      log.info("store", `answer decision session ${id} ${decision.id}: ${preview(formatDecisionReply(decision, response))}`);
+      const decisionResponses = { ...get().decisionResponses, [key]: response };
+      set({ decisionResponses });
+      saveDecisionResponses(decisionResponses);
+      // Same turn-clock treatment `send` gives a typed message — the card
+      // already shows the pick inline, so this skips `pushUser`'s echoed
+      // bubble and just gets the status line moving.
+      const prev = get().transcripts[id] ?? emptyTranscript();
+      set({ transcripts: { ...get().transcripts, [id]: markRunning(prev) } });
+      patchSession(id, { busy: true });
+      try {
+        const title = await api.sendMessage(id, formatDecisionReply(decision, response));
+        if (title) patchSession(id, { title });
       } catch (error) {
         fail(set, error);
       }
     },
 
     cycleMode: async (id) => {
+      log.debug("store", `cycle permission mode session ${id}`);
       try {
         const mode = await api.cyclePermissionMode(id);
         patchSession(id, { permissionMode: mode });
@@ -1441,6 +1719,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     setMode: async (id, mode) => {
+      log.debug("store", `set permission mode session ${id} ${mode}`);
       try {
         const applied = await api.setPermissionMode(id, mode);
         patchSession(id, { permissionMode: applied });

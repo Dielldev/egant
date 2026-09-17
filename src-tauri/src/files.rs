@@ -31,7 +31,10 @@ const SNIFF: usize = 8192;
 /// usefully do anything with them.
 #[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<FileEntryDto>, String> {
-    let entries = std::fs::read_dir(&path).map_err(|error| error.to_string())?;
+    let entries = std::fs::read_dir(&path).map_err(|error| {
+        log::warn!("list_dir {path} failed: {error}");
+        error.to_string()
+    })?;
 
     let mut rows: Vec<FileEntryDto> = entries
         .flatten()
@@ -80,7 +83,10 @@ pub fn read_file(path: String) -> Result<FileContentDto, String> {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.clone());
 
-    let bytes = std::fs::read(file).map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(file).map_err(|error| {
+        log::warn!("read_file {path} failed: {error}");
+        error.to_string()
+    })?;
     let size = bytes.len() as u64;
 
     if bytes.iter().take(SNIFF).any(|byte| *byte == 0) {

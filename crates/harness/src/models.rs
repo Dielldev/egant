@@ -77,9 +77,15 @@ fn catalog_cache() -> &'static Mutex<HashMap<AgentId, (Instant, Vec<AgentModel>)
 /// place for ten minutes.
 pub fn list_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
     if let Some(models) = cached_models(agent) {
+        log::debug!("models {} cache hit ({} models)", agent.as_str(), models.len());
         return Ok(models);
     }
-    let models = discover_models(agent)?;
+    log::info!("models {} discovery start", agent.as_str());
+    let models = discover_models(agent).map_err(|error| {
+        log::warn!("models {} discovery failed: {error}", agent.as_str());
+        error
+    })?;
+    log::info!("models {} discovery found {} models", agent.as_str(), models.len());
     if let Ok(mut cache) = catalog_cache().lock() {
         cache.insert(agent, (Instant::now(), models.clone()));
     }
@@ -89,6 +95,7 @@ pub fn list_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
 /// Drops the cached catalog for one agent, so the next [`list_models`] pays
 /// for a live look again — what a deliberate "refresh" means.
 pub fn invalidate_models(agent: AgentId) {
+    log::debug!("models {} cache invalidated", agent.as_str());
     if let Ok(mut cache) = catalog_cache().lock() {
         cache.remove(&agent);
     }

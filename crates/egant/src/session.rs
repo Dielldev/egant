@@ -205,7 +205,9 @@ impl AgentSession {
         };
         let decision = if allow {
             PermissionDecision::Allow {
-                updated_input: None,
+                // Echo the original input: an `allow` without `updatedInput`
+                // reads as a deny on older CLIs.
+                updated_input: Some(pending.input.clone()),
             }
         } else {
             PermissionDecision::Deny {

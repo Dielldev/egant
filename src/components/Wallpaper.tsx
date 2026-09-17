@@ -58,7 +58,7 @@ export function Wallpaper({
           className="absolute inset-0"
           style={{
             background:
-              "linear-gradient(to bottom, transparent 0%, transparent 30%, #000 60%, #000 100%)",
+              "linear-gradient(to bottom, transparent 0%, transparent 30%, var(--stage) 60%, var(--stage) 100%)",
           }}
         />
       </div>
@@ -67,10 +67,12 @@ export function Wallpaper({
 
   const veil = (dim * 0.4).toFixed(3);
   // Split structure (pure CSS, no Tailwind): the image element only lives in
-  // the top 88% — nothing image-related below that, just blank black ground.
-  // The bottom of that top section feather-melts into the blank with a long
-  // eased ramp (mask + multi-stop scrim), so the dissolve reads smooth with
-  // no straight-line seam.
+  // the top 88% — nothing image-related below that, just blank ground in the
+  // active theme's own stage color (so it reads as black in a dark palette
+  // and light in a light one, instead of always black). The bottom of that
+  // top section feather-melts into the blank with a long eased ramp (mask +
+  // multi-stop scrim), so the dissolve reads smooth with no straight-line
+  // seam.
   const sectionFade =
     "linear-gradient(to bottom, #000 0%, #000 45%, transparent 100%)";
   return (
@@ -80,7 +82,7 @@ export function Wallpaper({
         position: "absolute",
         inset: 0,
         overflow: "hidden",
-        background: "#000",
+        background: "var(--stage)",
       }}
     >
       <div
@@ -115,7 +117,7 @@ export function Wallpaper({
           style={{
             position: "absolute",
             inset: 0,
-            background: `linear-gradient(to bottom, rgba(0,0,0,${veil}) 0%, rgba(0,0,0,${veil}) 30%, rgba(0,0,0,0.55) 65%, rgba(0,0,0,0.9) 88%, #000 100%)`,
+            background: `linear-gradient(to bottom, rgba(0,0,0,${veil}) 0%, rgba(0,0,0,${veil}) 30%, rgba(0,0,0,0.55) 65%, rgba(0,0,0,0.9) 88%, var(--stage) 100%)`,
           }}
         />
       </div>

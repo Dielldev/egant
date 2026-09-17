@@ -338,7 +338,7 @@ function PrEntry({
                     type="button"
                     disabled={merging || conflicting}
                     onClick={() => void merge()}
-                    className="flex cursor-pointer items-center gap-1 rounded-l-full bg-[rgba(255,255,255,0.1)] px-2.5 py-0.5 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
+                    className="flex cursor-pointer items-center gap-1 rounded-l-full bg-[var(--bubble)] px-2.5 py-0.5 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
                   >
                     {merging ? (
                       <Loader2 size={11} strokeWidth={2} className="animate-spin" />
@@ -352,7 +352,7 @@ function PrEntry({
                     title="Choose how to merge"
                     disabled={merging}
                     onClick={() => setMethodOpen((open) => !open)}
-                    className="cursor-pointer rounded-r-full bg-[rgba(255,255,255,0.1)] px-1.5 text-[var(--ink)] hover:opacity-85"
+                    className="cursor-pointer rounded-r-full bg-[var(--bubble)] px-1.5 text-[var(--ink)] hover:opacity-85"
                   >
                     <ChevronDown size={11} strokeWidth={2.4} />
                   </button>
@@ -497,7 +497,7 @@ function CreatePr({
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Pull request title"
         disabled={busy}
-        className="w-full rounded-md bg-[rgba(255,255,255,0.05)] px-2 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
+        className="w-full rounded-md bg-[var(--card)] px-2 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
       />
       <textarea
         value={body}
@@ -505,7 +505,7 @@ function CreatePr({
         placeholder="Description"
         rows={3}
         disabled={busy}
-        className="w-full resize-none rounded-md bg-[rgba(255,255,255,0.05)] px-2 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
+        className="w-full resize-none rounded-md bg-[var(--card)] px-2 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
       />
       {error && <span className="text-[12px] text-[var(--danger)]">{error}</span>}
       <div className="flex items-center gap-2">

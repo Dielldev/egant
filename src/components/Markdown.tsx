@@ -81,7 +81,7 @@ const components: Components = {
     if (!isBlock) {
       return (
         <code
-          className="rounded-[4px] bg-[rgba(255,255,255,0.08)] px-1 py-px font-mono text-[0.85em] text-[var(--ink)]"
+          className="rounded-[4px] bg-[var(--card)] px-1 py-px font-mono text-[0.85em] text-[var(--ink)]"
           {...rest}
         >
           {children}

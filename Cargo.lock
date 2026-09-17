@@ -984,6 +984,7 @@ dependencies = [
  "async-channel",
  "async-process",
  "async-trait",
+ "base64 0.22.1",
  "futures-lite",
  "log",
  "reqwest",

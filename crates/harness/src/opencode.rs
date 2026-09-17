@@ -13,7 +13,7 @@
 
 use crate::agents::AgentId;
 use crate::runner::{Runner, TurnRequest, TurnTranslator};
-use crate::{Harness, HarnessEvent, PermissionDecision, SessionId};
+use crate::{Harness, HarnessEvent, PermissionDecision, PermissionMode, SessionId};
 use anyhow::{Context as _, Result};
 use async_channel::Receiver;
 use async_trait::async_trait;
@@ -30,6 +30,10 @@ pub struct OpencodeOptions {
     pub program: PathBuf,
     /// Working directory the agent operates in.
     pub cwd: PathBuf,
+    /// Human name of the project `cwd` belongs to. Folded into every turn's
+    /// prompt so "what folder am I in" answers with this project. `None`
+    /// derives it from `cwd`.
+    pub project_name: Option<String>,
     /// `provider/model` the turn should use. `None` keeps opencode's default.
     pub model: Option<String>,
     /// Reasoning variant for the turn (`high`, `max`, …). Only sent when the
@@ -37,6 +41,10 @@ pub struct OpencodeOptions {
     pub variant: Option<String>,
     /// Continue this opencode session instead of starting fresh.
     pub session: Option<String>,
+    /// Approve permissions not explicitly denied (`opencode run --auto`).
+    /// Set after the user approves a denial in the permission table — the
+    /// retry (and, for allow-always, every later turn) runs with it.
+    pub auto_approve: bool,
 }
 
 impl Default for OpencodeOptions {
@@ -44,33 +52,90 @@ impl Default for OpencodeOptions {
         Self {
             program: PathBuf::from("opencode"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            project_name: None,
             model: None,
             variant: None,
             session: None,
+            auto_approve: false,
         }
     }
 }
 
 pub struct OpencodeRun {
     runner: Runner,
+    auto: std::sync::Arc<std::sync::Mutex<OpencodeAuto>>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct OpencodeAuto {
+    /// `--auto` on every future turn (allow-always).
+    always: bool,
+    /// `--auto` on the next turn only (allow-once retry).
+    once: bool,
 }
 
 impl OpencodeRun {
     pub fn spawn(options: OpencodeOptions) -> Result<Self> {
+        log::info!(
+            "opencode spawn cwd={} model={:?} session={}",
+            options.cwd.display(),
+            options.model,
+            options.session.is_some(),
+        );
         let program = resolve_program(&options.program)?;
+        let project_name = options.project_name.clone().unwrap_or_else(|| {
+            crate::project_display_name(&options.cwd)
+        });
+        let auto = std::sync::Arc::new(std::sync::Mutex::new(OpencodeAuto {
+            always: options.auto_approve,
+            once: false,
+        }));
         let translator = OpencodeTranslator {
             program,
             cwd: options.cwd,
+            project_name,
             model: options.model,
             variant: options.variant,
             session: options.session,
+            auto: auto.clone(),
             ready_sent: false,
             turn: TurnAcc::default(),
             seen_tools: HashSet::new(),
+            seen_permission_requests: HashSet::new(),
         };
         Ok(Self {
             runner: Runner::spawn(translator),
+            auto,
         })
+    }
+
+    /// Approve the next turn's permissions (`--auto` on the next `run` only).
+    /// What "Allow once" in the permission table means for this wire, which
+    /// has no live approval channel: the denied turn is retried with
+    /// auto-approve rather than answered mid-turn.
+    pub fn approve_next_turn_once(&self) {
+        if let Ok(mut auto) = self.auto.lock() {
+            auto.once = true;
+        }
+    }
+
+    /// Approve every future turn (`--auto` from here on). What "Allow always"
+    /// means for this wire.
+    pub fn approve_all_future_turns(&self) {
+        if let Ok(mut auto) = self.auto.lock() {
+            auto.always = true;
+        }
+    }
+
+    /// Sets whether every future turn runs with `--auto`, the proactive
+    /// counterpart to [`Self::approve_all_future_turns`]: it also turns the
+    /// flag back off, which nothing else here can do once "Allow always" has
+    /// set it. What the mode picker's "Bypass permissions" toggle needs,
+    /// since it must be able to flip back to asking, not just stop asking.
+    pub fn set_always_auto(&self, always: bool) {
+        if let Ok(mut auto) = self.auto.lock() {
+            auto.always = always;
+        }
     }
 }
 
@@ -103,12 +168,14 @@ impl Harness for OpencodeRun {
         self.runner.events()
     }
 
-    async fn send(&mut self, text: String) -> Result<()> {
-        self.runner.send(text);
+    async fn send(&mut self, text: String, images: Vec<PathBuf>) -> Result<()> {
+        log::debug!("opencode send ({} chars, {} image(s))", text.len(), images.len());
+        self.runner.send(text, images);
         Ok(())
     }
 
     async fn interrupt(&mut self) -> Result<()> {
+        log::debug!("opencode interrupt");
         self.runner.interrupt();
         Ok(())
     }
@@ -118,11 +185,38 @@ impl Harness for OpencodeRun {
         _request_id: &str,
         _decision: PermissionDecision,
     ) -> Result<()> {
-        // This wire never asks: tools run under opencode's own policy.
+        // This wire never asks live: denials arrive as failed tools after the
+        // fact, and approval means retrying with `--auto` (see
+        // `approve_next_turn` / `approve_always`), not answering mid-turn.
+        Ok(())
+    }
+
+    async fn approve_next_turn(&mut self) -> Result<()> {
+        log::info!("opencode approve next turn");
+        self.approve_next_turn_once();
+        Ok(())
+    }
+
+    async fn approve_always(&mut self) -> Result<()> {
+        log::info!("opencode approve always");
+        self.approve_all_future_turns();
+        Ok(())
+    }
+
+    /// This wire's only lever is `--auto`, so every mode besides bypass
+    /// collapses onto "ask normally" — there's no live channel to make
+    /// `Manual` or `Plan` behave differently from each other. Unlike
+    /// `approve_always`, this can also turn `--auto` back off, which is what
+    /// lets the bypass toggle flip both ways instead of only ever enabling
+    /// it for the rest of the session.
+    async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<()> {
+        log::info!("opencode set permission mode {mode:?}");
+        self.set_always_auto(mode == PermissionMode::BypassPermissions);
         Ok(())
     }
 
     async fn shutdown(&mut self) -> Result<()> {
+        log::info!("opencode shutdown");
         self.runner.shutdown();
         Ok(())
     }
@@ -141,21 +235,35 @@ struct TurnAcc {
 struct OpencodeTranslator {
     program: PathBuf,
     cwd: PathBuf,
+    project_name: String,
     model: Option<String>,
     variant: Option<String>,
     session: Option<SessionId>,
+    auto: std::sync::Arc<std::sync::Mutex<OpencodeAuto>>,
     ready_sent: bool,
     turn: TurnAcc,
     seen_tools: HashSet<String>,
+    seen_permission_requests: HashSet<String>,
 }
 
 impl TurnTranslator for OpencodeTranslator {
-    fn build(&mut self, text: &str) -> TurnRequest {
+    fn build(&mut self, text: &str, images: &[PathBuf]) -> TurnRequest {
         let mut args = vec![
             "run".to_string(),
             "--format".to_string(),
             "json".to_string(),
         ];
+        // `--auto` approves permissions not explicitly denied. Set for the
+        // retry after an "Allow" answer, or persistently after "Allow always".
+        let auto = self.auto.lock().map(|mut auto| {
+            let use_auto = auto.always || auto.once;
+            // A one-shot approval covers exactly one turn.
+            auto.once = false;
+            use_auto
+        });
+        if auto.unwrap_or(false) {
+            args.push("--auto".to_string());
+        }
         if let Some(session) = &self.session {
             args.push("-s".to_string());
             args.push(session.clone());
@@ -168,12 +276,27 @@ impl TurnTranslator for OpencodeTranslator {
             args.push("--variant".to_string());
             args.push(variant.clone());
         }
-        args.push(text.to_string());
+        // Real vision input via `-f`, not a `@path` mention baked into the
+        // prompt text — `opencode run` reads the file itself either way, but
+        // this way it isn't left to the model to decide to go look.
+        for image in images {
+            args.push("-f".to_string());
+            args.push(image.display().to_string());
+        }
+        // opencode has no system-prompt flag on `run`: ground every turn in
+        // the prompt itself so a resumed session keeps answering with the
+        // folder it runs in.
+        args.push(crate::wrap_turn_with_project(
+            &self.project_name,
+            &self.cwd,
+            text,
+        ));
         self.turn = TurnAcc {
             started: Some(Instant::now()),
             ..TurnAcc::default()
         };
         self.seen_tools.clear();
+        self.seen_permission_requests.clear();
         TurnRequest {
             program: self.program.clone(),
             args,
@@ -309,17 +432,17 @@ impl OpencodeTranslator {
             .unwrap_or("tool")
             .to_string();
         let mut events = Vec::new();
+        let raw_input = part
+            .get("state")
+            .and_then(|s| s.get("input"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let (display_name, display_input) = normalize_tool_call(&name, raw_input);
         if self.seen_tools.insert(id.clone()) {
-            let raw_input = part
-                .get("state")
-                .and_then(|s| s.get("input"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            let (display_name, display_input) = normalize_tool_call(&name, raw_input);
             events.push(HarnessEvent::ToolUse {
                 id: id.clone(),
-                name: display_name,
-                input: display_input,
+                name: display_name.clone(),
+                input: display_input.clone(),
             });
         }
         let status = part
@@ -329,14 +452,77 @@ impl OpencodeTranslator {
             .unwrap_or("");
         if matches!(status, "completed" | "failed" | "error") {
             let state = part.get("state");
+            let output = normalize_tool_output(&name, tool_output(state));
+            let is_error = status != "completed";
+            // Rejection wording lives in `state.error`, not `state.output`
+            // (measured: `"status":"error", ..., "error":"The user rejected
+            // permission to use this specific tool call."`). The card shows
+            // the output; denial detection needs both.
+            let error_text = tool_error(state);
+            let denial_text = if output.is_empty() {
+                error_text.clone()
+            } else if error_text.is_empty() {
+                output.clone()
+            } else {
+                format!("{output}\n{error_text}")
+            };
+            let is_denial = is_error && is_permission_denial(&denial_text);
+            // A denial hasn't failed — nothing ran yet, the tool is parked
+            // waiting for the approval table. Showing the CLI's "rejected"
+            // wording as a red error before the user has answered reads as
+            // an accusation ("you already rejected this") and flashes a red
+            // card under every request. Keep it neutral; the permission table
+            // below is the actual UI for this.
+            let (display_output, display_is_error) = if is_denial {
+                (
+                    "Waiting for approval — nothing ran yet.".to_string(),
+                    false,
+                )
+            } else if output.is_empty() && !error_text.is_empty() {
+                (error_text.clone(), is_error)
+            } else {
+                (output, is_error)
+            };
             events.push(HarnessEvent::ToolResult {
-                id,
-                output: normalize_tool_output(&name, tool_output(state)),
-                is_error: status != "completed",
+                id: id.clone(),
+                output: display_output,
+                is_error: display_is_error,
             });
+            // `opencode run --format json` auto-rejects anything its permission
+            // map marks `ask` (notably `external_directory` for paths outside
+            // the project, e.g. reading meme-cam from egant). That used to be
+            // a bare tool error with no approval UI — the turn looked stalled.
+            // Surface it as a permission request so the table can offer
+            // Allow once / Allow always / Deny like every other app.
+            if is_denial && self.seen_permission_requests.insert(id.clone()) {
+                let (patterns, always_patterns) =
+                    crate::permission_patterns(&display_name, &display_input);
+                events.push(HarnessEvent::PermissionRequest {
+                    request_id: id,
+                    tool_name: display_name,
+                    input: display_input,
+                    patterns,
+                    always_patterns,
+                });
+            }
         }
         events
     }
+}
+
+/// Whether a failed tool output is opencode refusing on permissions rather
+/// than the tool itself failing. Measured wording from `opencode run
+/// --format json` (v1.18): the tool errors with "rejected permission", while
+/// the human-readable stderr line names the rule (`external_directory`,
+/// `doom_loop`, …) — which never reaches us, since the runner pipes only
+/// stdout.
+fn is_permission_denial(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("rejected permission")
+        || lower.contains("permission denied")
+        || lower.contains("permission requested")
+        || lower.contains("requires approval")
+        || lower.contains("needs approval")
 }
 
 /// opencode names its own tools and shapes their arguments differently than
@@ -403,6 +589,26 @@ fn tool_output(state: Option<&Value>) -> String {
     String::new()
 }
 
+/// The failure text of a tool part, if any. Permission rejections arrive here
+/// (`state.error`), not in `state.output` — see `translate_tool`.
+fn tool_error(state: Option<&Value>) -> String {
+    let state = match state {
+        Some(state) => state,
+        None => return String::new(),
+    };
+    if let Some(error) = state.get("error").and_then(Value::as_str) {
+        return error.to_string();
+    }
+    if let Some(error) = state
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+    {
+        return error.to_string();
+    }
+    String::new()
+}
+
 fn error_message(value: &Value) -> String {
     value
         .get("error")
@@ -431,37 +637,70 @@ mod tests {
         OpencodeTranslator {
             program: PathBuf::from("opencode"),
             cwd: PathBuf::from("/tmp"),
+            project_name: "tmp".to_string(),
             model: Some("prov/mod".into()),
             variant: None,
             session: None,
+            auto: std::sync::Arc::new(std::sync::Mutex::new(OpencodeAuto::default())),
             ready_sent: false,
             turn: TurnAcc::default(),
             seen_tools: HashSet::new(),
+            seen_permission_requests: HashSet::new(),
         }
     }
 
     #[test]
     fn build_starts_fresh_and_resumes_with_session() {
         let mut t = translator();
-        let first = t.build("hi");
+        let first = t.build("hi", &[]);
         assert!(first.args.contains(&"run".to_string()));
         assert!(first.args.contains(&"--format".to_string()));
         assert!(!first.args.iter().any(|a| a == "-s"));
         assert!(first.args.contains(&"prov/mod".to_string()));
 
         t.session = Some("ses_1".into());
-        let second = t.build("again");
+        let second = t.build("again", &[]);
         let at = second.args.iter().position(|a| a == "-s").unwrap();
         assert_eq!(second.args[at + 1], "ses_1");
+    }
+
+    #[test]
+    fn build_attaches_images_with_the_native_flag() {
+        // Real vision input via `-f`, not a `@path` mention baked into the
+        // prompt text.
+        let mut t = translator();
+        let images = vec![PathBuf::from("/tmp/pasted-1.png"), PathBuf::from("/tmp/pasted-2.png")];
+        let req = t.build("look at this", &images);
+        let flags: Vec<&String> = req
+            .args
+            .iter()
+            .zip(req.args.iter().skip(1))
+            .filter(|(a, _)| *a == "-f")
+            .map(|(_, path)| path)
+            .collect();
+        assert_eq!(flags, vec!["/tmp/pasted-1.png", "/tmp/pasted-2.png"]);
+        assert!(!req.args.last().unwrap().contains("pasted"));
     }
 
     #[test]
     fn build_passes_variant_when_set() {
         let mut t = translator();
         t.variant = Some("high".into());
-        let args = t.build("hi").args;
+        let args = t.build("hi", &[]).args;
         let at = args.iter().position(|a| a == "--variant").unwrap();
         assert_eq!(args[at + 1], "high");
+    }
+
+    #[test]
+    fn every_turn_carries_its_project() {
+        let mut t = translator();
+        t.cwd = PathBuf::from("/tmp/Arka");
+        t.project_name = "Arka".to_string();
+        let req = t.build("what folder am I in", &[]);
+        let prompt = req.args.last().expect("prompt is the last arg");
+        assert!(prompt.contains("Arka"), "{prompt}");
+        assert!(prompt.contains("/tmp/Arka"), "{prompt}");
+        assert!(prompt.contains("what folder am I in"), "{prompt}");
     }
 
     #[test]
@@ -545,7 +784,7 @@ mod tests {
     #[test]
     fn step_finish_accumulates_and_settles() {
         let mut t = translator();
-        t.build("hi");
+        t.build("hi", &[]);
         t.push_line(
             r#"{"type":"step_finish","part":{"tokens":{"input":10,"output":4},"cost":0.02}}"#,
         );
@@ -567,7 +806,7 @@ mod tests {
     #[test]
     fn error_line_fails_the_turn_once() {
         let mut t = translator();
-        t.build("hi");
+        t.build("hi", &[]);
         let events = t.push_line(
             r#"{"type":"error","error":{"name":"X","data":{"message":"boom"}}}"#,
         );
@@ -582,6 +821,67 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn auto_flag_is_off_by_default_and_on_when_approved() {
+        let mut t = translator();
+        let first = t.build("hi", &[]);
+        assert!(!first.args.iter().any(|a| a == "--auto"));
+        t.auto.lock().unwrap().once = true;
+        let second = t.build("again", &[]);
+        assert!(second.args.iter().any(|a| a == "--auto"));
+        // One-shot: consumed by the turn that used it.
+        let third = t.build("third", &[]);
+        assert!(!third.args.iter().any(|a| a == "--auto"));
+        t.auto.lock().unwrap().always = true;
+        let fourth = t.build("fourth", &[]);
+        assert!(fourth.args.iter().any(|a| a == "--auto"));
+    }
+
+    #[test]
+    fn a_rejected_read_surfaces_as_a_permission_request() {
+        // Measured from `opencode run --format json` reading outside the
+        // project: the rejection lives in `state.error` (not `state.output`)
+        // while stderr names the rule (`external_directory`). The table is
+        // built from this.
+        let mut t = translator();
+        let events = t.push_line(
+            r#"{"type":"tool_use","part":{"type":"tool","tool":"read","callID":"c9","state":{"status":"error","input":{"filePath":"/tmp/meme-cam/app.py"},"error":"The user rejected permission to use this specific tool call."}}}"#,
+        );
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], HarnessEvent::ToolUse { .. }));
+        match &events[1] {
+            HarnessEvent::ToolResult { output, is_error, .. } => {
+                // Neutral, not red: nothing ran yet, the approval table below
+                // is the UI for this — the CLI's "rejected" wording must never
+                // read as the user already having said no.
+                assert!(!is_error);
+                assert!(output.contains("Waiting for approval"), "{output}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &events[2] {
+            HarnessEvent::PermissionRequest {
+                request_id,
+                tool_name,
+                patterns,
+                always_patterns,
+                ..
+            } => {
+                assert_eq!(request_id, "c9");
+                assert_eq!(tool_name, "Read");
+                assert_eq!(patterns, &vec!["/tmp/meme-cam/app.py".to_string()]);
+                assert_eq!(always_patterns, &vec!["/tmp/meme-cam/*".to_string()]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // The same denial repeated (opencode re-emits the part) must not
+        // double the table row.
+        let repeat = t.push_line(
+            r#"{"type":"tool_use","part":{"type":"tool","tool":"read","callID":"c9","state":{"status":"error","input":{"filePath":"/tmp/meme-cam/app.py"},"error":"The user rejected permission to use this specific tool call."}}}"#,
+        );
+        assert!(repeat.iter().all(|e| !matches!(e, HarnessEvent::PermissionRequest { .. })));
     }
 
     // Runs the real runner thread against a fake CLI: no network, no auth,
@@ -641,20 +941,22 @@ mod tests {
                 let mut h = OpencodeRun::spawn(OpencodeOptions {
                     program: script,
                     cwd: dir,
+                    project_name: None,
                     model: None,
                     variant: None,
                     session: None,
+                    auto_approve: false,
                 })
                 .unwrap();
                 let rx = h.events();
 
-                h.send("hi".into()).await.unwrap();
+                h.send("hi".into(), vec![]).await.unwrap();
                 let kinds = until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
                 assert_eq!(kinds, ["ready", "msg", "end"]);
                 assert_eq!(h.session_id().as_deref(), Some("ses_1"));
 
                 // A second turn reuses the session: no second Ready.
-                h.send("again".into()).await.unwrap();
+                h.send("again".into(), vec![]).await.unwrap();
                 let kinds = until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
                 assert_eq!(kinds, ["msg", "end"]);
 
@@ -672,14 +974,16 @@ mod tests {
                 let mut h = OpencodeRun::spawn(OpencodeOptions {
                     program: script,
                     cwd: dir,
+                    project_name: None,
                     model: None,
                     variant: None,
                     session: None,
+                    auto_approve: false,
                 })
                 .unwrap();
                 let rx = h.events();
 
-                h.send("hi".into()).await.unwrap();
+                h.send("hi".into(), vec![]).await.unwrap();
                 h.interrupt().await.unwrap();
                 let mut saw_end = false;
                 while let Ok(event) = rx.recv().await {
@@ -692,6 +996,66 @@ mod tests {
                 }
                 assert!(saw_end);
                 h.shutdown().await.unwrap();
+            });
+        }
+
+        #[test]
+        fn set_permission_mode_toggles_auto_for_future_turns() {
+            // The bug this exists to prevent: `approve_all_future_turns` (what
+            // "Allow always" in the permission table sends) could only ever
+            // turn `--auto` on — nothing could turn it back off once a
+            // session had flipped to bypass. The mode picker's Bypass toggle
+            // needs both directions, which is what `set_permission_mode`
+            // adds.
+            let dir = sandbox("bypass-toggle");
+            let log = dir.join("argv.log");
+            // NUL-separated: the wrapped prompt (`wrap_turn_with_project`)
+            // embeds a real newline, so a newline-delimited log would slice
+            // one invocation's args into several lines.
+            let script = fake_cli(
+                &dir,
+                &format!("printf '%s\\0' \"$*\" >> {}\n{}", log.display(), turn_events()),
+            );
+            futures_lite::future::block_on(async {
+                let mut h = OpencodeRun::spawn(OpencodeOptions {
+                    program: script,
+                    cwd: dir.clone(),
+                    project_name: None,
+                    model: None,
+                    variant: None,
+                    session: None,
+                    auto_approve: false,
+                })
+                .unwrap();
+                let rx = h.events();
+
+                h.send("first".into(), vec![]).await.unwrap();
+                until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
+
+                h.set_permission_mode(PermissionMode::BypassPermissions)
+                    .await
+                    .unwrap();
+                h.send("second".into(), vec![]).await.unwrap();
+                until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
+
+                // Flipping back off is the part that used to be impossible.
+                h.set_permission_mode(PermissionMode::Auto).await.unwrap();
+                h.send("third".into(), vec![]).await.unwrap();
+                until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
+
+                h.shutdown().await.unwrap();
+                until(&rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+
+                let logged = std::fs::read(&log).unwrap();
+                let calls: Vec<&str> = logged
+                    .split(|&b| b == 0)
+                    .filter(|c| !c.is_empty())
+                    .map(|c| std::str::from_utf8(c).unwrap())
+                    .collect();
+                assert_eq!(calls.len(), 3, "{calls:?}");
+                assert!(!calls[0].contains("--auto"), "{}", calls[0]);
+                assert!(calls[1].contains("--auto"), "{}", calls[1]);
+                assert!(!calls[2].contains("--auto"), "{}", calls[2]);
             });
         }
     }

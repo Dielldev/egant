@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use crate::dto::{SessionDto, StateDto, permission_mode_name};
 use crate::persist;
-use crate::project::{Project, ProjectId};
+use crate::project::Project;
 use crate::sessions::SessionCommand;
 use crate::settings::Settings;
 
@@ -56,6 +56,19 @@ pub struct ManagedSession {
     pub meta: SessionMeta,
     pub transcript: Transcript,
     pub commands: Option<Sender<SessionCommand>>,
+    /// Patterns an "Allow always" answer approved for the rest of the run.
+    /// Checked when a permission request arrives: a match is answered with
+    /// Allow without ever reaching the table. In-memory only, like
+    /// `bad_models` — a fresh launch asks again rather than persisting a
+    /// judgment that may no longer be safe.
+    pub allowed_patterns: Vec<String>,
+    /// The last user turn, for retrying a turn-based wire (opencode) with
+    /// `--auto` after an Allow answer. The transcript holds the same text,
+    /// but the last entry may be the agent's reply by the time the user
+    /// answers, so the send path records it explicitly.
+    pub last_user_text: Option<String>,
+    /// Images attached to that same last turn, so a retry carries them too.
+    pub last_user_images: Vec<PathBuf>,
 }
 
 pub struct AppState {
@@ -91,7 +104,17 @@ impl AppState {
         let mut projects = Vec::new();
         let mut next_project_id = 0;
         for path in persist::load_projects() {
-            projects.push(Project::new(next_project_id, path));
+            // `Project::new` canonicalizes, so two spellings of the same
+            // folder on disk collapse to one identity here instead of two
+            // rows pointing at the same directory.
+            let candidate = Project::new(next_project_id, path);
+            if projects
+                .iter()
+                .any(|p: &Project| crate::project::same_project(&p.fs_path(), &candidate.fs_path()))
+            {
+                continue;
+            }
+            projects.push(candidate);
             next_project_id += 1;
         }
 
@@ -99,7 +122,9 @@ impl AppState {
         let mut order = Vec::new();
         let mut next_session_id = 1;
         for persisted in persist::load_sessions() {
-            let Some(project) = projects.iter().find(|p| p.fs_path() == persisted.meta.project_path)
+            let Some(project) = projects
+                .iter()
+                .find(|p| crate::project::same_project(&p.fs_path(), &persisted.meta.project_path))
             else {
                 // The project this session belonged to is gone (moved,
                 // deleted, or dropped from projects.json by hand) — nothing
@@ -112,11 +137,21 @@ impl AppState {
                 );
                 continue;
             };
+            // A session whose working directory vanished while the app was
+            // closed (folder moved, worktree pruned) cannot be revived where
+            // it was — reopen it in its project instead of spawning the agent
+            // in a deleted folder, which is how a revived `Arka` thread kept
+            // answering as `egant`'s neighbour that no longer resolves.
+            let cwd = if persisted.meta.cwd.is_dir() {
+                crate::project::canonicalize_path(&persisted.meta.cwd)
+            } else {
+                project.fs_path()
+            };
             let meta = SessionMeta {
                 id: persisted.meta.id,
                 title: persisted.meta.title,
                 project_id: project.id,
-                cwd: persisted.meta.cwd,
+                cwd,
                 branch: persisted.meta.branch,
                 started_unix_ms: persisted.meta.started_unix_ms,
                 agent: persisted.meta.agent,
@@ -135,12 +170,16 @@ impl AppState {
             // permission prompt with no process left to answer either one.
             transcript.state = TurnState::Idle;
             transcript.pending_permission = None;
+            transcript.pending_permissions.clear();
             sessions.insert(
                 meta.id,
                 ManagedSession {
                     meta,
                     transcript,
                     commands: None,
+                    allowed_patterns: Vec::new(),
+                    last_user_text: None,
+                    last_user_images: Vec::new(),
                 },
             );
         }
@@ -153,6 +192,11 @@ impl AppState {
             .map(|session| session.meta.project_id)
             .or(projects.first().map(|p| p.id));
 
+        log::info!(
+            "restored {} projects, {} sessions",
+            projects.len(),
+            sessions.len()
+        );
         Self {
             projects,
             active_project,
@@ -231,20 +275,48 @@ impl AppState {
     /// Adds a folder as a project and selects it. Re-opening a folder selects
     /// the one already there rather than stacking a duplicate row.
     pub fn add_project(&mut self, path: PathBuf) -> Result<usize, String> {
-        if !path.is_dir() {
-            return Err(format!("{} is not a folder", path.display()));
-        }
-        if let Some(existing) = self.projects.iter().find(|p| p.fs_path() == path) {
-            self.active_project = Some(existing.id);
-            return Ok(existing.id);
+        let canonical = crate::project::verify_project_path(&path)?;
+        if let Some(existing) = self
+            .projects
+            .iter()
+            .find(|p| crate::project::same_project(&p.fs_path(), &canonical))
+        {
+            let id = existing.id;
+            self.active_project = Some(id);
+            // Same follow rule as `select_project`: the selection must name a
+            // session in this project (or none), never a stale session from
+            // the previous folder. Otherwise the header keeps reading
+            // `meme-cam` while the transcript still shows the `egant` thread.
+            self.active_session = self.most_recent_session_in(id);
+            return Ok(id);
         }
 
         let id = self.next_project_id;
         self.next_project_id += 1;
-        self.projects.push(Project::new(id, path));
+        self.projects.push(Project::new(id, canonical));
         self.active_project = Some(id);
+        // A fresh folder has no session yet: clear the selection instead of
+        // leaving the previous project's thread active. Keeping it is what
+        // made the header read one project while the transcript — and the
+        // agent behind it — still belonged to another, so asking "what folder
+        // am I in" answered with the old project.
+        self.active_session = None;
         self.persist_projects();
         Ok(id)
+    }
+
+    /// Most recent session (by window order) belonging to `project_id`, if any.
+    /// Window order is chronological, so the last match is the conversation the
+    /// user was most recently in for that folder.
+    pub(crate) fn most_recent_session_in(&self, project_id: usize) -> Option<u64> {
+        self.order
+            .iter()
+            .rposition(|sid| {
+                self.sessions
+                    .get(sid)
+                    .is_some_and(|s| s.meta.project_id == project_id)
+            })
+            .and_then(|position| self.order.get(position).copied())
     }
 
     pub fn select_project(&mut self, id: usize) -> bool {
@@ -255,16 +327,11 @@ impl AppState {
 
         // Follow the project to its most recent session, if it has one, so
         // switching projects does not leave an unrelated transcript on screen.
-        let project = ProjectId(id);
-        let _ = project;
-        if let Some(session) = self
-            .order
-            .iter()
-            .rposition(|sid| self.sessions.get(sid).is_some_and(|s| s.meta.project_id == id))
-            .and_then(|position| self.order.get(position).copied())
-        {
-            self.active_session = Some(session);
-        }
+        // When the project has no session yet (a freshly opened folder like
+        // `meme-cam`), clear the selection instead: keeping the previous
+        // project's session active is what made the header read one project
+        // while the transcript showed another.
+        self.active_session = self.most_recent_session_in(id);
         true
     }
 
@@ -354,5 +421,119 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
         busy: session.transcript.is_busy(),
         model: session.transcript.model.clone(),
         total_cost_usd: session.transcript.total_cost_usd,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two projects (`egant`, `meme-cam`) with one live session in `egant` —
+    /// the exact shape of the reported bug. Built by hand so no test touches
+    /// the real `projects.json` on disk.
+    fn two_projects_one_session() -> AppState {
+        let projects = vec![
+            Project::new(0, std::path::PathBuf::from("/tmp/egant-test/egant")),
+            Project::new(1, std::path::PathBuf::from("/tmp/egant-test/meme-cam")),
+        ];
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            1,
+            ManagedSession {
+                meta: SessionMeta {
+                    id: 1,
+                    title: "What project am I viewing".to_string(),
+                    project_id: 0,
+                    cwd: std::path::PathBuf::from("/tmp/egant-test/egant"),
+                    branch: None,
+                    started_unix_ms: 1,
+                    agent: AgentId::Claude,
+                    cli_agent: None,
+                    model: None,
+                    context: None,
+                    permission_mode: PermissionMode::Auto,
+                    ended: false,
+                },
+                transcript: Transcript::new(),
+                commands: None,
+                allowed_patterns: Vec::new(),
+                last_user_text: None,
+                last_user_images: Vec::new(),
+            },
+        );
+        AppState {
+            projects,
+            active_project: Some(0),
+            next_project_id: 2,
+            sessions,
+            order: vec![1],
+            active_session: Some(1),
+            next_session_id: 2,
+            settings: Settings::default(),
+            sidebar_visible: true,
+            bad_models: Default::default(),
+        }
+    }
+
+    #[test]
+    fn switching_to_a_project_with_no_session_clears_the_active_session() {
+        let mut state = two_projects_one_session();
+        assert!(state.select_project(1));
+        assert_eq!(state.active_project, Some(1));
+        // `meme-cam` has no session of its own: keeping the `egant` thread
+        // active is what made the header read `meme-cam` while the transcript
+        // showed `egant`.
+        assert_eq!(state.active_session, None);
+    }
+
+    #[test]
+    fn switching_to_a_project_with_a_session_follows_it() {
+        let mut state = two_projects_one_session();
+        assert!(state.select_project(1));
+        assert_eq!(state.active_session, None);
+        // Back to `egant`: its thread comes back with it.
+        assert!(state.select_project(0));
+        assert_eq!(state.active_session, Some(1));
+        assert_eq!(state.active_project, Some(0));
+    }
+
+    #[test]
+    fn closing_the_active_session_moves_the_project_with_it() {
+        let mut state = two_projects_one_session();
+        // Give `meme-cam` a session too, then sit on it.
+        state.sessions.insert(
+            2,
+            ManagedSession {
+                meta: SessionMeta {
+                    id: 2,
+                    title: "meme-cam thread".to_string(),
+                    project_id: 1,
+                    cwd: std::path::PathBuf::from("/tmp/egant-test/meme-cam"),
+                    branch: None,
+                    started_unix_ms: 2,
+                    agent: AgentId::Claude,
+                    cli_agent: None,
+                    model: None,
+                    context: None,
+                    permission_mode: PermissionMode::Auto,
+                    ended: true,
+                },
+                transcript: Transcript::new(),
+                commands: None,
+                allowed_patterns: Vec::new(),
+                last_user_text: None,
+                last_user_images: Vec::new(),
+            },
+        );
+        state.order.push(2);
+        state.active_project = Some(1);
+        state.active_session = Some(2);
+
+        crate::sessions::close_session(&mut state, 2);
+        // The stage falls back to the `egant` thread, so the project must come
+        // with it — otherwise the sidebar still reads `meme-cam` over an
+        // `egant` transcript.
+        assert_eq!(state.active_session, Some(1));
+        assert_eq!(state.active_project, Some(0));
     }
 }

@@ -346,6 +346,16 @@ impl HostUserMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostContentBlock {
     Text { text: String },
+    /// A pasted or attached image, sent as real vision input rather than a
+    /// `@path` mention the model would have to go read itself — the same
+    /// `image` block shape the Messages API takes anywhere else.
+    Image { source: ImageSource },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageSource {
+    Base64 { media_type: String, data: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -341,7 +341,7 @@ function GitStatusBar({
           title={`Publish ${branch} to ${remote}`}
           disabled={busy}
           onClick={() => void run(() => api.gitPublish(root, remote, branch))}
-          className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full bg-[rgba(255,255,255,0.1)] px-2.5 py-0.5 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
+          className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full bg-[var(--bubble)] px-2.5 py-0.5 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
         >
           <Upload size={11} strokeWidth={2.2} />
           Publish
@@ -449,7 +449,7 @@ function SectionHeader({
         />
         <span className="truncate text-[14px]">{label}</span>
         {count !== undefined && (
-          <span className="shrink-0 rounded-full bg-[rgba(255,255,255,0.08)] px-1.5 py-px text-[11.5px] tabular-nums">
+          <span className="shrink-0 rounded-full bg-[var(--bubble)] px-1.5 py-px text-[11.5px] tabular-nums">
             {count}
           </span>
         )}
@@ -576,7 +576,7 @@ function PrimaryAction({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full bg-[rgba(255,255,255,0.1)] px-2.5 py-0.5 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
+      className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full bg-[var(--bubble)] px-2.5 py-0.5 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
     >
       {icon}
       {label}
@@ -957,7 +957,7 @@ function CommitBox({
         onKeyDown={submitOnCmdEnter}
         placeholder="Commit message"
         disabled={working}
-        className="w-full rounded-md bg-[rgba(255,255,255,0.05)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
+        className="w-full rounded-md bg-[var(--card)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
       />
       <textarea
         value={description}
@@ -966,7 +966,7 @@ function CommitBox({
         placeholder="Description"
         rows={2}
         disabled={working}
-        className="w-full resize-none rounded-md bg-[rgba(255,255,255,0.05)] px-2.5 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
+        className="w-full resize-none rounded-md bg-[var(--card)] px-2.5 py-1.5 text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
       />
       <button
         type="button"

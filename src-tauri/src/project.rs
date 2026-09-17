@@ -28,6 +28,12 @@ pub struct Project {
 
 impl Project {
     pub fn new(id: usize, path: PathBuf) -> Self {
+        // Store the canonical path so `/tmp/x`, `/private/tmp/x` and a
+        // differently-cased spelling of the same folder on macOS all resolve
+        // to one identity. A path that cannot be canonicalized (deleted
+        // between pick and insert) is stored as given; `verify_project_path`
+        // is what rejects it before a session ever starts there.
+        let path = canonicalize_path(&path);
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -75,9 +81,76 @@ fn hue_for(path: &Path) -> f32 {
     (hash % 360) as f32 / 360.0
 }
 
+/// Best-effort canonical path: resolves symlinks (`/tmp` → `/private/tmp`
+/// on macOS) so two spellings of the same folder compare equal. Falls back
+/// to the path as given when it no longer exists — `verify_project_path` is
+/// what rejects that case before a session ever starts there.
+pub fn canonicalize_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether two project paths name the same folder. Canonicalizes both sides,
+/// and on macOS also compares case-insensitively: APFS is usually
+/// case-insensitive, so `…/akra` and `…/Arka` open the same directory and
+/// must not become two project rows with sessions attached to the wrong one.
+pub fn same_project(a: &Path, b: &Path) -> bool {
+    let a = canonicalize_path(a);
+    let b = canonicalize_path(b);
+    if a == b {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Verifies a folder the app is about to run an agent in: it must exist and
+/// be a directory. Returns the canonical path to store, so every later
+/// comparison (`add_project` dedupe, session restore) sees one identity.
+pub fn verify_project_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err(format!("{} does not exist", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
+    Ok(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_falls_back_when_missing() {
+        let missing = PathBuf::from("/definitely/not/here/egant-test-akra");
+        assert!(!missing.exists());
+        assert_eq!(canonicalize_path(&missing), missing);
+    }
+
+    #[test]
+    fn verify_rejects_missing_and_files() {
+        assert!(verify_project_path(Path::new("/definitely/not/here")).is_err());
+        // A file is not a folder.
+        let dir = std::env::temp_dir().join(format!("egant-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(verify_project_path(&file).is_err());
+        assert!(verify_project_path(&dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn name_and_location_split_the_path() {

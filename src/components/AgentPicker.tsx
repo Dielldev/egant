@@ -6,6 +6,8 @@ import {
   CornerDownLeft,
   MessageSquare,
   Search,
+  ShieldCheck,
+  ShieldOff,
   Star,
   TerminalSquare,
   TriangleAlert,
@@ -144,6 +146,8 @@ export function AgentPicker() {
   const setComposerAgent = useEgant((s) => s.setComposerAgent);
   const setComposerModel = useEgant((s) => s.setComposerModel);
   const setComposerVariant = useEgant((s) => s.setComposerVariant);
+  const composerBypass = useEgant((s) => s.composerBypass);
+  const setComposerBypass = useEgant((s) => s.setComposerBypass);
   const refresh = useEgant((s) => s.refresh);
   const fetchAgents = useEgant((s) => s.fetchAgents);
   const verifyAgents = useEgant((s) => s.verifyAgents);
@@ -575,8 +579,8 @@ export function AgentPicker() {
         onClick={toggleMenu}
         className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs transition-colors duration-150 ${
           open
-            ? "bg-[rgba(255,255,255,0.08)] text-[var(--ink)]"
-            : "text-[var(--muted)] hover:bg-[rgba(255,255,255,0.08)] hover:text-[var(--ink)]"
+            ? "bg-[var(--hover)] text-[var(--ink)]"
+            : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
         }`}
       >
         <span
@@ -646,7 +650,7 @@ export function AgentPicker() {
               <button
                 type="button"
                 onClick={() => setView("models")}
-                className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[rgba(255,255,255,0.06)]"
+                className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--hover)]"
               >
                 <ChevronLeft size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
                 {(selectedModel ?? cliDefaultModel) ? (
@@ -691,7 +695,7 @@ export function AgentPicker() {
                       onMouseMove={() => setEffortCursor(index)}
                       style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
                       className={`row-in flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-[7px] text-left ${
-                        highlighted ? "bg-[rgba(255,255,255,0.07)]" : ""
+                        highlighted ? "bg-[var(--hover)]" : ""
                       }`}
                     >
                       <span
@@ -702,7 +706,7 @@ export function AgentPicker() {
                         {variantLabel(variant)}
                       </span>
                       {isDefault && (
-                        <span className="shrink-0 rounded bg-[rgba(255,255,255,0.08)] px-1.5 py-0.5 text-[10px] text-[var(--muted)]">
+                        <span className="shrink-0 rounded bg-[var(--bubble)] px-1.5 py-0.5 text-[10px] text-[var(--muted)]">
                           Default
                         </span>
                       )}
@@ -725,7 +729,7 @@ export function AgentPicker() {
             <>
           {/* Agent — named segments, because which CLI runs the turn is the
             first thing being chosen and an icon alone doesn't say it. */}
-          <div className="flex shrink-0 items-center gap-1 rounded-xl bg-[rgba(255,255,255,0.045)] p-1">
+          <div className="flex shrink-0 items-center gap-1 rounded-xl bg-[var(--card)] p-1">
             {visibleAgents.map((id) => {
               const s = agents.find((a) => a.id === id);
               const entry = agentCatalog.find((c) => c.id === id);
@@ -757,8 +761,8 @@ export function AgentPicker() {
                     }
                     className={`flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 transition-colors duration-150 ${
                       active
-                        ? "bg-[rgba(255,255,255,0.1)] text-[var(--ink)]"
-                        : "text-[var(--muted)] hover:bg-[rgba(255,255,255,0.05)] hover:text-[var(--ink)]"
+                        ? "bg-[var(--selected)] text-[var(--ink)]"
+                        : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
                     } ${ok && (drivable || !chat) ? "" : "opacity-50"}`}
                   >
                     <ProviderGlyph
@@ -802,8 +806,8 @@ export function AgentPicker() {
                       }}
                       className={`absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md transition-opacity duration-150 ${
                         chat
-                          ? "text-[var(--faint)] opacity-0 group-hover:opacity-100 hover:bg-[rgba(255,255,255,0.12)] hover:text-[var(--ink)]"
-                          : "bg-[rgba(255,255,255,0.12)] text-[var(--ink)] opacity-100"
+                          ? "text-[var(--faint)] opacity-0 group-hover:opacity-100 hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                          : "bg-[var(--bubble)] text-[var(--ink)] opacity-100"
                       }`}
                     >
                       {chat ? (
@@ -841,7 +845,7 @@ export function AgentPicker() {
             model, the CLI's own picker is. So the pane below the tabs stops
             being a catalog and becomes the one thing there is to do. */}
           {!isChat(effective) && (
-            <div className="mt-1.5 shrink-0 rounded-lg border border-[var(--border)] bg-[rgba(255,255,255,0.03)] p-3">
+            <div className="mt-1.5 shrink-0 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
               <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--ink)]">
                 <TerminalSquare size={13} strokeWidth={2} className="shrink-0" />
                 {current?.name ?? agentCatalog.find((c) => c.id === effective)?.name ??
@@ -875,7 +879,7 @@ export function AgentPicker() {
                 : "h-0 shrink-0 overflow-hidden opacity-0"
             }
           >
-            <div className="flex items-center gap-2 rounded-lg bg-[rgba(255,255,255,0.05)] px-2.5 py-1.5">
+            <div className="flex items-center gap-2 rounded-lg bg-[var(--card)] px-2.5 py-1.5">
               <Search size={13} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
               <input
                 ref={inputRef}
@@ -887,12 +891,100 @@ export function AgentPicker() {
                 className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
               />
               {query !== "" && (
-                <span className="shrink-0 rounded bg-[rgba(255,255,255,0.08)] px-1.5 py-0.5 text-[10px] text-[var(--faint)]">
+                <span className="shrink-0 rounded bg-[var(--bubble)] px-1.5 py-0.5 text-[10px] text-[var(--faint)]">
                   esc
                 </span>
               )}
             </div>
           </div>
+
+          {/* Chat UI toggle — always visible above the model list for
+            chat-capable agents. On by default; turning it off asks for the
+            agent's own CLI instead. */}
+          {(() => {
+            const entry = agentCatalog.find((c) => c.id === effective);
+            const toggleable =
+              entry?.chatUi ?? (RUNNABLE as readonly string[]).includes(effective);
+            if (!toggleable) return null;
+            const chat = isChat(effective);
+            const label = current?.name ?? entry?.name ?? fallbackName(effective);
+            return (
+              <div className="mt-1.5 flex shrink-0 items-center gap-2.5 rounded-lg bg-[var(--card)] px-2.5 py-2">
+                {chat ? (
+                  <MessageSquare size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+                ) : (
+                  <TerminalSquare size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--ink)]">
+                  {chat ? "Chat UI" : `Go to ${label} CLI`}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={chat}
+                  title={
+                    chat
+                      ? `Chat UI on — switch to the ${label} CLI`
+                      : "Chat UI off — switch back to Chat UI"
+                  }
+                  onClick={() => toggleChatUi(effective, !chat)}
+                  className={`flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full px-0.5 ${
+                    chat ? "justify-end bg-[var(--toggle-on)]" : "justify-start bg-[var(--bubble)]"
+                  }`}
+                >
+                  <span
+                    className={`h-4 w-4 rounded-full ${
+                      chat ? "bg-[var(--toggle-knob)]" : "bg-[var(--faint)]"
+                    }`}
+                  />
+                </button>
+              </div>
+            );
+          })()}
+
+          {/* Bypass permissions — for before a session exists to toggle it
+            on. Applied to the session the moment it's created (see
+            `applyComposerBypass` in the store); only offered where it means
+            anything — a chat session egant actually drives. Same neutral
+            switch as the Chat UI toggle above, not a warning color: this is
+            an ordinary setting, not something to alarm over. */}
+          {isChat(effective) && isDrivable(effective) && (
+            <div className="mt-1.5 flex shrink-0 items-center gap-2.5 rounded-lg bg-[var(--card)] px-2.5 py-2">
+              {composerBypass ? (
+                <ShieldOff size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+              ) : (
+                <ShieldCheck size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--ink)]">
+                Bypass permissions
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={composerBypass}
+                title={
+                  composerBypass
+                    ? "The next session starts without asking — click to ask normally"
+                    : "Start the next session without asking for permission"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setComposerBypass(!composerBypass);
+                }}
+                className={`flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full px-0.5 ${
+                  composerBypass
+                    ? "justify-end bg-[var(--toggle-on)]"
+                    : "justify-start bg-[var(--bubble)]"
+                }`}
+              >
+                <span
+                  className={`h-4 w-4 rounded-full ${
+                    composerBypass ? "bg-[var(--toggle-knob)]" : "bg-[var(--faint)]"
+                  }`}
+                />
+              </button>
+            </div>
+          )}
 
           {/* The catalog — the only scrolling region in the menu. */}
           <div
@@ -992,7 +1084,7 @@ export function AgentPicker() {
             <button
               type="button"
               onClick={() => setView("effort")}
-              className="mt-1 flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border-t border-[var(--border)] px-2 pt-2 pb-1.5 text-left hover:bg-[rgba(255,255,255,0.05)]"
+              className="mt-1 flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border-t border-[var(--border)] px-2 pt-2 pb-1.5 text-left hover:bg-[var(--hover)]"
             >
               <span className="shrink-0 text-[10px] font-semibold tracking-[0.08em] text-[var(--faint)]">
                 REASONING
@@ -1017,7 +1109,7 @@ export function AgentPicker() {
               <button
                 type="button"
                 onClick={() => void rememberDefault()}
-                className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[var(--muted)] hover:bg-[rgba(255,255,255,0.06)] hover:text-[var(--ink)]"
+                className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
               >
                 Make default
               </button>
@@ -1081,7 +1173,7 @@ function ListRow({
       title={bad ? "Failed earlier this session — may still be worth retrying" : undefined}
       style={{ animationDelay: `${Math.min(index, 8) * 22}ms` }}
       className={`row-in group flex w-full min-w-0 cursor-pointer items-center gap-2.5 overflow-hidden rounded-lg px-2 py-[7px] text-left ${
-        highlighted ? "bg-[rgba(255,255,255,0.07)]" : ""
+        highlighted ? "bg-[var(--hover)]" : ""
       } ${bad ? "opacity-60" : ""}`}
     >
       <span className="flex w-6 shrink-0 items-center justify-center">{logo}</span>

@@ -30,7 +30,7 @@ pub struct TurnRequest {
 /// runner thread; `build` reads whatever session id the previous turn
 /// discovered, so resume flags survive across turns.
 pub trait TurnTranslator: Send + 'static {
-    fn build(&mut self, text: &str) -> TurnRequest;
+    fn build(&mut self, text: &str, images: &[PathBuf]) -> TurnRequest;
     /// Zero or more events for one stdout line. Never fails the turn — an
     /// unparseable line contributes nothing.
     fn push_line(&mut self, line: &str) -> Vec<HarnessEvent>;
@@ -56,7 +56,7 @@ pub trait TurnTranslator: Send + 'static {
 }
 
 pub enum RunnerCommand {
-    Send(String),
+    Send(String, Vec<PathBuf>),
     Interrupt,
     Shutdown,
 }
@@ -93,8 +93,8 @@ impl Runner {
         }
     }
 
-    pub fn send(&self, text: String) {
-        let _ = self.commands.try_send(RunnerCommand::Send(text));
+    pub fn send(&self, text: String, images: Vec<PathBuf>) {
+        let _ = self.commands.try_send(RunnerCommand::Send(text, images));
     }
 
     pub fn interrupt(&self) {
@@ -128,7 +128,7 @@ async fn run_loop<T: TurnTranslator>(
     events: Sender<HarnessEvent>,
     session: Arc<Mutex<Option<SessionId>>>,
 ) {
-    let mut queue: VecDeque<String> = VecDeque::new();
+    let mut queue: VecDeque<(String, Vec<PathBuf>)> = VecDeque::new();
     loop {
         let command = match commands.recv().await {
             Ok(command) => command,
@@ -136,18 +136,19 @@ async fn run_loop<T: TurnTranslator>(
             Err(_) => break,
         };
         match command {
-            RunnerCommand::Send(text) => {
+            RunnerCommand::Send(text, images) => {
                 let mut shutdown = run_turn(
                     &mut translator,
                     &commands,
                     &events,
                     &session,
                     text,
+                    images,
                     &mut queue,
                 )
                 .await;
                 while !shutdown {
-                    let Some(next) = queue.pop_front() else {
+                    let Some((next, next_images)) = queue.pop_front() else {
                         break;
                     };
                     shutdown = run_turn(
@@ -156,6 +157,7 @@ async fn run_loop<T: TurnTranslator>(
                         &events,
                         &session,
                         next,
+                        next_images,
                         &mut queue,
                     )
                     .await;
@@ -186,10 +188,12 @@ async fn run_turn<T: TurnTranslator>(
     events: &Sender<HarnessEvent>,
     session: &Arc<Mutex<Option<SessionId>>>,
     text: String,
-    queue: &mut VecDeque<String>,
+    images: Vec<PathBuf>,
+    queue: &mut VecDeque<(String, Vec<PathBuf>)>,
 ) -> bool {
-    let request = translator.build(&text);
+    let request = translator.build(&text, &images);
     let program = request.program.display().to_string();
+    log::info!("turn start program={program} cwd={} ({} chars)", request.cwd.display(), text.len());
     let mut child = match Command::new(&request.program)
         .args(&request.args)
         .current_dir(&request.cwd)
@@ -206,6 +210,7 @@ async fn run_turn<T: TurnTranslator>(
             // A spawn failure is a turn that never started: one error notice
             // via the settled turn, and the session stays usable.
             let message = format!("Could not start `{program}`: {error}");
+            log::error!("turn spawn failed: {message}");
             send_all(events, translator.turn_failed(&message)).await;
             return false;
         }
@@ -213,6 +218,7 @@ async fn run_turn<T: TurnTranslator>(
 
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
+        log::error!("turn `{program}` started without stdout");
         send_all(
             events,
             translator.turn_failed(&format!("`{program}` started without stdout")),
@@ -249,16 +255,18 @@ async fn run_turn<T: TurnTranslator>(
                     .await;
                 break;
             }
-            Next::Command(Ok(RunnerCommand::Send(text))) => {
-                queue.push_back(text);
+            Next::Command(Ok(RunnerCommand::Send(text, images))) => {
+                queue.push_back((text, images));
             }
             Next::Command(Ok(RunnerCommand::Interrupt)) => {
+                log::info!("turn interrupted: {program}");
                 interrupted = true;
                 let _ = child.kill();
                 let _ = child.status().await;
                 break;
             }
             Next::Command(Ok(RunnerCommand::Shutdown)) => {
+                log::info!("turn shutdown: {program}");
                 interrupted = true;
                 shutdown = true;
                 let _ = child.kill();
@@ -282,6 +290,7 @@ async fn run_turn<T: TurnTranslator>(
     } else {
         child.status().await.ok().and_then(|status| status.code())
     };
+    log::info!("turn end program={program} interrupted={interrupted} exit={exit:?}");
     send_all(events, translator.end_turn(interrupted, exit)).await;
     if shutdown {
         let _ = events.send(HarnessEvent::Exited { code: None }).await;

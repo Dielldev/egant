@@ -113,10 +113,18 @@ pub enum HarnessEvent {
     },
     /// The agent wants permission to act. The app must answer with
     /// [`Harness::respond_permission`] or the turn stalls.
+    ///
+    /// `patterns` names the specific resource (file path, command prefix,
+    /// URL) the request is about; `always_patterns` are the wider patterns
+    /// an "allow always" answer would approve for the rest of the session
+    /// (what opencode's own UI offers). Wires without suggestions leave both
+    /// empty — the UI then falls back to the tool name and input summary.
     PermissionRequest {
         request_id: String,
         tool_name: String,
         input: Value,
+        patterns: Vec<String>,
+        always_patterns: Vec<String>,
     },
     /// The turn ended. Carries the accounting the status bar shows.
     TurnEnded {
@@ -135,7 +143,19 @@ pub enum HarnessEvent {
 #[derive(Debug, Clone)]
 pub enum PermissionDecision {
     /// Run the tool. `updated_input` rewrites the call first, if set.
+    /// Must carry the original input when approving as-is: Claude Code
+    /// rejects an `allow` without `updatedInput` (pre-v2.1.207 as a
+    /// validation error that surfaces as a deny) and the docs still require
+    /// passing the original input through.
     Allow { updated_input: Option<Value> },
+    /// Run the tool and remember the approval: future requests matching
+    /// `patterns` (or the same tool when empty) are approved without asking.
+    /// Carries `updated_input` for the same reason as `Allow` — the current
+    /// request still needs its original input echoed back.
+    AllowAlways {
+        patterns: Vec<String>,
+        updated_input: Option<Value>,
+    },
     /// Refuse. The agent sees `reason` and can try something else.
     Deny { reason: String },
 }
@@ -205,8 +225,11 @@ pub trait Harness: Send {
     /// rendered in one pane and logged in another.
     fn events(&self) -> async_channel::Receiver<HarnessEvent>;
 
-    /// Send a turn.
-    async fn send(&mut self, text: String) -> anyhow::Result<()>;
+    /// Send a turn. `images` are paths to files already on disk (a pasted
+    /// screenshot, say) — each wire attaches them the way it actually
+    /// supports: a real vision content block for Claude, `-i` for Codex,
+    /// `-f` for opencode. None of them get by on a bare `@path` mention.
+    async fn send(&mut self, text: String, images: Vec<PathBuf>) -> anyhow::Result<()>;
 
     /// Stop the current turn without ending the session.
     async fn interrupt(&mut self) -> anyhow::Result<()>;
@@ -227,6 +250,19 @@ pub trait Harness: Send {
     async fn set_permission_mode(&mut self, _mode: PermissionMode) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Approves the next turn's permissions without asking (opencode's
+    /// `--auto` on the next `run`). Wires with a live approval channel
+    /// (Claude) ignore this: they answer per request instead.
+    async fn approve_next_turn(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Approves every future turn without asking (opencode's `--auto` from
+    /// here on). Wires with a live approval channel ignore this.
+    async fn approve_always(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -241,4 +277,167 @@ pub enum HarnessError {
     },
     #[error("protocol error: {0}")]
     Protocol(String),
+}
+
+// ---------------------------------------------------------------------------
+// Permission patterns: what the approval table shows per request.
+// ---------------------------------------------------------------------------
+
+/// Specific + always-approve patterns for a tool call, for the permission
+/// table. Mirrors what opencode's own UI suggests: the exact resource plus
+/// the wider prefix an "allow always" answer would cover.
+///
+/// Falls back to the tool name when the input names nothing (an empty
+/// object, say) so the table never renders a blank row.
+pub fn permission_patterns(tool_name: &str, input: &Value) -> (Vec<String>, Vec<String>) {
+    let specific = first_meaningful_arg(tool_name, input);
+    let Some(specific) = specific else {
+        return (vec![tool_name.to_string()], vec![format!("{tool_name} *")]);
+    };
+    let always = always_pattern(&specific);
+    (vec![specific.clone()], vec![always])
+}
+
+/// The argument that identifies a call: the command for Bash, the path for
+/// file tools, the URL/query for web tools — the same choice the tool cards
+/// and `ToolCall::summary` make.
+fn first_meaningful_arg(tool_name: &str, input: &Value) -> Option<String> {
+    let obj = input.as_object()?;
+    // Bash-like tools name it `command`; file tools `file_path`/`path`.
+    for key in [
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "url",
+        "query",
+        "prompt",
+        "filePath",
+    ] {
+        if let Some(value) = obj.get(key).and_then(Value::as_str) {
+            let first_line = value.lines().next().unwrap_or(value).trim().to_string();
+            if !first_line.is_empty() {
+                return Some(first_line);
+            }
+        }
+    }
+    // opencode's edit/write shape nests the path under `filePath` already
+    // covered above; anything else falls back to the tool name.
+    let _ = tool_name;
+    None
+}
+
+/// The wider pattern "allow always" approves: the parent directory for a
+/// path (`/a/b/c.rs` → `/a/b/*`), the command prefix for shell
+/// (`git status --porcelain` → `git status *`), the host for a URL.
+fn always_pattern(specific: &str) -> String {
+    let trimmed = specific.trim();
+    // A path: cover its directory.
+    if trimmed.starts_with('/') || trimmed.starts_with('~') {
+        if let Some(slash) = trimmed.rfind('/') {
+            let dir = &trimmed[..slash];
+            if dir.is_empty() {
+                return "/*".to_string();
+            }
+            return format!("{dir}/*");
+        }
+        return format!("{trimmed}*");
+    }
+    // A URL: cover its host.
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let without_scheme = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(trimmed);
+        let host = without_scheme.split('/').next().unwrap_or(without_scheme);
+        return format!("*{host}*");
+    }
+    // A shell command: cover its first two words (`git status ...`).
+    let mut words = trimmed.split_whitespace();
+    match (words.next(), words.next()) {
+        (Some(first), Some(second)) => format!("{first} {second} *"),
+        (Some(first), None) => format!("{first} *"),
+        _ => format!("{specific}*"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Project grounding: the model must know which folder it runs in.
+// ---------------------------------------------------------------------------
+
+/// Display name for a working directory: the folder name, or the full path
+/// when there is none (filesystem root).
+pub fn project_display_name(cwd: &std::path::Path) -> String {
+    cwd.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| cwd.display().to_string())
+}
+
+/// System prompt pinning the agent to one project. Passed as
+/// `--append-system-prompt` on wires that have one (Claude) and folded into
+/// the turn text on wires that don't (Codex, opencode) — see
+/// [`wrap_turn_with_project`].
+///
+/// The wording is deliberately an authoritative statement of fact, not a
+/// suggestion and not a request to verify: the app spawns the agent process
+/// in this directory and keeps the header pinned to the session behind it,
+/// so asking "what folder am I in" must answer from here rather than from
+/// conversation history or from whichever open project the model saw most
+/// recently (e.g. an `egant` thread answering while the user looks at
+/// `Arka`). The agent trusts this location and never runs `pwd` or any
+/// other tool to determine it.
+pub fn project_system_prompt(project_name: &str, cwd: &std::path::Path) -> String {
+    format!(
+        "You are working in project \"{project_name}\" at {path}. \
+         Your working directory is {path}. \
+         When asked what folder, directory, or project you are in, answer with this project name and path. \
+         Trust this location; do not run `pwd` or any other tool to determine where you are, and do not answer with another open project.",
+        path = cwd.display()
+    )
+}
+
+/// Per-turn envelope carrying the same fact as [`project_system_prompt`].
+/// The transcript stores the user's original text; only what crosses the
+/// wire is wrapped, so the UI stays clean while the agent is grounded on
+/// every turn — including turns in sessions created before the system prompt
+/// existed, and resumes where the CLI reuses the recorded prompt verbatim.
+pub fn wrap_turn_with_project(project_name: &str, cwd: &std::path::Path, text: &str) -> String {
+    format!(
+        "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n{text}",
+        path = cwd.display()
+    )
+}
+
+#[cfg(test)]
+mod project_context_tests {
+    use super::*;
+
+    #[test]
+    fn prompt_names_project_and_path() {
+        let prompt = project_system_prompt("Arka", std::path::Path::new("/tmp/Arka"));
+        assert!(prompt.contains("Arka"));
+        assert!(prompt.contains("/tmp/Arka"));
+        // The app guarantees the directory; the model must answer directly
+        // rather than spending a tool call verifying it.
+        assert!(!prompt.to_lowercase().contains("verify with `pwd`"));
+        assert!(prompt.contains("do not run `pwd`"));
+    }
+
+    #[test]
+    fn envelope_preserves_user_text() {
+        let wrapped = wrap_turn_with_project("Arka", std::path::Path::new("/tmp/Arka"), "hi");
+        assert!(wrapped.contains("Arka"));
+        assert!(wrapped.ends_with("hi"));
+        assert!(!wrapped.contains("Verify with `pwd`"));
+    }
+
+    #[test]
+    fn display_name_falls_back_to_path() {
+        assert_eq!(
+            project_display_name(std::path::Path::new("/tmp/Arka")),
+            "Arka"
+        );
+        assert!(!project_display_name(std::path::Path::new("/")).is_empty());
+    }
 }

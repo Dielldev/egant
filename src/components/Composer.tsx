@@ -1,6 +1,8 @@
-import { ArrowUp, Paperclip, Square, TerminalSquare, TriangleAlert } from "lucide-react";
+import { ArrowUp, Loader2, Paperclip, Square, TerminalSquare, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { pickAttachments } from "../lib/api";
+import { createPortal } from "react-dom";
+import { api, pickAttachments } from "../lib/api";
+import { log } from "../lib/logger";
 import { formatContext } from "../lib/types";
 import { prettyClaudeModelId } from "../lib/transcript";
 import { selectNextAgent, useEgant, usesChatUi } from "../store";
@@ -8,6 +10,17 @@ import { AGENT_ACCENT, AGENT_PROVIDER, AgentPicker, agentName } from "./AgentPic
 import { ModeInfo } from "./ModeInfo";
 import { ProviderGlyph } from "./ProviderLogo";
 import { UsageMeter } from "./UsageMeter";
+
+/** A clipboard image between paste and send: shown as a thumbnail chip while
+ * it's written to a temp file, then carried as an `@path` mention once that
+ * resolves. `error` means the write failed — the chip stays so the user can
+ * see it and remove it, but it never joins the message. */
+type PastedImage = {
+  id: string;
+  dataUrl: string;
+  path: string | null;
+  error: boolean;
+};
 
 /** The one control that drives the window, in the two shapes it takes.
  *
@@ -42,11 +55,24 @@ export function Composer({
   const askCliLaunch = useEgant((s) => s.askCliLaunch);
 
   const [text, setText] = useState("");
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (autoFocus) areaRef.current?.focus();
   }, [autoFocus]);
+
+  // The lightbox is the only thing Esc needs to close here — the textarea
+  // itself has no escape behavior to conflict with.
+  useEffect(() => {
+    if (!previewImage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPreviewImage(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewImage]);
 
   useEffect(() => {
     if (focusComposerToken > 0) areaRef.current?.focus();
@@ -132,16 +158,26 @@ export function Composer({
     return () => clearInterval(timer);
   }, [claudeActive, fetchClaudeUsage]);
 
+  // Pasted images ride along as real attachments — each backend attaches
+  // them the way it actually supports (a vision block for Claude, `-i` for
+  // Codex, `-f` for opencode) — but only once each has actually landed on
+  // disk; one still saving blocks the send rather than going out without it.
+  const imagesSaving = pastedImages.some((img) => img.path == null && !img.error);
+  const readyImages = pastedImages.filter((img) => img.path != null);
+  const hasContent = hasText || pastedImages.length > 0;
+
   const submit = () => {
     // In CLI mode the button is the way into the terminal, not a send.
     if (cliAgent) {
       askCliLaunch(cliAgent);
       return;
     }
-    if (!hasText || ended) return;
-    if (hero || sessionId == null) void sendOnLaunch(text);
-    else void send(sessionId, text);
+    if (!hasContent || ended || imagesSaving) return;
+    const paths = readyImages.map((img) => img.path as string);
+    if (hero || sessionId == null) void sendOnLaunch(text, paths);
+    else void send(sessionId, text, paths);
     setText("");
+    setPastedImages([]);
     requestAnimationFrame(() => areaRef.current?.focus());
   };
 
@@ -153,6 +189,49 @@ export function Composer({
     areaRef.current?.focus();
   };
 
+  // A pasted image becomes a thumbnail chip immediately (from the clipboard's
+  // own bytes) and a real `@path` mention once the write to disk resolves —
+  // the CLIs only understand file paths, never inline clipboard data.
+  const addPastedImage = (file: File) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : null;
+      if (!dataUrl) return;
+      setPastedImages((prev) => [...prev, { id, dataUrl, path: null, error: false }]);
+      api
+        .savePastedImage(dataUrl)
+        .then((path) => {
+          setPastedImages((prev) => prev.map((img) => (img.id === id ? { ...img, path } : img)));
+        })
+        .catch((error: unknown) => {
+          log.error("composer", `couldn't save pasted image: ${String(error)}`, error);
+          setPastedImages((prev) =>
+            prev.map((img) => (img.id === id ? { ...img, error: true } : img)),
+          );
+        });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removePastedImage = (id: string) => {
+    setPastedImages((prev) => prev.filter((img) => img.id !== id));
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const images = items.filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+    if (images.length === 0) return;
+    // A clipboard image often carries a text/html fallback alongside it (a
+    // screenshot copied from a browser, say) — once there's an image, that's
+    // the paste; the text side would only dump alt text or markup into the box.
+    e.preventDefault();
+    for (const item of images) {
+      const file = item.getAsFile();
+      if (file) addPastedImage(file);
+    }
+  };
+
   const area = (
     <textarea
       ref={areaRef}
@@ -160,6 +239,7 @@ export function Composer({
       rows={hero ? 3 : 1}
       disabled={ended || cliAgent != null}
       onChange={(e) => setText(e.target.value)}
+      onPaste={handlePaste}
       onKeyDown={(e) => {
         // Plain Enter sends without inserting a newline; shift-Enter still
         // breaks the line.
@@ -171,9 +251,79 @@ export function Composer({
       placeholder={
         cliAgent ? `${cliAgentName} runs in its own terminal` : "Do anything…"
       }
-      className="max-h-[240px] w-full resize-none bg-transparent text-sm leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--faint)] disabled:opacity-50"
+      className="max-h-[240px] w-full resize-none bg-transparent text-sm leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--muted)] disabled:opacity-50"
     />
   );
+
+  // A pasted image's chip, the way Claude Code Desktop shows it: a small
+  // thumbnail above the text rather than a `@path` string inline — the
+  // mention only appears in the message that actually goes out on send.
+  const imageRow =
+    pastedImages.length > 0 ? (
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        {pastedImages.map((img) => (
+          <div key={img.id} className="group relative h-11 w-11 shrink-0">
+            <button
+              type="button"
+              title={img.error ? "Couldn't save this image" : "Click to view"}
+              onClick={() => {
+                if (!img.error) setPreviewImage(img.dataUrl);
+              }}
+              className={`h-11 w-11 cursor-pointer overflow-hidden rounded-lg border bg-[var(--card)] ${
+                img.error ? "border-[var(--danger)]/50" : "border-[var(--border)]"
+              }`}
+            >
+              <img
+                src={img.dataUrl}
+                alt="Pasted"
+                className={`h-full w-full object-cover ${img.error ? "opacity-40" : ""}`}
+              />
+              {img.path == null && !img.error && (
+                <span className="absolute inset-0 flex items-center justify-center bg-black/35">
+                  <Loader2 size={14} strokeWidth={2.5} className="animate-spin text-white" />
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              title="Remove"
+              onClick={() => removePastedImage(img.id)}
+              className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--stage)] text-[var(--muted)] opacity-0 hover:text-[var(--ink)] group-hover:opacity-100"
+            >
+              <X size={10} strokeWidth={2.5} />
+            </button>
+          </div>
+        ))}
+      </div>
+    ) : null;
+
+  // Full-size, on demand — the chip only hints at what was pasted. Portaled
+  // to the body: the composer's own `backdrop-filter` would otherwise clip a
+  // `fixed` overlay to its own bounds instead of the full viewport.
+  const lightbox = previewImage
+    ? createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-10 backdrop-blur-sm"
+          onMouseDown={() => setPreviewImage(null)}
+        >
+          <img
+            src={previewImage}
+            alt="Pasted image preview"
+            className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            title="Close"
+            onClick={() => setPreviewImage(null)}
+            className="absolute right-6 top-6 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60"
+          >
+            <X size={16} strokeWidth={2.5} />
+          </button>
+        </div>,
+        document.body,
+      )
+    : null;
 
   const picker =
     sessionId == null ? (
@@ -216,7 +366,7 @@ export function Composer({
         type="button"
         title="Attach a file or folder"
         onClick={() => void attach()}
-        className="shrink-0 cursor-pointer rounded-full p-1.5 text-[var(--muted)] hover:bg-[rgba(255,255,255,0.08)] hover:text-[var(--ink)]"
+        className="shrink-0 cursor-pointer rounded-full p-1.5 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
       >
         <Paperclip size={15} strokeWidth={2} />
       </button>
@@ -240,9 +390,9 @@ export function Composer({
           title={cliAgent ? `Open the ${cliAgentName} CLI` : "Send · ⏎"}
           onClick={submit}
           className={`flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full hover:opacity-85 ${
-            cliAgent || (hasText && !ended)
+            cliAgent || (hasContent && !ended)
               ? "bg-[#f2f2f5] text-[#0c0c0e]"
-              : "bg-[rgba(255,255,255,0.1)] text-[var(--faint)]"
+              : "bg-[var(--bubble)] text-[var(--faint)]"
           }`}
         >
           {cliAgent ? (
@@ -273,6 +423,7 @@ export function Composer({
             </button>
           </div>
         )}
+        {imageRow}
         {area}
         {/* Picker left, actions right — matches the reference bar where the
           model (`Fable 5.1 High · 200K`) sits opposite the paperclip/send. */}
@@ -280,17 +431,22 @@ export function Composer({
           <div className="min-w-0">{picker}</div>
           <div className="flex shrink-0 items-center gap-2.5">{actions}</div>
         </div>
+        {lightbox}
       </div>
     );
   }
 
   return (
     <div className="composer flex w-full items-end gap-2.5 rounded-[22px] py-2 pr-2 pl-4">
-      <div className="min-w-0 flex-1 py-1">{area}</div>
+      <div className="min-w-0 flex-1 py-1">
+        {imageRow}
+        {area}
+      </div>
       <div className="flex shrink-0 items-center gap-2.5 pb-0.5">
         {picker}
         {actions}
       </div>
+      {lightbox}
     </div>
   );
 }

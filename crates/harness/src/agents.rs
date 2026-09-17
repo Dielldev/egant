@@ -211,7 +211,13 @@ pub struct AgentStatus {
 /// Probe every known agent. One login-shell snapshot is shared across the
 /// whole pass (cached per process).
 pub fn detect_agents() -> Vec<AgentStatus> {
-    AgentId::all().iter().map(|id| build_status(*id)).collect()
+    let agents: Vec<AgentStatus> = AgentId::all().iter().map(|id| build_status(*id)).collect();
+    log::debug!(
+        "detect_agents: {} installed, {} connected",
+        agents.iter().filter(|a| a.installed).count(),
+        agents.iter().filter(|a| a.connected).count(),
+    );
+    agents
 }
 
 fn build_status(id: AgentId) -> AgentStatus {
@@ -254,8 +260,10 @@ fn build_status(id: AgentId) -> AgentStatus {
 /// Accounts (open, "Refresh", and after "Add account"), matching how
 /// `list_models` already accepts one spawn's cost on picker open.
 pub fn verify_agent(id: AgentId) -> AgentStatus {
+    log::debug!("verify_agent {}", id.as_str());
     let mut status = build_status(id);
     if let Some((connected, email)) = verify_login(id) {
+        log::info!("verify_agent {} connected={connected}", id.as_str());
         status.connected = connected;
         if email.is_some() {
             status.email = email;
@@ -317,6 +325,7 @@ fn verify_codex_login() -> Option<(bool, Option<String>)> {
 /// (Settings > Accounts) polls [`verify_agent`] afterward instead of waiting
 /// here.
 pub fn connect(id: AgentId) -> Result<(), String> {
+    log::info!("connect {}", id.as_str());
     let desc = id.descriptor();
     let program = resolve_executable(desc).ok_or_else(|| desc.install_hint.to_string())?;
     match id {

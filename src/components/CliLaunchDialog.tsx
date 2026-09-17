@@ -76,7 +76,7 @@ export function CliLaunchDialog() {
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="w-full max-w-[420px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl"
+        className="w-full max-w-[420px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--stage)] shadow-2xl"
       >
         <div className="flex items-start gap-3 px-5 pt-5">
           <ProviderLogo provider={AGENT_PROVIDER[agent] ?? entry?.vendor ?? agent} size={38} />
@@ -92,7 +92,7 @@ export function CliLaunchDialog() {
           </div>
         </div>
 
-        <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[rgba(255,255,255,0.03)] px-3 py-2">
+        <div className="mx-5 mt-4 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2">
           <TerminalSquare size={13} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
           <code
             className="min-w-0 flex-1 truncate font-mono text-[12px]"
@@ -123,7 +123,7 @@ export function CliLaunchDialog() {
           </button>
         )}
 
-        <div className="mt-5 flex items-center justify-end gap-2 border-t border-[var(--border)] bg-[rgba(255,255,255,0.02)] px-4 py-3">
+        <div className="mt-5 flex items-center justify-end gap-2 border-t border-[var(--border)] bg-[var(--card)] px-4 py-3">
           <button
             type="button"
             onClick={cancel}

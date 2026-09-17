@@ -32,7 +32,7 @@ function ToolCardShell({
   const hasBody = children != null;
 
   return (
-    <div className="flex w-full flex-col gap-1.5 rounded-xl border border-[var(--border)] bg-[rgba(255,255,255,0.03)] p-2.5">
+    <div className="flex w-full flex-col gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--card)] p-2.5">
       <button
         type="button"
         onClick={() => hasBody && setExpanded((v) => !v)}

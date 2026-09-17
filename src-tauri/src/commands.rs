@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
@@ -24,6 +25,7 @@ type BackendState<'a> = State<'a, Mutex<AppState>>;
 
 #[tauri::command]
 fn get_state(state: BackendState<'_>) -> StateDto {
+    log::debug!("get_state");
     state.lock().unwrap().snapshot()
 }
 
@@ -37,8 +39,25 @@ fn add_project(
     variant: Option<String>,
     context: Option<u64>,
 ) -> Result<StateDto, String> {
+    log::info!("add_project path={path} agent={agent:?}");
     let mut guard = state.lock().unwrap();
-    let id = guard.add_project(PathBuf::from(path))?;
+    // Re-opening a folder that is already open must select it, not stack a
+    // duplicate empty session beside it. The path is verified and
+    // canonicalized inside `add_project`, so `/tmp/x`, `/private/tmp/x` and
+    // a differently cased spelling of the same folder on macOS all land on
+    // one row — but that check lives here too so a re-open returns without
+    // spawning a second session.
+    let incoming = PathBuf::from(&path);
+    if let Some(existing) = guard
+        .projects
+        .iter()
+        .find(|p| crate::project::same_project(&p.fs_path(), &incoming))
+    {
+        let id = existing.id;
+        guard.select_project(id);
+        return Ok(guard.snapshot());
+    }
+    let id = guard.add_project(incoming)?;
     let requested = agent
         .as_deref()
         .and_then(AgentId::from_str)
@@ -46,7 +65,12 @@ fn add_project(
     let model = model.filter(|model| !model.trim().is_empty());
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
-    sessions::spawn_session(&app, &mut guard, id, requested, model, variant, context)?;
+    sessions::spawn_session(&app, &mut guard, id, requested, model, variant, context).map_err(
+        |error| {
+            log::error!("add_project spawn failed: {error}");
+            error
+        },
+    )?;
     Ok(guard.snapshot())
 }
 
@@ -54,6 +78,7 @@ fn add_project(
 fn select_project(state: BackendState<'_>, id: usize) -> Result<StateDto, String> {
     let mut guard = state.lock().unwrap();
     if !guard.select_project(id) {
+        log::warn!("select_project unknown project {id}");
         return Err("unknown project".to_string());
     }
     Ok(guard.snapshot())
@@ -86,8 +111,10 @@ fn create_session(
     variant: Option<String>,
     context: Option<u64>,
 ) -> Result<StateDto, String> {
+    log::info!("create_session agent={agent:?} model={model:?}");
     let mut guard = state.lock().unwrap();
     let Some(project) = guard.active_project else {
+        log::warn!("create_session with no folder open");
         return Err("open a folder first".to_string());
     };
     let requested = agent
@@ -97,7 +124,12 @@ fn create_session(
     let model = model.filter(|model| !model.trim().is_empty());
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
-    sessions::spawn_session(&app, &mut guard, project, requested, model, variant, context)?;
+    sessions::spawn_session(&app, &mut guard, project, requested, model, variant, context).map_err(
+        |error| {
+            log::error!("create_session spawn failed: {error}");
+            error
+        },
+    )?;
     Ok(guard.snapshot())
 }
 
@@ -109,11 +141,16 @@ fn create_session(
 /// and why rather than opening a terminal onto "command not found".
 #[tauri::command]
 fn create_cli_session(state: BackendState<'_>, agent: String) -> Result<StateDto, String> {
+    log::info!("create_cli_session agent={agent}");
     let mut guard = state.lock().unwrap();
     let Some(project) = guard.active_project else {
+        log::warn!("create_cli_session with no folder open");
         return Err("open a folder first".to_string());
     };
-    sessions::spawn_cli_session(&mut guard, project, &agent)?;
+    sessions::spawn_cli_session(&mut guard, project, &agent).map_err(|error| {
+        log::error!("create_cli_session failed: {error}");
+        error
+    })?;
     Ok(guard.snapshot())
 }
 
@@ -128,6 +165,7 @@ fn default_agent(state: &AppState) -> AgentId {
 fn select_session(state: BackendState<'_>, id: u64) -> Result<StateDto, String> {
     let mut guard = state.lock().unwrap();
     if !guard.sessions.contains_key(&id) {
+        log::warn!("select_session unknown session {id}");
         return Err("unknown session".to_string());
     }
     guard.active_session = Some(id);
@@ -158,27 +196,74 @@ fn send_message(
     state: BackendState<'_>,
     id: u64,
     text: String,
+    images: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
+    let images: Vec<PathBuf> = images.unwrap_or_default().into_iter().map(PathBuf::from).collect();
+    log::info!(
+        "send_message session {id} ({} chars, {} image(s))",
+        text.len(),
+        images.len()
+    );
     let mut guard = state.lock().unwrap();
-    sessions::send_text(&app, &mut guard, id, text)
+    sessions::send_text(&app, &mut guard, id, text, images).map_err(|error| {
+        log::error!("send_message session {id} failed: {error}");
+        error
+    })
 }
 
 #[tauri::command]
 fn interrupt_session(state: BackendState<'_>, id: u64) -> Result<(), String> {
+    log::info!("interrupt_session {id}");
     let mut guard = state.lock().unwrap();
-    sessions::interrupt(&mut guard, id)
+    sessions::interrupt(&mut guard, id).map_err(|error| {
+        log::error!("interrupt_session {id} failed: {error}");
+        error
+    })
 }
 
 #[tauri::command]
-fn answer_permission(state: BackendState<'_>, id: u64, allow: bool) -> Result<(), String> {
+fn answer_permission(
+    state: BackendState<'_>,
+    id: u64,
+    request_id: Option<String>,
+    decision: Option<String>,
+    // Back-compat with frontends calling `answer_permission(id, allow)`.
+    allow: Option<bool>,
+) -> Result<Option<String>, String> {
     let mut guard = state.lock().unwrap();
-    sessions::answer_permission(&mut guard, id, allow)
+    if let (Some(request_id), Some(decision)) = (request_id, decision) {
+        log::info!("answer_permission session {id} {request_id} {decision}");
+        let Some(answer) = sessions::PermissionAnswer::from_str_name(&decision) else {
+            // No-op, not an error: an unknown decision string (e.g. a newer
+            // frontend than this backend) must not flash the red bar — the
+            // row stays and the user can click again.
+            log::warn!("answer_permission unknown decision `{decision}`; ignoring");
+            return Ok(None);
+        };
+        sessions::answer_permission(&mut guard, id, &request_id, answer)
+            .map(|mode| mode.map(str::to_owned))
+    } else if let Some(allow) = allow {
+        sessions::answer_permission_legacy(&mut guard, id, allow)
+            .map(|mode| mode.map(str::to_owned))
+    } else {
+        // No-op, not an error: a stale or double-clicked row can arrive with
+        // nothing to answer (already resolved, session gone). Returning an
+        // error here is what flashed the red bar under the composer on every
+        // Allow always click — the click had already done its job.
+        log::warn!("answer_permission called with no decision; ignoring");
+        Ok(None)
+    }
 }
 
 #[tauri::command]
 fn cycle_permission_mode(state: BackendState<'_>, id: u64) -> Result<String, String> {
     let mut guard = state.lock().unwrap();
-    sessions::cycle_permission_mode(&mut guard, id).map(str::to_owned)
+    sessions::cycle_permission_mode(&mut guard, id)
+        .map(str::to_owned)
+        .map_err(|error| {
+            log::error!("cycle_permission_mode session {id} failed: {error}");
+            error
+        })
 }
 
 /// Jumps straight to a named mode — the composer's mode-info popover uses
@@ -186,8 +271,10 @@ fn cycle_permission_mode(state: BackendState<'_>, id: u64) -> Result<String, Str
 /// through `cycle_permission_mode` one click at a time.
 #[tauri::command]
 fn set_permission_mode(state: BackendState<'_>, id: u64, mode: String) -> Result<String, String> {
-    let parsed = egant_harness::PermissionMode::from_cli_arg(&mode)
-        .ok_or_else(|| format!("unknown permission mode `{mode}`"))?;
+    let parsed = egant_harness::PermissionMode::from_cli_arg(&mode).ok_or_else(|| {
+        log::warn!("set_permission_mode unknown mode `{mode}`");
+        format!("unknown permission mode `{mode}`")
+    })?;
     let mut guard = state.lock().unwrap();
     sessions::set_permission_mode(&mut guard, id, parsed).map(str::to_owned)
 }
@@ -196,6 +283,7 @@ fn set_permission_mode(state: BackendState<'_>, id: u64, mode: String) -> Result
 fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, String> {
     let guard = state.lock().unwrap();
     let Some(session) = guard.sessions.get(&id) else {
+        log::warn!("get_transcript unknown session {id}");
         return Err("unknown session".to_string());
     };
     Ok(TranscriptDto::from(&session.transcript))
@@ -234,6 +322,7 @@ fn cycle_dim(state: BackendState<'_>) -> SettingsDto {
 #[tauri::command]
 fn set_default_agent(state: BackendState<'_>, agent: String) -> Result<SettingsDto, String> {
     if AgentId::from_str(&agent).is_none() {
+        log::warn!("set_default_agent unknown agent `{agent}`");
         return Err(format!("unknown agent `{agent}`"));
     }
     let mut guard = state.lock().unwrap();
@@ -246,7 +335,12 @@ fn set_default_agent(state: BackendState<'_>, agent: String) -> Result<SettingsD
 /// every settings open.
 #[tauri::command]
 fn list_agents() -> Vec<AgentStatus> {
-    egant_harness::detect_agents()
+    let agents = egant_harness::detect_agents();
+    log::debug!(
+        "list_agents ({} installed)",
+        agents.iter().filter(|a| a.installed).count()
+    );
+    agents
 }
 
 /// A live recheck of one agent's login, via the CLI's own status command
@@ -259,10 +353,15 @@ fn list_agents() -> Vec<AgentStatus> {
 /// freezes the whole window until it answers.
 #[tauri::command]
 async fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
+    log::info!("check_agent_login {agent}");
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
     tauri::async_runtime::spawn_blocking(move || egant_harness::agents::verify_agent(id))
         .await
         .map_err(|error| error.to_string())
+        .map(|status| {
+            log::info!("check_agent_login {agent} connected={}", status.connected);
+            status
+        })
 }
 
 /// Starts an agent's sign-in flow (a browser OAuth tab, or a Terminal window
@@ -270,12 +369,16 @@ async fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
 /// it's under way. The frontend polls `check_agent_login` afterward.
 #[tauri::command]
 fn connect_agent(agent: String) -> Result<(), String> {
+    log::info!("connect_agent {agent}");
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
     // A new login can change what the account is allowed to run (Codex asks
     // the signed-in account for its catalog), so the cached one is dropped
     // rather than served to the picker for the rest of its lifetime.
     egant_harness::models::invalidate_models(id);
-    egant_harness::agents::connect(id)
+    egant_harness::agents::connect(id).map_err(|error| {
+        log::error!("connect_agent {agent} failed: {error}");
+        error
+    })
 }
 
 /// Every coding-agent CLI the Agents tab lists, with whether this machine
@@ -288,6 +391,7 @@ fn connect_agent(agent: String) -> Result<(), String> {
 /// frozen window.
 #[tauri::command]
 async fn list_agent_catalog() -> Result<Vec<CatalogStatus>, String> {
+    log::debug!("list_agent_catalog");
     tauri::async_runtime::spawn_blocking(egant_harness::catalog::list)
         .await
         .map_err(|error| error.to_string())
@@ -300,11 +404,19 @@ async fn list_agent_catalog() -> Result<Vec<CatalogStatus>, String> {
 /// badge without a second round trip.
 #[tauri::command]
 async fn install_agent(agent: String, method: Option<String>) -> Result<InstallOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    log::info!("install_agent {agent} method={method:?}");
+    let name = agent.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         egant_harness::catalog::install(&agent, method.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("install_agent {name} failed: {error}");
+        error
+    })?;
+    log::info!("install_agent {name} success={}", outcome.success);
+    Ok(outcome)
 }
 
 /// "Install latest": the same source's update command for an agent that is
@@ -314,11 +426,19 @@ async fn install_agent(agent: String, method: Option<String>) -> Result<InstallO
 /// no-op.
 #[tauri::command]
 async fn update_agent(agent: String, method: Option<String>) -> Result<InstallOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    log::info!("update_agent {agent} method={method:?}");
+    let name = agent.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         egant_harness::catalog::update(&agent, method.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("update_agent {name} failed: {error}");
+        error
+    })?;
+    log::info!("update_agent {name} success={}", outcome.success);
+    Ok(outcome)
 }
 
 /// Whether an installed agent's CLI is behind its published release. Two
@@ -326,9 +446,15 @@ async fn update_agent(agent: String, method: Option<String>) -> Result<InstallOu
 /// the background rather than as part of `list_agent_catalog`.
 #[tauri::command]
 async fn check_agent_update(agent: String) -> Result<UpdateInfo, String> {
+    log::debug!("check_agent_update {agent}");
+    let name = agent.clone();
     tauri::async_runtime::spawn_blocking(move || egant_harness::catalog::check_update(&agent))
         .await
         .map_err(|error| error.to_string())?
+        .map_err(|error| {
+            log::warn!("check_agent_update {name} failed: {error}");
+            error
+        })
 }
 
 /// The models one agent can run. opencode answers live from its own catalog
@@ -341,10 +467,15 @@ async fn check_agent_update(agent: String) -> Result<UpdateInfo, String> {
 /// `models::list_models`), so repeat calls don't spawn anything at all.
 #[tauri::command]
 async fn list_models(agent: String) -> Result<Vec<AgentModel>, String> {
+    log::debug!("list_models {agent}");
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
     tauri::async_runtime::spawn_blocking(move || egant_harness::models::list_models(id))
         .await
         .map_err(|error| error.to_string())?
+        .map_err(|error| {
+            log::warn!("list_models {agent} failed: {error}");
+            error
+        })
 }
 
 /// Claude's 5-hour and weekly usage, for the composer's limit pill. `Ok(None)`
@@ -353,11 +484,16 @@ async fn list_models(agent: String) -> Result<Vec<AgentModel>, String> {
 /// the command thread the same way the git remote ops do.
 #[tauri::command]
 async fn claude_usage_limits() -> Result<Option<ClaudeUsageDto>, String> {
+    log::debug!("claude_usage_limits");
     tauri::async_runtime::spawn_blocking(|| {
         egant_harness::usage_limits::fetch().map(|usage| usage.map(ClaudeUsageDto::from))
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::warn!("claude_usage_limits failed: {error}");
+        error
+    })
 }
 
 /// The wallpaper as a data URL for an `<img>` tag. Reading it here (rather
@@ -452,8 +588,14 @@ fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<(),
 /// What git reports as changed in the project, staged rows first.
 #[tauri::command]
 fn changes_list(path: String) -> Result<Vec<ChangeDto>, String> {
-    let repo = egant_vcs::Repo::discover(&path).map_err(|error| error.to_string())?;
-    let changes = repo.changes().map_err(|error| error.to_string())?;
+    let repo = egant_vcs::Repo::discover(&path).map_err(|error| {
+        log::warn!("changes_list {path} discover failed: {error}");
+        error.to_string()
+    })?;
+    let changes = repo.changes().map_err(|error| {
+        log::warn!("changes_list {path} failed: {error}");
+        error.to_string()
+    })?;
 
     let mut rows: Vec<ChangeDto> = changes
         .into_iter()
@@ -621,10 +763,14 @@ fn stage_all(root: String) -> Result<(), String> {
 
 #[tauri::command]
 fn commit_changes(root: String, message: String) -> Result<String, String> {
+    log::info!("commit in {root}");
     let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
     repo.commit(&message)
         .map(|oid| oid.to_string())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            log::error!("commit in {root} failed: {error}");
+            error.to_string()
+        })
 }
 
 #[tauri::command]
@@ -637,6 +783,7 @@ fn repo_branch(path: String) -> Result<Option<String>, String> {
 /// didn't ask for is not something a button should be able to make.
 #[tauri::command]
 async fn git_pull(root: String, remote: String, branch: String) -> Result<String, String> {
+    log::info!("git_pull {remote}/{branch} in {root}");
     tauri::async_runtime::spawn_blocking(move || {
         egant_vcs::remote::pull_ff_only(Path::new(&root), &remote, &branch)
             .map(|output| output.summary().to_owned())
@@ -644,11 +791,16 @@ async fn git_pull(root: String, remote: String, branch: String) -> Result<String
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("git_pull failed: {error}");
+        error
+    })
 }
 
 /// The first push of a branch that has no upstream yet — `git push -u`.
 #[tauri::command]
 async fn git_publish(root: String, remote: String, branch: String) -> Result<String, String> {
+    log::info!("git_publish {remote}/{branch} in {root}");
     tauri::async_runtime::spawn_blocking(move || {
         egant_vcs::remote::push_set_upstream(Path::new(&root), &remote, &branch)
             .map(|output| output.summary().to_owned())
@@ -656,6 +808,42 @@ async fn git_publish(root: String, remote: String, branch: String) -> Result<Str
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("git_publish failed: {error}");
+        error
+    })
+}
+
+/// Distinguishes two pastes landing in the same millisecond, so the second
+/// never silently overwrites the first's file.
+static PASTE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Where a pasted image lands so the composer can hand the agent a real
+/// `@path` mention: the CLIs read files, not inline clipboard bytes, so a
+/// paste needs a file on disk exactly like a dragged-in attachment does.
+#[tauri::command]
+fn save_pasted_image(data: String, extension: String) -> Result<String, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
+        .map_err(|error| error.to_string())?;
+    let dir = std::env::temp_dir().join("egant-pastes");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let seq = PASTE_SEQ.fetch_add(1, Ordering::Relaxed);
+    // The extension crossed the IPC boundary from a clipboard MIME type, so
+    // it's untrusted: keep only what a real image extension ever contains,
+    // which also rules out it smuggling a path separator or `..`.
+    let ext: String = extension
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let ext = if ext.is_empty() { "png".to_string() } else { ext };
+    let path = dir.join(format!("pasted-image-{stamp}-{seq}.{ext}"));
+    std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    Ok(path.display().to_string())
 }
 
 #[tauri::command]
@@ -667,6 +855,7 @@ fn git_remotes(root: String) -> Result<Vec<String>, String> {
 /// push blocked the UI — a recorded next step), here they never stall input.
 #[tauri::command]
 async fn git_push(root: String, remote: String, branch: String) -> Result<String, String> {
+    log::info!("git_push {remote}/{branch} in {root}");
     tauri::async_runtime::spawn_blocking(move || {
         egant_vcs::remote::push(Path::new(&root), &remote, &branch)
             .map(|output| output.summary().to_owned())
@@ -674,10 +863,15 @@ async fn git_push(root: String, remote: String, branch: String) -> Result<String
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("git_push failed: {error}");
+        error
+    })
 }
 
 #[tauri::command]
 async fn git_fetch(root: String, remote: String) -> Result<String, String> {
+    log::info!("git_fetch {remote} in {root}");
     tauri::async_runtime::spawn_blocking(move || {
         egant_vcs::remote::fetch(Path::new(&root), &remote)
             .map(|output| output.summary().to_owned())
@@ -685,6 +879,10 @@ async fn git_fetch(root: String, remote: String) -> Result<String, String> {
     })
     .await
     .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("git_fetch failed: {error}");
+        error
+    })
 }
 
 pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
@@ -737,6 +935,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         discard_files,
         blob_data_url,
         blob_text,
+        save_pasted_image,
         diff_file,
         stage_files,
         unstage_files,

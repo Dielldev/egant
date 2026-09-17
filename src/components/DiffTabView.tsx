@@ -1,11 +1,13 @@
 import hljs from "highlight.js/lib/common";
 import { AlignJustify, Columns2, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { api } from "../lib/api";
 import type { DiffHunk, DiffLine } from "../lib/types";
 import type { StageTab } from "../store";
 import { useEgant } from "../store";
 import { isImage, languageFor, previewKind, PreviewPane } from "./FileView";
+import { useEditorFontSize } from "./SettingsKit";
 
 /** Unified reads as one column with markers; split puts the two sides beside
  * each other. Remembered across tabs, because it is a preference about reading
@@ -60,6 +62,8 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
   const [mode, setMode] = useState<"diff" | "preview">("diff");
   const changesToken = useEgant((s) => s.changesToken);
   const refreshChanges = useEgant((s) => s.refreshChanges);
+  // Same setting as the file viewer — a diff is code too.
+  const editorFontSize = useEditorFontSize();
 
   const root = tab.root ?? "";
   const staged = tab.group === "staged";
@@ -122,7 +126,10 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      style={{ "--editor-font-size": `${editorFontSize}px` } as CSSProperties}
+    >
       <DiffToolbar
         staged={staged}
         style={style}
@@ -331,7 +338,7 @@ function DiffToolbar({
           <RefreshCw size={12} strokeWidth={2} />
         </button>
         {preview && onMode && (
-          <div className="flex items-center gap-0.5 rounded-md bg-[rgba(255,255,255,0.05)] p-0.5">
+          <div className="flex items-center gap-0.5 rounded-md bg-[var(--card)] p-0.5">
             <ModeButton active={mode === "diff"} onClick={() => onMode("diff")}>
               Diff
             </ModeButton>
@@ -341,7 +348,7 @@ function DiffToolbar({
           </div>
         )}
         {showStyle && (
-          <div className="flex items-center gap-0.5 rounded-md bg-[rgba(255,255,255,0.05)] p-0.5">
+          <div className="flex items-center gap-0.5 rounded-md bg-[var(--card)] p-0.5">
             <StyleButton
               label="Unified diff"
               active={style === "unified"}

@@ -41,8 +41,10 @@ pub struct ClaudeUsage {
 /// device — nothing to show, not an error the composer should surface.
 pub fn fetch() -> Result<Option<ClaudeUsage>, String> {
     let Some(token) = access_token() else {
+        log::debug!("usage fetch: not logged in");
         return Ok(None);
     };
+    // The token itself is never logged.
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -59,6 +61,7 @@ pub fn fetch() -> Result<Option<ClaudeUsage>, String> {
 
     let status = response.status();
     if !status.is_success() {
+        log::warn!("usage fetch failed: endpoint returned {status}");
         return Err(format!("usage endpoint returned {status}"));
     }
 

@@ -1,13 +1,11 @@
-import { Check, GitBranch, ListFilter, Search, TerminalSquare, X } from "lucide-react";
+import { Check, ChevronRight, ListFilter, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ageLabel } from "../lib/transcript";
 import { shouldOpenUpward } from "../lib/popover";
 import type { SessionInfo } from "../lib/types";
-import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
+import { agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 import { useEgant } from "../store";
 import { ProjectMenu } from "./ProjectMenu";
-import { useNow } from "./useNow";
 import { WindowBar } from "./WindowBar";
 
 /** The window's one column of navigation: every conversation on this machine,
@@ -24,6 +22,7 @@ export function Sidebar() {
   const openFilter = useEgant((s) => s.openFilter);
   const closeFilter = useEgant((s) => s.closeFilter);
   const focusFilterToken = useEgant((s) => s.focusFilterToken);
+  const openSearch = useEgant((s) => s.openSearch);
   const sidebarOrganize = useEgant((s) => s.sidebarOrganize);
   const setSidebarOrganize = useEgant((s) => s.setSidebarOrganize);
   const sidebarSort = useEgant((s) => s.sidebarSort);
@@ -32,9 +31,12 @@ export function Sidebar() {
   const setSidebarShowBranch = useEgant((s) => s.setSidebarShowBranch);
   const sidebarShowHarness = useEgant((s) => s.sidebarShowHarness);
   const setSidebarShowHarness = useEgant((s) => s.setSidebarShowHarness);
+  const collapsedProjects = useEgant((s) => s.collapsedProjects);
+  const toggleProjectCollapsed = useEgant((s) => s.toggleProjectCollapsed);
   const selectProject = useEgant((s) => s.selectProject);
   const selectSession = useEgant((s) => s.selectSession);
   const closeSession = useEgant((s) => s.closeSession);
+  const createSession = useEgant((s) => s.createSession);
   const openSettings = useEgant((s) => s.openSettings);
   const sidebarWidth = useEgant((s) => s.sidebarWidth);
   const setSidebarWidth = useEgant((s) => s.setSidebarWidth);
@@ -120,25 +122,35 @@ export function Sidebar() {
     return Array.from(map.entries());
   }, [rows, sidebarOrganize]);
 
-  const rowProps = (session: SessionInfo) => ({
-    key: session.id,
-    title: session.title,
-    context: `${projectNameOf(session.projectId)} @ ${machine}`,
-    age: session.startedUnixMs,
-    selected: session.id === snapshot?.activeSession,
-    busy: session.busy,
-    agent: session.agent,
-    cli: session.kind === "cli",
-    branch: sidebarShowBranch ? session.branch : null,
-    // The catalog knows every agent's display name; the harness registry
-    // only knows the ones it can drive, and would print a bare `goose`.
-    harnessLabel: sidebarShowHarness
+  const rowProps = (session: SessionInfo) => {
+    const project = projectNameOf(session.projectId);
+    const branch = sidebarShowBranch ? session.branch : null;
+    const harness = sidebarShowHarness
       ? (catalog.find((c) => c.id === session.agent)?.name ??
         agentName(agents, session.agent))
-      : null,
-    onClick: () => void selectSession(session.id),
-    onClose: () => void closeSession(session.id),
-  });
+      : null;
+    return {
+      key: session.id,
+      title: session.title,
+      tooltip: `${session.title} — ${project} @ ${machine}${branch ? ` · ${branch}` : ""}${harness ? ` · ${harness}` : ""}`,
+      projectLabel: project,
+      selected: session.id === snapshot?.activeSession,
+      busy: session.busy,
+      agent: session.agent,
+      cli: session.kind === "cli",
+      branch,
+      onClick: () => void selectSession(session.id),
+      onClose: () => void closeSession(session.id),
+    };
+  };
+
+  const newSessionInProject = (projectId: number) => {
+    const run = async () => {
+      if (snapshot?.activeProject !== projectId) await selectProject(projectId);
+      await createSession();
+    };
+    void run();
+  };
 
   return (
     <aside
@@ -149,6 +161,14 @@ export function Sidebar() {
 
       <div className="flex w-full items-center gap-1 px-3 pb-2">
         <ProjectMenu variant="header" machine={machine} />
+        <button
+          type="button"
+          title="Search sessions and projects"
+          onClick={() => openSearch()}
+          className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+        >
+          <Search size={14} strokeWidth={2} />
+        </button>
         <div className="relative shrink-0">
           <button
             ref={filterBtnRef}
@@ -175,7 +195,7 @@ export function Sidebar() {
                 }`}
               >
                 <div className="shrink-0 pb-1.5">
-                  <div className="flex items-center gap-2 rounded-lg bg-[rgba(255,255,255,0.05)] px-2.5 py-1.5">
+                  <div className="flex items-center gap-2 rounded-lg bg-[var(--card)] px-2.5 py-1.5">
                     <Search size={12} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
                     <input
                       ref={filterRef}
@@ -250,21 +270,55 @@ export function Sidebar() {
 
       <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1.5 pb-2">
         {groups
-          ? groups.map(([projectId, list]) => (
-              <div key={projectId} className="flex flex-col gap-px pt-1.5 first:pt-0">
-                <button
-                  type="button"
-                  onClick={() => void selectProject(projectId)}
-                  className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-[11px] font-medium text-[var(--faint)] hover:text-[var(--ink)]"
-                >
-                  <span className="truncate">{projectNameOf(projectId)}</span>
-                </button>
-                {list.map((session) => (
-                  <SessionRow {...rowProps(session)} />
-                ))}
-              </div>
-            ))
-          : rows.map((session) => <SessionRow {...rowProps(session)} />)}
+          ? groups.map(([projectId, list]) => {
+              // A search in progress overrides collapse: hiding the very
+              // match the user is looking for would defeat the search.
+              const collapsed = needle === "" && !!collapsedProjects[String(projectId)];
+              return (
+                <div key={projectId} className="flex flex-col gap-px pt-3 first:pt-0">
+                  <div className="group flex w-full items-center gap-1 rounded-md py-1 pr-1 pl-1">
+                    <button
+                      type="button"
+                      title={collapsed ? "Expand" : "Collapse"}
+                      onClick={() => toggleProjectCollapsed(projectId)}
+                      className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                    >
+                      <ChevronRight
+                        size={11}
+                        strokeWidth={2.5}
+                        className={`transition-transform ${collapsed ? "" : "rotate-90"}`}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      title={projectNameOf(projectId)}
+                      onClick={() => void selectProject(projectId)}
+                      className="min-w-0 flex-1 cursor-pointer truncate text-left text-[12.5px] font-normal text-[var(--muted)] hover:text-[var(--ink)]"
+                    >
+                      {projectNameOf(projectId)}
+                    </button>
+                    {collapsed && (
+                      <span className="shrink-0 text-[10.5px] text-[var(--faint)]">
+                        {list.length}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      title={`New conversation in ${projectNameOf(projectId)}`}
+                      onClick={() => newSessionInProject(projectId)}
+                      className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] opacity-100 hover:bg-[var(--hover)] hover:text-[var(--ink)] group-hover:opacity-100"
+                    >
+                      <Plus size={12} strokeWidth={2} />
+                    </button>
+                  </div>
+                  {!collapsed &&
+                    list.map((session) => (
+                      <SessionRow {...rowProps(session)} showProject={false} />
+                    ))}
+                </div>
+              );
+            })
+          : rows.map((session) => <SessionRow {...rowProps(session)} showProject />)}
         {rows.length === 0 && (
           <div className="px-2.5 py-1 text-xs text-[var(--faint)]">
             {sessions.length === 0 ? "No conversations yet" : "Nothing matches"}
@@ -282,7 +336,7 @@ export function Sidebar() {
           onClick={() => openSettings()}
           className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-[var(--hover)]"
         >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[rgba(255,255,255,0.1)] text-[11px] font-medium text-[var(--ink)]">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--bubble)] text-[11px] font-medium text-[var(--ink)]">
             L
           </span>
           <span className="truncate text-[13px] text-[var(--muted)]">Local only</span>
@@ -337,95 +391,96 @@ function OptionRow({
   );
 }
 
-/** One conversation: where it runs and how long ago it started, then its
- * title. Two lines that read as a single unit, the way a mail client merges
- * sender, subject and snippet into one row. */
+/** One conversation: a single compact line — agent logo + title — grouped
+ * under its project like Claude Code. The grey `project @ machine` meta line
+ * is gone (the group header already says where it runs). History reads small
+ * like opencode: 12.5px titles with tight padding. Flat list keeps the
+ * project name as a faint suffix since there is no header to say it. */
 function SessionRow({
   title,
-  context,
-  age,
+  tooltip,
+  projectLabel,
+  showProject,
   selected,
   busy,
   agent,
   cli,
   branch,
-  harnessLabel,
   onClick,
   onClose,
 }: {
   title: string;
-  context: string;
-  age: number;
+  tooltip: string;
+  projectLabel: string;
+  showProject?: boolean;
   selected: boolean;
   busy: boolean;
   agent: string;
   /** This session is the agent's own CLI in a terminal, not a chat. */
   cli?: boolean;
   branch?: string | null;
-  harnessLabel?: string | null;
   onClick: () => void;
   onClose: () => void;
 }) {
-  const now = useNow(30_000);
   return (
     <div
       role="button"
       tabIndex={0}
+      title={tooltip}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
-      className={`group flex w-full cursor-pointer flex-col gap-[3px] rounded-lg px-2.5 py-2 text-left ${
+      className={`group flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] text-left ${
         selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"
       }`}
     >
-      <span className="flex w-full items-center text-[11px] text-[var(--faint)]">
-        <span className="min-w-0 flex-1 truncate">
-          {context}
-          {harnessLabel && <> · {harnessLabel}</>}
-          {branch && (
-            <span className="ml-1 inline-flex items-center gap-0.5 align-middle">
-              <GitBranch size={10} strokeWidth={2} className="inline shrink-0" /> {branch}
-            </span>
-          )}
+      <ProviderGlyph
+        provider={AGENT_PROVIDER[agent] ?? agent}
+        size={12}
+        color={AGENT_ACCENT[agent]}
+      />
+      <span
+        className={`min-w-0 flex-1 truncate text-[12.5px] leading-[1.35] ${
+          selected
+            ? "font-medium text-[var(--ink)]"
+            : "font-normal text-[var(--muted)] group-hover:text-[var(--ink)]"
+        }`}
+      >
+        {title}
+      </span>
+      {showProject && (
+        <span className="max-w-[90px] shrink-0 truncate text-[10.5px] text-[var(--faint)]">
+          {projectLabel}
         </span>
-        {busy && <span className="mx-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
-        {/* The close button takes the timestamp's place on hover rather than
-          adding a column that shifts the row. */}
-        <span className="ml-2 shrink-0 group-hover:hidden">{ageLabel(age, now)}</span>
-        <button
-          type="button"
-          title="Close conversation"
-          onClick={(e) => {
-            // Stops the click reaching the row, which would select the
-            // conversation on its way to closing it.
-            e.stopPropagation();
-            onClose();
-          }}
-          className="ml-2 hidden shrink-0 cursor-pointer rounded-sm p-0.5 hover:bg-[rgba(255,255,255,0.12)] hover:text-[var(--ink)] group-hover:block"
+      )}
+      {branch && (
+        <span
+          title={`Branch ${branch}`}
+          className="max-w-[80px] shrink-0 truncate text-[10.5px] text-[var(--faint)]"
         >
-          <X size={11} strokeWidth={2} />
-        </button>
-      </span>
-      <span className="flex w-full items-center gap-1.5">
-        <ProviderGlyph
-          provider={AGENT_PROVIDER[agent] ?? agent}
-          size={13}
-          color={AGENT_ACCENT[agent]}
-        />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
-          {title}
+          {branch}
         </span>
-        {/* Two rows can otherwise look identical — same agent, same project —
-          while one is a transcript and the other a live terminal. */}
-        {cli && (
-          <TerminalSquare
-            size={11}
-            strokeWidth={2}
-            className="shrink-0 text-[var(--faint)]"
-          />
-        )}
-      </span>
+      )}
+      {busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
+      {/* Two rows can otherwise look identical — same agent, same project —
+        while one is a transcript and the other a live terminal. */}
+      {cli && (
+        <TerminalSquare size={10} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
+      )}
+      <button
+        type="button"
+        title="Close conversation"
+        onClick={(e) => {
+          // Stops the click reaching the row, which would select the
+          // conversation on its way to closing it.
+          e.stopPropagation();
+          onClose();
+        }}
+        className="hidden shrink-0 cursor-pointer rounded-sm p-0.5 text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)] group-hover:block"
+      >
+        <X size={10} strokeWidth={2} />
+      </button>
     </div>
   );
 }

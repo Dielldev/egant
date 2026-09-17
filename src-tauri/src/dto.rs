@@ -77,6 +77,8 @@ pub struct PendingDto {
     pub request_id: String,
     pub tool_name: String,
     pub input: Value,
+    pub patterns: Vec<String>,
+    pub always_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +90,10 @@ pub struct TranscriptDto {
     pub model: Option<String>,
     pub tools: Vec<String>,
     pub pending: Option<PendingDto>,
+    /// Every outstanding request, in arrival order. `pending` mirrors the
+    /// first entry for clients written before the table existed.
+    #[serde(default)]
+    pub pending_list: Vec<PendingDto>,
     pub total_cost_usd: f64,
     pub last_turn_ms: u64,
     pub usage: SessionUsageDto,
@@ -151,17 +157,44 @@ impl From<&egant_harness::TurnUsage> for TurnUsageDto {
 
 impl From<&Transcript> for TranscriptDto {
     fn from(transcript: &Transcript) -> Self {
+        let pending_list: Vec<PendingDto> = transcript
+            .pending_permissions
+            .iter()
+            .map(|pending| PendingDto {
+                request_id: pending.request_id.clone(),
+                tool_name: pending.tool_name.clone(),
+                input: pending.input.clone(),
+                patterns: pending.patterns.clone(),
+                always_patterns: pending.always_patterns.clone(),
+            })
+            .collect();
+        // Backfill from the legacy single slot when the list is empty (a
+        // transcript restored from disk written before the table existed
+        // can't have one, but a live one always keeps both in step).
+        let pending_list = if pending_list.is_empty() {
+            transcript
+                .pending_permission
+                .as_ref()
+                .map(|pending| PendingDto {
+                    request_id: pending.request_id.clone(),
+                    tool_name: pending.tool_name.clone(),
+                    input: pending.input.clone(),
+                    patterns: pending.patterns.clone(),
+                    always_patterns: pending.always_patterns.clone(),
+                })
+                .into_iter()
+                .collect()
+        } else {
+            pending_list
+        };
         Self {
             entries: transcript.entries.iter().map(EntryDto::from).collect(),
             state: turn_state_name(transcript.state),
             session_id: transcript.session_id.clone(),
             model: transcript.model.clone(),
             tools: transcript.tools.clone(),
-            pending: transcript.pending_permission.as_ref().map(|pending| PendingDto {
-                request_id: pending.request_id.clone(),
-                tool_name: pending.tool_name.clone(),
-                input: pending.input.clone(),
-            }),
+            pending: pending_list.first().cloned(),
+            pending_list,
             total_cost_usd: transcript.total_cost_usd,
             last_turn_ms: transcript.last_turn_ms,
             usage: SessionUsageDto::from(&transcript.usage),
@@ -216,6 +249,10 @@ pub enum EventDto {
         request_id: String,
         tool_name: String,
         input: Value,
+        #[serde(default)]
+        patterns: Vec<String>,
+        #[serde(default)]
+        always_patterns: Vec<String>,
     },
     TurnEnded {
         result: Option<String>,
@@ -269,10 +306,14 @@ impl From<&HarnessEvent> for EventDto {
                 request_id,
                 tool_name,
                 input,
+                patterns,
+                always_patterns,
             } => EventDto::PermissionRequest {
                 request_id: request_id.clone(),
                 tool_name: tool_name.clone(),
                 input: input.clone(),
+                patterns: patterns.clone(),
+                always_patterns: always_patterns.clone(),
             },
             HarnessEvent::TurnEnded {
                 result,

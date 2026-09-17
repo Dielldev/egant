@@ -1,9 +1,10 @@
 import { Check, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
-import type { Entry, PendingPermission } from "../lib/types";
+import type { AgentRequest, Entry, PendingPermission } from "../lib/types";
 import { useEgant } from "../store";
 import { Composer } from "./Composer";
+import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
 import { StatusLine } from "./StatusLine";
 import { groupEntries, ReadGroupCard, ToolCard } from "./ToolCards";
@@ -23,6 +24,16 @@ export function TranscriptView() {
   const activeId = snapshot?.activeSession;
   const active = snapshot?.sessions.find((s) => s.id === activeId);
 
+  // The error toast above the composer auto-dismisses: a sticky red bar that
+  // has to be clicked away reads as a crash, while most store errors are
+  // transient (a failed send, a blip mid-answer). It stays long enough to
+  // read, then goes on its own — clicking still dismisses it sooner.
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => dismissError(), 5000);
+    return () => clearTimeout(timer);
+  }, [error, dismissError]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
@@ -35,7 +46,11 @@ export function TranscriptView() {
   // nothing would still split two neighbouring Reads into separate cards, for
   // a reason invisible on screen.
   const entries = (transcript?.entries ?? []).filter((entry) => entry.kind !== "thinking");
-  const pending = transcript?.pending;
+  // The approval table: every outstanding request, oldest first. Older
+  // snapshots carry only `pending` — mirror it so the table still renders.
+  const pendingList =
+    transcript?.pendingList ??
+    (transcript?.pending != null ? [transcript.pending] : []);
 
   // The status line at the tail of the transcript covers the whole turn — the
   // gap before the first token included — so there is never a stretch of the
@@ -82,14 +97,15 @@ export function TranscriptView() {
             item.kind === "read-group" ? (
               <ReadGroupCard key={item.index} entries={item.entries} />
             ) : (
-              <RenderEntry key={item.index} entry={item.entry} />
+              <RenderEntry key={item.index} entry={item.entry} sessionId={active.id} />
             ),
           )}
-          {pending && (
-            <PermissionCard
-              pending={pending}
-              onAllow={() => void answerPermission(active.id, true)}
-              onDeny={() => void answerPermission(active.id, false)}
+          {pendingList.length > 0 && (
+            <PermissionTable
+              items={pendingList}
+              onAnswer={(requestId, decision) =>
+                void answerPermission(active.id, requestId, decision)
+              }
             />
           )}
           {/* Trailing the transcript, the way Claude Code puts it: directly
@@ -111,7 +127,7 @@ export function TranscriptView() {
               type="button"
               title="Dismiss"
               onClick={dismissError}
-              className="mb-2 w-full cursor-pointer truncate rounded-lg bg-[rgba(224,112,112,0.14)] px-3 py-1.5 text-left text-xs text-[var(--danger)]"
+              className="row-in mb-2 w-full cursor-pointer truncate rounded-lg bg-[rgba(224,112,112,0.14)] px-3 py-1.5 text-left text-xs text-[var(--danger)]"
             >
               {error}
             </button>
@@ -152,7 +168,7 @@ function Centered({
   );
 }
 
-function RenderEntry({ entry }: { entry: Entry }) {
+function RenderEntry({ entry, sessionId }: { entry: Entry; sessionId: number }) {
   switch (entry.kind) {
     // The user's turn is a right-aligned bubble; the agent's is plain text on
     // the stage. One of the two has to be the ground, and there is far more
@@ -193,17 +209,49 @@ function RenderEntry({ entry }: { entry: Entry }) {
     case "tool":
       return <ToolCard entry={entry} />;
 
+    case "agent_request":
+      return <AgentRequestCard sessionId={sessionId} id={entry.id} request={entry.request} />;
+
     case "notice":
       return (
         <div
           className={`w-full rounded-xl p-2.5 text-xs whitespace-pre-wrap ${
             entry.isError
               ? "bg-[rgba(224,112,112,0.14)] text-[var(--danger)]"
-              : "bg-[rgba(255,255,255,0.05)] text-[var(--muted)]"
+              : "bg-[var(--card)] text-[var(--muted)]"
           }`}
         >
           {entry.text}
         </div>
+      );
+  }
+}
+
+/** Dispatches an `agent_request` entry to the card for its kind, and wires
+ * its answer to the store — the one place a request's `type` decides which
+ * component renders it. A future request kind (confirmation, text input, a
+ * tool-approval prompt…) adds its own card and a case here; nothing upstream
+ * of this function needs to know the difference. */
+function AgentRequestCard({
+  sessionId,
+  id,
+  request,
+}: {
+  sessionId: number;
+  id: string;
+  request: AgentRequest;
+}) {
+  const response = useEgant((s) => s.decisionResponses[`${sessionId}:${id}`] ?? null);
+  const answerDecision = useEgant((s) => s.answerDecision);
+
+  switch (request.type) {
+    case "decision":
+      return (
+        <DecisionPrompt
+          prompt={request}
+          response={response}
+          onSubmit={(answer) => void answerDecision(sessionId, request, answer)}
+        />
       );
   }
 }
@@ -237,36 +285,79 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function PermissionCard({
-  pending,
-  onAllow,
-  onDeny,
+/** One table row per outstanding request, like other agent apps: what the
+ * agent wants, the exact resource, and Allow once / Allow always / Deny.
+ * Allow on a turn-based wire (opencode) retries the turn with auto-approve;
+ * on a live wire (Claude) it answers mid-turn. Deny just dismisses. */
+function PermissionTable({
+  items,
+  onAnswer,
 }: {
-  pending: PendingPermission;
-  onAllow: () => void;
-  onDeny: () => void;
+  items: PendingPermission[];
+  onAnswer: (requestId: string, decision: "allow" | "allow-always" | "deny") => void;
 }) {
   return (
     <div className="composer flex w-full flex-col gap-2 rounded-xl p-3">
-      <div className="text-sm text-[var(--ink)]">Allow {pending.toolName}?</div>
-      <div className="text-xs whitespace-pre-wrap text-[var(--muted)]">
-        {truncate(permissionSummary(pending.input), 400)}
+      <div className="flex items-baseline gap-2">
+        <div className="text-sm text-[var(--ink)]">
+          {items.length === 1 ? "Permission needed" : `${items.length} permissions needed`}
+        </div>
+        <div className="text-[11px] text-[var(--faint)]">
+          Nothing runs until you answer
+        </div>
       </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onAllow}
-          className="cursor-pointer rounded-full bg-[#f2f2f5] px-3.5 py-1 text-xs text-[#0c0c0e] hover:opacity-85"
-        >
-          Allow
-        </button>
-        <button
-          type="button"
-          onClick={onDeny}
-          className="cursor-pointer rounded-full bg-[rgba(255,255,255,0.1)] px-3.5 py-1 text-xs text-[var(--ink)] hover:opacity-85"
-        >
-          Deny
-        </button>
+      <div className="flex w-full flex-col gap-1.5">
+        {items.map((pending) => (
+          <div
+            key={pending.requestId}
+            className="flex w-full flex-col gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5"
+          >
+            <div className="flex items-center gap-2">
+              <span className="shrink-0 rounded-md bg-[var(--bubble)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--ink)]">
+                {pending.toolName}
+              </span>
+              <span className="flex-1 truncate text-xs text-[var(--muted)]">
+                {truncate(permissionSummary(pending.input), 200)}
+              </span>
+            </div>
+            {(pending.patterns?.length > 0 || pending.alwaysPatterns?.length > 0) && (
+              <div className="font-mono text-[11px] text-[var(--faint)]">
+                {[...(pending.patterns ?? []), ...(pending.alwaysPatterns ?? [])]
+                  .filter((p, i, all) => p && all.indexOf(p) === i)
+                  .slice(0, 3)
+                  .join("  ·  ")}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => onAnswer(pending.requestId, "allow")}
+                className="cursor-pointer rounded-full bg-[#f2f2f5] px-3 py-1 text-xs text-[#0c0c0e] hover:opacity-85"
+              >
+                Allow once
+              </button>
+              <button
+                type="button"
+                title={
+                  pending.alwaysPatterns?.length > 0
+                    ? `Remember ${pending.alwaysPatterns.join(", ")}`
+                    : "Remember this approval for the rest of the run"
+                }
+                onClick={() => onAnswer(pending.requestId, "allow-always")}
+                className="cursor-pointer rounded-full bg-[var(--bubble)] px-3 py-1 text-xs text-[var(--ink)] hover:opacity-85"
+              >
+                Allow always
+              </button>
+              <button
+                type="button"
+                onClick={() => onAnswer(pending.requestId, "deny")}
+                className="cursor-pointer rounded-full bg-transparent px-3 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

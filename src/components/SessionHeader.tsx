@@ -1,5 +1,6 @@
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { useEgant } from "../store";
+import { log } from "../lib/logger";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 import { WindowBar } from "./WindowBar";
@@ -16,7 +17,26 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
   const snapshot = useEgant((s) => s.snapshot);
 
   const active = snapshot?.sessions.find((s) => s.id === snapshot?.activeSession);
-  const project = snapshot?.projects.find((p) => p.id === active?.projectId);
+  const selected = snapshot?.projects.find((p) => p.id === snapshot?.activeProject);
+  // Single source of truth: the header names the conversation in front of you,
+  // falling back to the selected project when there is no conversation yet
+  // (fresh folder like `meme-cam`, or a file open beside the launch screen).
+  // After the backend invariant (activeSession always belongs to
+  // activeProject, or activeSession is None) these two agree whenever both
+  // exist — if they ever diverge again, the session wins here because the
+  // transcript on screen is what the name must describe.
+  const project =
+    snapshot?.projects.find((p) => p.id === active?.projectId) ?? selected ?? null;
+  if (
+    active &&
+    snapshot?.activeProject != null &&
+    active.projectId !== snapshot.activeProject
+  ) {
+    log.error(
+      "store",
+      `project/session mismatch: sidebar on project ${snapshot.activeProject} but active session ${active.id} belongs to ${active.projectId}`,
+    );
+  }
   const agents = useEgant((s) => s.agents);
   const catalog = useEgant((s) => s.catalog);
   const sidebarVisible = snapshot?.sidebarVisible ?? true;

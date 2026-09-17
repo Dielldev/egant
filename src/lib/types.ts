@@ -13,6 +13,50 @@ export interface Project {
 
 export type TurnState = "idle" | "running" | "awaiting_permission";
 
+// ---------------------------------------------------------------------------
+// Agent-initiated interaction requests — structured prompts the agent embeds
+// in its reply asking the user to decide something before it continues (see
+// `extractDecisions` in `lib/transcript.ts` for how one of these is recognized
+// inside an assistant message). `type` is the extension point: a future kind
+// — confirmation, free-text question, file selection, permission / tool /
+// code-execution approval — adds one variant to `AgentRequest`/`AgentResponse`
+// and a case in `AgentRequestCard` (TranscriptView.tsx); nothing else in the
+// chat pipeline needs to change.
+// ---------------------------------------------------------------------------
+
+export interface DecisionOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface DecisionRequest {
+  type: "decision";
+  id: string;
+  title: string;
+  description?: string;
+  options: DecisionOption[];
+  selectionMode: "single" | "multiple";
+  /** Offers a free-text "something else" alongside the listed options. */
+  allowCustomInput?: boolean;
+}
+
+export interface DecisionResponse {
+  type: "decision";
+  /** Ids from `DecisionRequest.options`, in the order the user picked them —
+   * empty when only custom text was given. */
+  selectedOptionIds: string[];
+  /** What the user wrote in the free-text option, when offered and used. */
+  customText?: string;
+}
+
+/** One request kind today; a future kind joins this union. */
+export type AgentRequest = DecisionRequest;
+
+/** Mirrors `AgentRequest` one-for-one: every request kind answers with its
+ * own response shape. */
+export type AgentResponse = DecisionResponse;
+
 export type Entry =
   | { kind: "user"; text: string }
   /** `at` is stamped by the fold when the reply opens, so it is absent on
@@ -27,12 +71,22 @@ export type Entry =
       output?: string | null;
       isError: boolean;
     }
-  | { kind: "notice"; text: string; isError: boolean };
+  | { kind: "notice"; text: string; isError: boolean }
+  /** An interactive prompt the agent raised inline — never sent by the
+   * backend as its own wire message; folded out of an `assistant` entry's
+   * text (see `lib/transcript.ts`), which is what makes it survive a reload
+   * without any change to the Rust side. `response` is always `null` here —
+   * the answer is looked up separately (the store's `decisionResponses`,
+   * keyed by session + `request.id`) so it persists independent of the
+   * transcript mirror being rebuilt from a snapshot. */
+  | { kind: "agent_request"; id: string; request: AgentRequest; response: AgentResponse | null };
 
 export interface PendingPermission {
   requestId: string;
   toolName: string;
   input: unknown;
+  patterns: string[];
+  alwaysPatterns: string[];
 }
 
 /** Full transcript snapshot, as returned by `get_transcript`. */
@@ -43,6 +97,8 @@ export interface TranscriptDto {
   model: string | null;
   tools: string[];
   pending: PendingPermission | null;
+  /** Every outstanding request. `pending` mirrors the first entry. */
+  pendingList: PendingPermission[];
   totalCostUsd: number;
   lastTurnMs: number;
   usage: SessionUsage;
@@ -83,6 +139,9 @@ export interface TranscriptState extends TranscriptDto {
   turnStartedAt: number | null;
 }
 
+/** How the user answered one row of the permission table. */
+export type PermissionDecision = "allow" | "allow-always" | "deny";
+
 /** One streaming event, as emitted on `session-event`. Mirrors `HarnessEvent`
  * variant-for-variant so the fold below stays a mechanical port of
  * `Transcript::apply`. */
@@ -93,7 +152,14 @@ export type HarnessEvent =
   | { type: "assistant_message"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; is_error: boolean }
-  | { type: "permission_request"; request_id: string; tool_name: string; input: unknown }
+  | {
+      type: "permission_request";
+      request_id: string;
+      tool_name: string;
+      input: unknown;
+      patterns?: string[];
+      always_patterns?: string[];
+    }
   | {
       type: "turn_ended";
       result: string | null;

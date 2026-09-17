@@ -74,6 +74,7 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
 ) -> Result<u64, String> {
+    log::info!("pty_spawn shell cwd={cwd}");
     let mut command = CommandBuilder::new(shell());
     #[cfg(unix)]
     command.arg("-l");
@@ -101,6 +102,7 @@ pub async fn pty_spawn_agent(
     cols: u16,
     rows: u16,
 ) -> Result<u64, String> {
+    log::info!("pty_spawn_agent {agent} cwd={cwd}");
     let (launch, env) = tauri::async_runtime::spawn_blocking(move || {
         let launch = egant_harness::catalog::launch(&agent)?;
         Ok::<_, String>((launch, egant_harness::agents::login_shell_env()))
@@ -146,7 +148,10 @@ fn open(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            log::error!("pty open failed cwd={cwd}: {error}");
+            error.to_string()
+        })?;
 
     let dir = start_dir(cwd);
     // `PWD` alongside the real working directory: a login shell sets its own,
@@ -162,7 +167,10 @@ fn open(
     let child = pair
         .slave
         .spawn_command(command)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            log::error!("pty spawn failed cwd={cwd}: {error}");
+            error.to_string()
+        })?;
     // The slave has to go once the child holds it, or the master never sees
     // EOF and the reader thread below would hang forever on a dead shell.
     drop(pair.slave);
@@ -190,6 +198,7 @@ fn open(
     drop(guard);
 
     std::thread::spawn(move || pump(app, id, reader));
+    log::info!("pty {id} opened cwd={cwd}");
     Ok(id)
 }
 
@@ -210,6 +219,7 @@ fn pump(app: AppHandle, id: u64, mut reader: Box<dyn Read + Send>) {
             }
         }
     }
+    log::info!("pty {id} exited");
     let _ = app.emit("pty-exit", PtyExit { id });
 }
 
@@ -259,7 +269,10 @@ pub fn pty_write(state: PtyState<'_>, id: u64, data: String) -> Result<(), Strin
         .writer
         .write_all(data.as_bytes())
         .and_then(|()| terminal.writer.flush())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            log::warn!("pty {id} write failed: {error}");
+            error.to_string()
+        })
 }
 
 /// Tells the shell its new size. Programs like `vim` and `top` only redraw
@@ -286,6 +299,7 @@ pub fn pty_resize(state: PtyState<'_>, id: u64, cols: u16, rows: u16) -> Result<
 /// the shell exit and dropped it.
 #[tauri::command]
 pub fn pty_kill(state: PtyState<'_>, id: u64) -> Result<(), String> {
+    log::info!("pty {id} killed");
     state.lock().unwrap().live.remove(&id);
     Ok(())
 }

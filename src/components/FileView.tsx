@@ -1,10 +1,12 @@
 import hljs from "highlight.js/lib/common";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { api } from "../lib/api";
 import type { FileContent } from "../lib/types";
 import { useEgant, workspaceRoot } from "../store";
 import { Markdown } from "./Markdown";
+import { useEditorFontSize } from "./SettingsKit";
 
 /** Extension to highlight.js language. Only the families the common bundle
  * actually registers — anything else falls through to plain text rather than
@@ -142,6 +144,9 @@ export function FileView({ path, name }: { path: string; name: string }) {
   const root = useEgant((s) => workspaceRoot(s.snapshot));
   const preview = previewKind(name);
   const image = isImage(name);
+  // Settings > Files > Editor font size, live. Painted as a CSS variable so
+  // the gutter and the code stay on one grid at whatever size is picked.
+  const editorFontSize = useEditorFontSize();
 
   useEffect(() => {
     let cancelled = false;
@@ -208,7 +213,10 @@ export function FileView({ path, name }: { path: string; name: string }) {
     root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      style={{ "--editor-font-size": `${editorFontSize}px` } as CSSProperties}
+    >
       <div className="flex shrink-0 items-center gap-2 px-6 py-1.5 text-[12px] text-[var(--faint)]">
         <span title={path} className="min-w-0 flex-1 truncate">
           {relative}
@@ -217,7 +225,7 @@ export function FileView({ path, name }: { path: string; name: string }) {
           <span className="shrink-0">{sizeLabel(content.bytes)}</span>
         )}
         {preview && (
-          <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-[rgba(255,255,255,0.05)] p-0.5">
+          <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-[var(--card)] p-0.5">
             {(["source", "preview"] as const).map((option) => (
               <button
                 key={option}
@@ -246,7 +254,7 @@ export function FileView({ path, name }: { path: string; name: string }) {
       </div>
 
       {content?.truncated && (
-        <div className="mx-6 mb-1.5 shrink-0 rounded-md bg-[rgba(255,255,255,0.05)] px-2.5 py-1 text-[11px] text-[var(--muted)]">
+        <div className="mx-6 mb-1.5 shrink-0 rounded-md bg-[var(--card)] px-2.5 py-1 text-[11px] text-[var(--muted)]">
           Showing the first 2 MB of {sizeLabel(content.bytes)}.
         </div>
       )}

@@ -25,8 +25,8 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
           behind the composer and its dropdowns (the project menu's own
           popover included) would render clipped underneath it. */}
         <div
-          className="mb-2 flex items-center justify-end gap-4 text-xs text-white/85"
-          style={{ textShadow: "0 1px 4px rgba(0,0,0,0.55)" }}
+          className="mb-2 flex items-center justify-end gap-4 text-xs font-semibold text-white"
+          style={{ textShadow: "0 1px 6px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.9)" }}
         >
           {/* A label, not a control: every session in this window is a
             local process, so there is no other machine to pick. */}

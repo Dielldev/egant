@@ -76,6 +76,11 @@ pub struct Transcript {
     pub model: Option<String>,
     pub tools: Vec<String>,
     pub pending_permission: Option<PendingPermission>,
+    /// Every outstanding request, in arrival order. `pending_permission`
+    /// mirrors the first entry for snapshots written before the table
+    /// existed; new code should read this list. Empty on old transcripts.
+    #[serde(default)]
+    pub pending_permissions: Vec<PendingPermission>,
     pub total_cost_usd: f64,
     pub last_turn_ms: u64,
     /// What this session has spent, turn by turn. See [`SessionUsage`].
@@ -163,6 +168,13 @@ pub struct PendingPermission {
     pub request_id: String,
     pub tool_name: String,
     pub input: Value,
+    /// Specific resource patterns (file path, command). Empty on transcripts
+    /// written before patterns existed.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Wider patterns an "allow always" answer would approve.
+    #[serde(default)]
+    pub always_patterns: Vec<String>,
 }
 
 impl Transcript {
@@ -175,6 +187,27 @@ impl Transcript {
         self.entries
             .push(TranscriptEntry::User { text: text.into() });
         self.state = TurnState::Running;
+    }
+
+    /// Clears one answered prompt. When the table empties the turn goes back
+    /// to running (Claude continues); a turn-based wire (opencode) already
+    /// settled, so its caller decides whether to retry.
+    pub fn resolve_permission(&mut self, request_id: &str) {
+        self.pending_permissions
+            .retain(|p| p.request_id != request_id);
+        self.pending_permission = self.pending_permissions.first().cloned();
+        if self.pending_permissions.is_empty() && self.state == TurnState::AwaitingPermission {
+            self.state = TurnState::Running;
+        }
+    }
+
+    /// Clears every outstanding prompt (deny-all / session end).
+    pub fn clear_permissions(&mut self) {
+        self.pending_permissions.clear();
+        self.pending_permission = None;
+        if self.state == TurnState::AwaitingPermission {
+            self.state = TurnState::Running;
+        }
     }
 
     pub fn apply(&mut self, event: HarnessEvent) {
@@ -241,13 +274,30 @@ impl Transcript {
                 request_id,
                 tool_name,
                 input,
+                patterns,
+                always_patterns,
             } => {
                 self.state = TurnState::AwaitingPermission;
-                self.pending_permission = Some(PendingPermission {
+                let pending = PendingPermission {
                     request_id,
                     tool_name,
                     input,
-                });
+                    patterns,
+                    always_patterns,
+                };
+                // Replace a re-ask for the same request; otherwise append so
+                // the UI can table several outstanding prompts at once (an
+                // opencode turn denied on three reads, say).
+                if let Some(existing) = self
+                    .pending_permissions
+                    .iter_mut()
+                    .find(|p| p.request_id == pending.request_id)
+                {
+                    *existing = pending.clone();
+                } else {
+                    self.pending_permissions.push(pending.clone());
+                }
+                self.pending_permission = Some(pending);
             }
 
             HarnessEvent::TurnEnded {
@@ -427,6 +477,8 @@ mod tests {
             request_id: "r1".into(),
             tool_name: "Bash".into(),
             input: json!({ "command": "rm -rf /" }),
+            patterns: vec!["rm -rf /".to_string()],
+            always_patterns: vec!["rm *".to_string()],
         });
         assert_eq!(transcript.state, TurnState::AwaitingPermission);
         assert!(transcript.is_busy());
@@ -434,6 +486,36 @@ mod tests {
             transcript.pending_permission.as_ref().unwrap().tool_name,
             "Bash"
         );
+        assert_eq!(transcript.pending_permissions.len(), 1);
+    }
+
+    #[test]
+    fn several_permission_requests_table_up_and_resolve_one_by_one() {
+        let mut transcript = Transcript::new();
+        transcript.push_user("read things");
+        for (id, path) in [("r1", "/tmp/a"), ("r2", "/tmp/b")] {
+            transcript.apply(HarnessEvent::PermissionRequest {
+                request_id: id.into(),
+                tool_name: "Read".into(),
+                input: json!({ "file_path": path }),
+                patterns: vec![path.to_string()],
+                always_patterns: vec!["/tmp/*".to_string()],
+            });
+        }
+        assert_eq!(transcript.pending_permissions.len(), 2);
+        assert_eq!(transcript.state, TurnState::AwaitingPermission);
+        transcript.resolve_permission("r1");
+        assert_eq!(transcript.pending_permissions.len(), 1);
+        // One row left: still blocked.
+        assert_eq!(transcript.state, TurnState::AwaitingPermission);
+        assert_eq!(
+            transcript.pending_permission.as_ref().unwrap().request_id,
+            "r2"
+        );
+        transcript.resolve_permission("r2");
+        assert!(transcript.pending_permissions.is_empty());
+        assert!(transcript.pending_permission.is_none());
+        assert_eq!(transcript.state, TurnState::Running);
     }
 
     fn turn(input: u64, output: u64, cache_read: u64, window: u64) -> HarnessEvent {

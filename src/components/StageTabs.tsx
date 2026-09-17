@@ -118,7 +118,7 @@ function Tab({
             e.stopPropagation();
             onClose();
           }}
-          className={`shrink-0 cursor-pointer rounded-sm p-0.5 hover:bg-[rgba(255,255,255,0.12)] hover:text-[var(--ink)] ${
+          className={`shrink-0 cursor-pointer rounded-sm p-0.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
             status ? "hidden group-hover:block" : "opacity-0 group-hover:opacity-100"
           }`}
         >

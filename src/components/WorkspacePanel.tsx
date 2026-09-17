@@ -279,7 +279,7 @@ function PanelTabButton({
           e.stopPropagation();
           onClose();
         }}
-        className="shrink-0 cursor-pointer rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[rgba(255,255,255,0.12)] hover:text-[var(--ink)]"
+        className="shrink-0 cursor-pointer rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[var(--hover)] hover:text-[var(--ink)]"
       >
         <X size={11} strokeWidth={2.2} />
       </button>

@@ -5,7 +5,9 @@ import { DiffTabView } from "./components/DiffTabView";
 import { FileView } from "./components/FileView";
 import { LaunchScreen } from "./components/LaunchScreen";
 import { LogoLoader } from "./components/Logo";
+import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
+import { log } from "./lib/logger";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { StageTabs } from "./components/StageTabs";
@@ -57,8 +59,9 @@ export default function App() {
       .then((u) => {
         if (!cancelled) unlisten = u;
         else u();
+        log.info("app", "backend initialised");
       })
-      .catch((e: unknown) => console.error("failed to initialise egant", e));
+      .catch((e: unknown) => log.error("app", "failed to initialise egant", e));
     return () => {
       cancelled = true;
       unlisten?.();
@@ -293,6 +296,7 @@ export default function App() {
         composer's agent picker and from Settings > Agents, and it should
         look the same either way. */}
       <CliLaunchDialog />
+      <SearchModal />
     </div>
   );
 }

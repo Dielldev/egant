@@ -67,9 +67,13 @@ function dispose(id: string, entry: LiveTerminal, killPty: boolean): void {
   live.delete(id);
 }
 
-/** xterm's palette, read from the app's own CSS variables so the shell sits in
- * the current theme instead of shipping one of its own. The background stays
- * transparent: the stage's glass is what should show through. */
+/** xterm's palette, read from the app's own CSS variables so the shell sits
+ * in the current Appearance theme. `--ink` flips dark/light with the
+ * palette, so the text reads as the theme intends: light-on-dark in a dark
+ * theme, black-on-light in a light one. The background stays transparent —
+ * the terminal is just another tab in the workspace panel's own glass
+ * (`.sidebar-glass`) or the CLI stage's (`.stage-glass`), the same as Files
+ * and Changes, not a separate opaque fill of its own. */
 function themeFor() {
   const css = getComputedStyle(document.documentElement);
   const read = (name: string, fallback: string) =>
@@ -164,7 +168,7 @@ export function TerminalPane({
         lineHeight: 1.25,
         cursorBlink: true,
         // The glass stage shows through the shell rather than the shell
-        // painting a black rectangle over it.
+        // painting a solid rectangle over it.
         allowTransparency: true,
         theme: themeFor(),
         scrollback: 10_000,
@@ -269,7 +273,7 @@ export function TerminalPane({
           <button
             type="button"
             onClick={restart}
-            className="shrink-0 cursor-pointer rounded-full bg-[rgba(255,255,255,0.1)] px-2.5 py-0.5 text-[var(--ink)] hover:opacity-85"
+            className="shrink-0 cursor-pointer rounded-full bg-[var(--bubble)] px-2.5 py-0.5 text-[var(--ink)] hover:opacity-85"
           >
             Restart
           </button>

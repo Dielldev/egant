@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { log } from "../lib/logger";
 
 interface Props {
   children: ReactNode;
@@ -28,7 +29,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("egant crashed:", error, info.componentStack);
+    log.error("app", "egant crashed", error, info.componentStack);
   }
 
   render() {

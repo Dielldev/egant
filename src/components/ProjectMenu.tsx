@@ -71,17 +71,17 @@ export function ProjectMenu({
         <Folder
           size={13}
           strokeWidth={2}
-          className={`shrink-0 ${header ? "text-[var(--muted)]" : "text-white/85"}`}
+          className={`shrink-0 ${header ? "text-[var(--muted)]" : "text-white"}`}
         />
         {/* In the header the machine name is the part that must stay whole —
           it is the same on every row, so a truncated project reads as "one of
           these" while a truncated machine reads as an unfinished word. The
           chip variant sits directly on the launch screen's wallpaper rather
-          than a themed panel, so it reads in near-white rather than the
+          than a themed panel, so it reads in bold white rather than the
           panel-tuned muted tones, which get lost against a busy photo. */}
         <span
           className={`min-w-0 truncate ${
-            header ? "flex-1 text-left font-semibold text-[var(--ink)]" : "text-white/85"
+            header ? "flex-1 text-left font-semibold text-[var(--ink)]" : "font-semibold text-white"
           }`}
         >
           {current?.name ?? "All projects"}
@@ -94,7 +94,7 @@ export function ProjectMenu({
         <ChevronDown
           size={13}
           strokeWidth={2}
-          className={`shrink-0 ${header ? "text-[var(--faint)]" : "text-white/70"}`}
+          className={`shrink-0 ${header ? "text-[var(--faint)]" : "text-white/90"}`}
         />
       </button>
       {open && (
@@ -107,7 +107,7 @@ export function ProjectMenu({
             } ${header ? "left-0" : "right-0"}`}
           >
             <div className="shrink-0 px-2 pt-2 pb-1.5">
-              <div className="flex items-center gap-2 rounded-lg bg-[rgba(255,255,255,0.05)] px-2.5 py-1.5">
+              <div className="flex items-center gap-2 rounded-lg bg-[var(--card)] px-2.5 py-1.5">
                 <Search size={12} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
                 <input
                   autoFocus

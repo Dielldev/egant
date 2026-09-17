@@ -22,7 +22,7 @@
 
 use crate::protocol::{
     CliMessage, ContentBlock, ControlRequest, HostContentBlock, HostControlRequest,
-    HostControlResponse, HostMessage, HostUserMessage,
+    HostControlResponse, HostMessage, HostUserMessage, ImageSource,
 };
 use crate::{
     AgentId, Harness, HarnessError, HarnessEvent, PermissionDecision, PermissionMode, SessionId,
@@ -43,6 +43,12 @@ pub struct ClaudeOptions {
     /// Working directory the agent operates in — for an isolated session, the
     /// path of a git worktree rather than the user's checkout.
     pub cwd: PathBuf,
+    /// Human name of the project `cwd` belongs to (`Arka` for `…/Arka`).
+    /// Grounded into the session via `--append-system-prompt` and a per-turn
+    /// envelope so "what folder am I in" answers with this project instead of
+    /// whichever one the model saw most recently. `None` derives it from
+    /// `cwd`.
+    pub project_name: Option<String>,
     pub model: Option<String>,
     /// Reasoning effort for the turn (`low`, `medium`, `high`, `xhigh`,
     /// `max`). `None` keeps the CLI default.
@@ -86,6 +92,7 @@ impl Default for ClaudeOptions {
         Self {
             program: PathBuf::from("claude"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            project_name: None,
             model: None,
             effort: None,
             context_window: None,
@@ -99,6 +106,12 @@ impl Default for ClaudeOptions {
 }
 
 impl ClaudeOptions {
+    fn project_name_resolved(&self) -> String {
+        self.project_name.clone().unwrap_or_else(|| {
+            crate::project_display_name(&self.cwd)
+        })
+    }
+
     fn to_args(&self) -> Vec<String> {
         let mut args = vec![
             "--print".into(),
@@ -130,6 +143,15 @@ impl ClaudeOptions {
             args.push("--session-id".into());
             args.push(session.clone());
         }
+        // Ground the model in its project. A resumed CLI reuses the recorded
+        // prompt verbatim, so passing the same text on resume is what keeps a
+        // revived `Arka` thread answering as `Arka` rather than drifting back
+        // to whatever project dominated its history.
+        args.push("--append-system-prompt".into());
+        args.push(crate::project_system_prompt(
+            &self.project_name_resolved(),
+            &self.cwd,
+        ));
         args.extend(self.extra_args.iter().cloned());
         args
     }
@@ -147,6 +169,8 @@ pub struct ClaudeCode {
     events: Receiver<HarnessEvent>,
     session_id: Arc<Mutex<Option<SessionId>>>,
     next_request_id: u64,
+    project_name: String,
+    cwd: PathBuf,
 }
 
 /// The read side of a session. Drive it with `pump.run().await` on a background
@@ -178,10 +202,23 @@ impl ClaudeCode {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|source| HarnessError::Spawn {
-                program: options.program.display().to_string(),
-                source,
+            .map_err(|source| {
+                log::error!(
+                    "claude spawn failed program={} cwd={}: {source}",
+                    options.program.display(),
+                    options.cwd.display(),
+                );
+                HarnessError::Spawn {
+                    program: options.program.display().to_string(),
+                    source,
+                }
             })?;
+        log::info!(
+            "claude spawned cwd={} model={:?} resume={}",
+            options.cwd.display(),
+            options.model,
+            options.resume.is_some(),
+        );
 
         let stdin = child.stdin.take().context("child stdin was not piped")?;
         let stdout = child.stdout.take().context("child stdout was not piped")?;
@@ -210,6 +247,8 @@ impl ClaudeCode {
                 events: rx,
                 session_id,
                 next_request_id: 1,
+                project_name: options.project_name_resolved(),
+                cwd: options.cwd.clone(),
             },
             pump,
         ))
@@ -250,11 +289,28 @@ impl Harness for ClaudeCode {
         self.events.clone()
     }
 
-    async fn send(&mut self, text: String) -> Result<()> {
+    async fn send(&mut self, text: String, images: Vec<PathBuf>) -> Result<()> {
+        log::debug!("claude send ({} chars, {} image(s))", text.len(), images.len());
+        // Grounded every turn, not just via the system prompt: sessions
+        // created before grounding existed, and resumes that reuse a recorded
+        // prompt, still answer with the directory this process runs in.
+        let text = crate::wrap_turn_with_project(&self.project_name, &self.cwd, &text);
+        let mut content = vec![HostContentBlock::Text { text }];
+        // Real vision blocks, not `@path` mentions left for the model to go
+        // read itself — the same shape the Messages API takes an image in
+        // anywhere else.
+        for image in &images {
+            match image_content_block(image) {
+                Ok(block) => content.push(block),
+                Err(error) => {
+                    log::warn!("couldn't attach pasted image {}: {error}", image.display());
+                }
+            }
+        }
         let message = HostMessage::User {
             message: HostUserMessage {
                 role: "user",
-                content: vec![HostContentBlock::Text { text }],
+                content,
             },
             session_id: self.session_id(),
         };
@@ -262,6 +318,7 @@ impl Harness for ClaudeCode {
     }
 
     async fn interrupt(&mut self) -> Result<()> {
+        log::debug!("claude interrupt");
         let request_id = self.take_request_id();
         let message = HostMessage::ControlRequest {
             request_id,
@@ -279,12 +336,21 @@ impl Harness for ClaudeCode {
             PermissionDecision::Allow { updated_input } => {
                 HostControlResponse::allow(request_id, updated_input)
             }
+            // The wire has no "always" reply: approve this one like an
+            // allow (with the original input echoed back — omitting
+            // `updatedInput` reads as a deny on older CLIs). Remembering the
+            // pattern for future turns happens in the session layer, which
+            // auto-answers the next match or flips to bypassPermissions.
+            PermissionDecision::AllowAlways { updated_input, .. } => {
+                HostControlResponse::allow(request_id, updated_input)
+            }
             PermissionDecision::Deny { reason } => HostControlResponse::deny(request_id, reason),
         };
         self.write(&HostMessage::ControlResponse { response }).await
     }
 
     async fn shutdown(&mut self) -> Result<()> {
+        log::info!("claude shutdown");
         // Closing stdin is the graceful stop: the CLI finishes any in-flight
         // turn and exits on EOF.
         self.stdin.close().await.ok();
@@ -308,6 +374,38 @@ impl Harness for ClaudeCode {
             },
         };
         self.write(&message).await
+    }
+}
+
+/// Reads an image file and wraps it as the base64 vision block the Messages
+/// API takes anywhere an image belongs — same shape whether it arrived as a
+/// clipboard paste or a picked attachment.
+fn image_content_block(path: &std::path::Path) -> Result<HostContentBlock> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+    Ok(HostContentBlock::Image {
+        source: ImageSource::Base64 {
+            media_type: image_media_type(path).to_string(),
+            data,
+        },
+    })
+}
+
+/// Best-effort media type from the file's extension. Anthropic's vision input
+/// only accepts a handful of raster formats; anything else falls back to PNG
+/// rather than failing the whole turn over a guess.
+fn image_media_type(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/png",
     }
 }
 
@@ -378,6 +476,7 @@ impl EventPump {
                     }
                 }
             }
+            log::info!("claude stdout closed; process exited");
             let _ = events.send(HarnessEvent::Exited { code: None }).await;
         };
 
@@ -486,11 +585,17 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
         CliMessage::ControlRequest(envelope) => match envelope.request {
             ControlRequest::CanUseTool {
                 tool_name, input, ..
-            } => vec![HarnessEvent::PermissionRequest {
-                request_id: envelope.request_id,
-                tool_name,
-                input,
-            }],
+            } => {
+                let (patterns, always_patterns) =
+                    crate::permission_patterns(&tool_name, &input);
+                vec![HarnessEvent::PermissionRequest {
+                    request_id: envelope.request_id,
+                    tool_name,
+                    input,
+                    patterns,
+                    always_patterns,
+                }]
+            }
             ControlRequest::Unknown => Vec::new(),
         },
 
@@ -529,6 +634,35 @@ mod tests {
         assert!(args.contains(&"--include-partial-messages".to_string()));
         // Permission prompts must reach the app, not a terminal.
         assert!(args.contains(&"host".to_string()));
+    }
+
+    #[test]
+    fn args_pin_the_session_to_its_project() {
+        // The reported bug: a session opened in `Arka` answered "what folder
+        // am I in" with `egant`. The model only knows what it is told, so
+        // every spawn carries the project explicitly.
+        let options = ClaudeOptions {
+            cwd: PathBuf::from("/tmp/Arka"),
+            project_name: Some("Arka".into()),
+            ..Default::default()
+        };
+        let args = options.to_args();
+        let index = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .expect("project grounding flag present");
+        let prompt = &args[index + 1];
+        assert!(prompt.contains("Arka"), "{prompt}");
+        assert!(prompt.contains("/tmp/Arka"), "{prompt}");
+    }
+
+    #[test]
+    fn project_name_defaults_to_folder_name() {
+        let options = ClaudeOptions {
+            cwd: PathBuf::from("/tmp/Arka"),
+            ..Default::default()
+        };
+        assert_eq!(options.project_name_resolved(), "Arka");
     }
 
     #[test]

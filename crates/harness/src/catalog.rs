@@ -727,6 +727,7 @@ pub struct InstallOutcome {
 /// so the frontend can't hand us a shell line to run. `method` picks which
 /// published source to use; `None` takes the recommended one.
 pub fn install(id: &str, method: Option<&str>) -> Result<InstallOutcome, String> {
+    log::info!("catalog install {id} method={method:?}");
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
     let option = option_for(entry, method)?;
     run_install(entry, option.command)
@@ -735,13 +736,16 @@ pub fn install(id: &str, method: Option<&str>) -> Result<InstallOutcome, String>
 /// The "Install latest" action: the same source's update command, for an
 /// agent that is already here but behind its published release.
 pub fn update(id: &str, method: Option<&str>) -> Result<InstallOutcome, String> {
+    log::info!("catalog update {id} method={method:?}");
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
     let option = option_for(entry, method)?;
     run_install(entry, &update_command(entry, option))
 }
 
 fn run_install(entry: &'static CatalogEntry, command: &str) -> Result<InstallOutcome, String> {
+    log::info!("catalog run {}: {command}", entry.id);
     let (success, output) = run_in_login_shell(command, Duration::from_secs(600))?;
+    log::info!("catalog run {} done success={success}", entry.id);
     Ok(InstallOutcome {
         success,
         output,
@@ -773,6 +777,7 @@ pub struct UpdateInfo {
 /// and a network round trip, so this is called per installed agent in the
 /// background — never as part of [`list`].
 pub fn check_update(id: &str) -> Result<UpdateInfo, String> {
+    log::debug!("catalog check_update {id}");
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
     let current = locate(entry).and_then(|program| local_version(&program));
     let latest = entry.npm_package.and_then(latest_npm_version);

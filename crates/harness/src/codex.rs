@@ -41,6 +41,10 @@ pub struct CodexOptions {
     pub program: PathBuf,
     /// Working directory the agent operates in (also passed as `-C`).
     pub cwd: PathBuf,
+    /// Human name of the project `cwd` belongs to. Folded into every turn's
+    /// prompt so "what folder am I in" answers with this project. `None`
+    /// derives it from `cwd`.
+    pub project_name: Option<String>,
     /// Model the first turn should use. `None` keeps the CLI default; resumed
     /// threads keep the model they started with.
     pub model: Option<String>,
@@ -62,6 +66,7 @@ impl Default for CodexOptions {
         Self {
             program: PathBuf::from("codex"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            project_name: None,
             model: None,
             context_window: None,
             reasoning_effort: None,
@@ -78,11 +83,21 @@ pub struct CodexExec {
 
 impl CodexExec {
     pub fn spawn(options: CodexOptions) -> Result<Self> {
+        log::info!(
+            "codex spawn cwd={} model={:?} thread={}",
+            options.cwd.display(),
+            options.model,
+            options.thread.is_some(),
+        );
         let program = resolve_program(&options.program)?;
         let mode = Arc::new(Mutex::new(options.permission_mode));
+        let project_name = options.project_name.clone().unwrap_or_else(|| {
+            crate::project_display_name(&options.cwd)
+        });
         let translator = CodexTranslator {
             program,
             cwd: options.cwd,
+            project_name,
             model: options.model,
             context_window: options.context_window,
             reasoning_effort: options.reasoning_effort,
@@ -128,12 +143,14 @@ impl Harness for CodexExec {
         self.runner.events()
     }
 
-    async fn send(&mut self, text: String) -> Result<()> {
-        self.runner.send(text);
+    async fn send(&mut self, text: String, images: Vec<PathBuf>) -> Result<()> {
+        log::debug!("codex send ({} chars, {} image(s))", text.len(), images.len());
+        self.runner.send(text, images);
         Ok(())
     }
 
     async fn interrupt(&mut self) -> Result<()> {
+        log::debug!("codex interrupt");
         self.runner.interrupt();
         Ok(())
     }
@@ -148,6 +165,7 @@ impl Harness for CodexExec {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
+        log::info!("codex shutdown");
         self.runner.shutdown();
         Ok(())
     }
@@ -174,6 +192,7 @@ struct TurnAcc {
 struct CodexTranslator {
     program: PathBuf,
     cwd: PathBuf,
+    project_name: String,
     model: Option<String>,
     context_window: Option<u64>,
     reasoning_effort: Option<String>,
@@ -239,7 +258,7 @@ impl CodexTranslator {
 }
 
 impl TurnTranslator for CodexTranslator {
-    fn build(&mut self, text: &str) -> TurnRequest {
+    fn build(&mut self, text: &str, images: &[PathBuf]) -> TurnRequest {
         let cwd = self.cwd.display().to_string();
         // `-c` is a global option: it must precede the `exec` subcommand.
         let mut args = Vec::new();
@@ -266,7 +285,21 @@ impl TurnTranslator for CodexTranslator {
             args.push("-m".to_string());
             args.push(model.clone());
         }
-        args.push(text.to_string());
+        // Real vision input, not a `@path` mention the model would have to
+        // go read itself — `codex exec` (and `exec resume`) both take this
+        // natively.
+        for image in images {
+            args.push("--image".to_string());
+            args.push(image.display().to_string());
+        }
+        // `codex exec` has no system-prompt flag: the project fact travels in
+        // the prompt itself, on every turn, so a resumed thread keeps
+        // answering with the folder it runs in.
+        args.push(crate::wrap_turn_with_project(
+            &self.project_name,
+            &self.cwd,
+            text,
+        ));
         self.turn = TurnAcc {
             started: Some(Instant::now()),
             ..TurnAcc::default()
@@ -492,6 +525,7 @@ mod tests {
         CodexTranslator {
             program: PathBuf::from("codex"),
             cwd: PathBuf::from("/tmp"),
+            project_name: "tmp".to_string(),
             model: Some("gpt-5".into()),
             context_window: None,
             reasoning_effort: None,
@@ -509,16 +543,28 @@ mod tests {
         // Without this, codex exec's own default is read-only and every
         // edit fails with a permission error reported as assistant prose.
         let mut t = translator();
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         let at = req.args.iter().position(|a| a == "--sandbox").expect("--sandbox present");
         assert_eq!(req.args[at + 1], "workspace-write");
+    }
+
+    #[test]
+    fn every_turn_carries_its_project() {
+        let mut t = translator();
+        t.cwd = PathBuf::from("/tmp/Arka");
+        t.project_name = "Arka".to_string();
+        let req = t.build("what folder am I in", &[]);
+        let prompt = req.args.last().expect("prompt is the last arg");
+        assert!(prompt.contains("Arka"), "{prompt}");
+        assert!(prompt.contains("/tmp/Arka"), "{prompt}");
+        assert!(prompt.contains("what folder am I in"), "{prompt}");
     }
 
     #[test]
     fn plan_mode_uses_read_only_sandbox() {
         let mut t = translator();
         *t.mode.lock().unwrap() = PermissionMode::Plan;
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         let at = req.args.iter().position(|a| a == "--sandbox").unwrap();
         assert_eq!(req.args[at + 1], "read-only");
     }
@@ -529,7 +575,7 @@ mod tests {
         // it falls back to the same safe read-only sandbox as Plan.
         let mut t = translator();
         *t.mode.lock().unwrap() = PermissionMode::Manual;
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         let at = req.args.iter().position(|a| a == "--sandbox").unwrap();
         assert_eq!(req.args[at + 1], "read-only");
     }
@@ -538,7 +584,7 @@ mod tests {
     fn bypass_mode_drops_the_sandbox_flag_entirely() {
         let mut t = translator();
         *t.mode.lock().unwrap() = PermissionMode::BypassPermissions;
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         assert!(
             req.args
                 .iter()
@@ -551,22 +597,41 @@ mod tests {
     fn build_prepends_context_window_override() {
         let mut t = translator();
         t.context_window = Some(200_000);
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         // Global `-c` precedes the subcommand.
         assert_eq!(req.args[0], "-c");
         assert_eq!(req.args[1], "model_context_window=200000");
         assert!(req.args.contains(&"exec".to_string()));
 
         t.context_window = None;
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         assert!(!req.args.iter().any(|a| a == "-c"));
+    }
+
+    #[test]
+    fn build_attaches_images_with_the_native_flag() {
+        // Real vision input via `--image`, not a `@path` mention baked into
+        // the prompt text — the CLI reads the file itself either way.
+        let mut t = translator();
+        let images = vec![PathBuf::from("/tmp/pasted-1.png"), PathBuf::from("/tmp/pasted-2.png")];
+        let req = t.build("look at this", &images);
+        let flags: Vec<&String> = req
+            .args
+            .iter()
+            .zip(req.args.iter().skip(1))
+            .filter(|(a, _)| *a == "--image")
+            .map(|(_, path)| path)
+            .collect();
+        assert_eq!(flags, vec!["/tmp/pasted-1.png", "/tmp/pasted-2.png"]);
+        // The prompt text itself carries no mention of the path.
+        assert!(!req.args.last().unwrap().contains("pasted"));
     }
 
     #[test]
     fn build_prepends_reasoning_effort_override() {
         let mut t = translator();
         t.reasoning_effort = Some("high".into());
-        let req = t.build("hi");
+        let req = t.build("hi", &[]);
         let at = req.args.iter().position(|a| a == "-c").unwrap();
         assert_eq!(req.args[at + 1], "model_reasoning_effort=high");
     }
@@ -574,13 +639,13 @@ mod tests {
     #[test]
     fn build_runs_fresh_then_resumes() {
         let mut t = translator();
-        let first = t.build("hi");
+        let first = t.build("hi", &[]);
         assert!(first.args.contains(&"exec".to_string()));
         assert!(!first.args.iter().any(|a| a == "resume"));
         assert!(first.args.contains(&"gpt-5".to_string()));
 
         t.thread = Some("thr_1".into());
-        let second = t.build("again");
+        let second = t.build("again", &[]);
         let at = second.args.iter().position(|a| a == "resume").unwrap();
         assert_eq!(second.args[at + 1], "thr_1");
         // A resumed thread keeps its own model: no `-m` override.
@@ -637,7 +702,7 @@ mod tests {
     #[test]
     fn turn_completed_settles_before_the_process_exits() {
         let mut t = translator();
-        t.build("hi");
+        t.build("hi", &[]);
         let events =
             t.push_line(r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#);
         assert_eq!(events.len(), 1);
@@ -655,7 +720,7 @@ mod tests {
         assert!(t.end_turn(false, Some(0)).is_empty());
 
         // A turn that settled and *then* died still gets reported.
-        t.build("next");
+        t.build("next", &[]);
         t.push_line(r#"{"type":"turn.completed","usage":{}}"#);
         match &t.end_turn(false, Some(3))[0] {
             HarnessEvent::TurnEnded {
@@ -668,7 +733,7 @@ mod tests {
         }
 
         // So does an interrupt mid-turn, with no `turn.completed` at all.
-        t.build("third");
+        t.build("third", &[]);
         match &t.end_turn(true, None)[0] {
             HarnessEvent::TurnEnded {
                 result, is_error, ..
@@ -683,7 +748,7 @@ mod tests {
     #[test]
     fn failed_turn_surfaces_once() {
         let mut t = translator();
-        t.build("hi");
+        t.build("hi", &[]);
         let events = t.push_line(
             r#"{"type":"turn.failed","error":{"message":"bad model"}}"#,
         );
@@ -725,6 +790,7 @@ mod tests {
                 let mut h = CodexExec::spawn(CodexOptions {
                     program: script,
                     cwd: dir,
+                    project_name: None,
                     model: None,
                     context_window: None,
                     reasoning_effort: None,
@@ -734,7 +800,7 @@ mod tests {
                 .unwrap();
                 let rx = h.events();
 
-                h.send("hi".into()).await.unwrap();
+                h.send("hi".into(), vec![]).await.unwrap();
                 let mut kinds = Vec::new();
                 while let Ok(event) = rx.recv().await {
                     let kind = match &event {

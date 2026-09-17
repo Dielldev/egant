@@ -36,6 +36,7 @@ import {
   Card,
   DevicePill,
   Dot,
+  EDITOR_FONT_SIZE_EVENT,
   Pills,
   Row,
   SectionHead,
@@ -1082,6 +1083,12 @@ function FilesSection() {
   const [fontSize, setFontSize] = usePersistentState("egant.files.fontSize", "13");
   const [wordWrap, setWordWrap] = usePersistentState("egant.files.wordWrap", true);
   const [showAll, setShowAll] = usePersistentState("egant.files.showAll", true);
+
+  // The pills persist on their own; this tells already-open file and diff
+  // viewers to re-read the new size — same-window `storage` events don't fire.
+  useEffect(() => {
+    window.dispatchEvent(new Event(EDITOR_FONT_SIZE_EVENT));
+  }, [fontSize]);
 
   return (
     <div>

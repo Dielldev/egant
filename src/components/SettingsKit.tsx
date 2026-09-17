@@ -5,7 +5,7 @@
 
 import { ArrowUpDown, Monitor } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 
 /** `useState` mirrored to localStorage, so sections keep their choices
@@ -41,6 +41,43 @@ export function usePersistentState<T>(
     }
   }, [key, value]);
   return [value, setValue];
+}
+
+/** localStorage key behind Settings > Files > Editor font size. */
+export const EDITOR_FONT_SIZE_KEY = "egant.files.fontSize";
+
+/** Dispatched on `window` after this window saves a new editor font size —
+ * `storage` events only fire in *other* documents, so without this an open
+ * file viewer would keep the old size until reload. */
+export const EDITOR_FONT_SIZE_EVENT = "egant:editor-font-size";
+
+/** The saved editor font size in px. Parses what the settings pills wrote
+ * (`"13"`), clamps hand-edited values into a sane range, and falls back to
+ * the pills' default when nothing parseable is stored. */
+export function readEditorFontSize(): number {
+  try {
+    const raw = localStorage.getItem(EDITOR_FONT_SIZE_KEY);
+    const n = raw == null ? NaN : Number(JSON.parse(raw));
+    if (Number.isFinite(n)) return Math.min(24, Math.max(8, n));
+  } catch {
+    // Corrupt or unavailable storage: fall through to the default.
+  }
+  return 13;
+}
+
+function subscribeEditorFontSize(onChange: () => void): () => void {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(EDITOR_FONT_SIZE_EVENT, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(EDITOR_FONT_SIZE_EVENT, onChange);
+  };
+}
+
+/** The editor font size in px, live: file and diff viewers re-render on the
+ * next paint after Settings saves a new one, here or in another window. */
+export function useEditorFontSize(): number {
+  return useSyncExternalStore(subscribeEditorFontSize, readEditorFontSize);
 }
 
 export function SectionHead({

@@ -121,7 +121,9 @@ fn gh(root: &Path, args: &[&str]) -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Err(if stderr.is_empty() { stdout } else { stderr });
+        let message = if stderr.is_empty() { stdout } else { stderr };
+        log::warn!("gh {} failed: {}", args.join(" "), message);
+        return Err(message);
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
