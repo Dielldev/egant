@@ -1,4 +1,4 @@
-import { Check, Copy, FolderOpen, List } from "lucide-react";
+import { Check, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission } from "../lib/types";
@@ -9,6 +9,141 @@ import { Markdown } from "./Markdown";
 import { RunPill } from "./RunPill";
 import { StatusLine } from "./StatusLine";
 import { groupEntries, ReadGroupCard, ToolCard } from "./ToolCards";
+
+// ---------------------------------------------------------------------------
+// Chat outline — a port of zeron's MessageRail (`crates/ui/src/rail.rs`,
+// `motion.rs`, docs/research/feature-inventory.md §1.8). Values mirror
+// upstream exactly:
+// - geometry: left 16px, width 26px, tick slot 10px, gap 3px, bar 2px tall
+//   with 1px rounding, w-3 rest / w-5 hovered. Only hover grows the tick;
+//   the active one just reads brighter (text at 80% vs ink at 16%).
+// - preview card per hovered tick: 280px wide, 8px padding, 6px gap, 12px
+//   prompt (single line, 160 chars) + 11px reply opening (200 chars), and a
+//   10px "{n} prompts" note for condensed buckets. 12px radius, 16px frost.
+// - motion: 500ms ease-in-out scroll glide over the whole distance (never
+//   percent-of-remaining), 150ms tailwind-ease hover fades, 140ms menu-in
+//   (fade + rise 2px, see `.rail-card-in`).
+// - hidden below 2 ticks, and below a 768px transcript container
+//   (RAIL_MIN_… = 48rem) — the stage wrapper carries `@container` so the
+//   gate reads container width, never viewport width. The rail must stay a
+//   descendant of that wrapper for the query to match.
+// - past 12 visible ticks the rail downsamples into even buckets instead of
+//   growing — a fixed footprint, never a full-height minimap.
+// ---------------------------------------------------------------------------
+
+/** Vertical breathing room kept clear above/below the tick stack. */
+const RAIL_V_MARGIN = 24;
+/** One tick's hit-row height, and the gap between ticks. */
+const TICK_SLOT = 10;
+const TICK_GAP = 3;
+/** Hard cap on visible ticks — the rail stays compact on tall windows. */
+const MAX_RAIL_TICKS = 12;
+/** Viewport-top reading line: titlebar 38px + 10px, plus the half-pixel the
+ * upstream walk-forward comparison carries. */
+const READ_INSET_PX = 48.5;
+/** A jumped-to prompt lands this far below the viewport top (OWN_SEND_… = 48). */
+const JUMP_INSET_PX = 48;
+/** `motion::SCROLL_GLIDE`: 500ms `EASE_IN_OUT`. */
+const SCROLL_GLIDE_MS = 500;
+/** Preview caps: prompt title is a one-line surface, reply its opening. */
+const PREVIEW_PROMPT_CHARS = 160;
+const PREVIEW_REPLY_CHARS = 200;
+
+/** One rail tick: a user prompt and the opening of the reply that followed. */
+type OutlineTick = {
+  /** Position among rendered entries — what the scroll anchors key on. */
+  entryIndex: number;
+  n: number;
+  prompt: string;
+  reply: string | null;
+};
+
+/** How many tick slots fit in a rail of `height` px (always ≥ 1). */
+function railCapacity(height: number): number {
+  const usable = Math.max(height - 2 * RAIL_V_MARGIN, TICK_SLOT);
+  return Math.max(1, Math.floor((usable + TICK_GAP) / (TICK_SLOT + TICK_GAP)));
+}
+
+/** Slots the rail actually uses: what fits, hard-capped at MAX_RAIL_TICKS. */
+function railSlots(height: number): number {
+  return Math.min(railCapacity(height), MAX_RAIL_TICKS);
+}
+
+/** Evenly-sized buckets over the conversation when prompts outnumber slots.
+ * With n <= capacity every bucket is a single tick (the identity). */
+function tickBuckets(n: number, capacity: number): Array<[number, number]> {
+  if (n === 0) return [];
+  const cap = Math.min(Math.max(capacity, 1), n);
+  const out: Array<[number, number]> = [];
+  for (let k = 0; k < cap; k++) {
+    out.push([Math.floor((k * n) / cap), Math.floor(((k + 1) * n) / cap)]);
+  }
+  return out;
+}
+
+/** The bucket containing tick `ix` (for active/hover mapping). */
+function bucketOf(buckets: Array<[number, number]>, ix: number): number | null {
+  const found = buckets.findIndex(([s, e]) => ix >= s && ix < e);
+  return found === -1 ? null : found;
+}
+
+/** CSS `cubic-bezier()` evaluated exactly (Newton–Raphson + bisection). */
+function cubicBezier(x1: number, y1: number, x2: number, y2: number): (x: number) => number {
+  const cx = 3 * x1;
+  const bx = 3 * (x2 - x1) - cx;
+  const ax = 1 - cx - bx;
+  const cy = 3 * y1;
+  const by = 3 * (y2 - y1) - cy;
+  const ay = 1 - cy - by;
+  const sampleX = (t: number) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t: number) => ((ay * t + by) * t + cy) * t;
+  const sampleDX = (t: number) => (3 * ax * t + 2 * bx) * t + cx;
+  const solveX = (x: number) => {
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const err = sampleX(t) - x;
+      if (Math.abs(err) < 1e-6) return t;
+      const d = sampleDX(t);
+      if (Math.abs(d) < 1e-6) break;
+      t -= err / d;
+    }
+    let lo = 0;
+    let hi = 1;
+    t = x;
+    for (let i = 0; i < 32; i++) {
+      const v = sampleX(t);
+      if (Math.abs(v - x) < 1e-6) return t;
+      if (x > v) lo = t;
+      else hi = t;
+      t = (lo + hi) / 2;
+    }
+    return t;
+  };
+  return (x: number) => {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    return sampleY(solveX(x));
+  };
+}
+
+/** EASE_IN_OUT (0.42, 0, 0.58, 1): gentle first frame, midpoint exactly half. */
+const easeInOut = cubicBezier(0.42, 0, 0.58, 1);
+
+/** Duration-based glide timeline (pure): each frame consumes
+ * `(e_now − e_prev) / (1 − e_prev)` of whatever distance currently remains,
+ * so a mid-flight re-layout continues the same timeline — no restart, no
+ * compensating jump, exact landing. */
+class GlideTimeline {
+  private easedPrev = 0;
+
+  step(eased: number): number {
+    const clamped = Math.min(Math.max(eased, this.easedPrev), 1);
+    const denom = 1 - this.easedPrev;
+    const frac = denom <= 1e-6 ? 1 : (clamped - this.easedPrev) / denom;
+    this.easedPrev = clamped;
+    return Math.min(Math.max(frac, 0), 1);
+  }
+}
 
 /** The stage's content: the conversation, and the composer that drives it.
  * Reads the active session's transcript mirror on render, which is what makes
@@ -38,7 +173,11 @@ export function TranscriptView() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const promptRefs = useRef(new Map<number, HTMLDivElement | null>());
-  const [activePrompt, setActivePrompt] = useState<number | null>(null);
+  /** Index into `ticks` (not an entry index): the prompt whose section is read. */
+  const [activeTick, setActiveTick] = useState<number | null>(null);
+  /** Viewport height for the fixed-footprint bucket math (600 pre-layout). */
+  const [viewportH, setViewportH] = useState(600);
+  const glideRef = useRef<number | null>(null);
 
   const transcript = activeId != null ? transcripts[activeId] : undefined;
   // Reasoning is dropped rather than drawn. The status line at the tail
@@ -60,59 +199,123 @@ export function TranscriptView() {
   // wait with nothing on screen accounting for it.
   const busy = transcript?.state === "running" || transcript?.state === "awaiting_permission";
 
-  // Chat outline: one stop per user prompt, in send order. Memoized off the
-  // raw transcript entries (not the filtered `entries` above) so a streaming
-  // assistant reply — a new array every token — doesn't rebuild it.
-  const prompts = useMemo(() => {
+  // Rail ticks: one per user prompt, each carrying the opening of the
+  // assistant reply that followed it (`rail_ticks` + `first_reply_text`).
+  // Memoized off the raw transcript entries (not the filtered `entries`
+  // above) so a streaming reply — a new array every token — doesn't rebuild
+  // what doesn't depend on it; the reply opening re-resolves as it streams.
+  const ticks = useMemo<OutlineTick[]>(() => {
     const source = transcript?.entries ?? [];
-    const out: { entryIndex: number; n: number; text: string }[] = [];
     // `entries` drops `thinking` rows, so indices shift by that count. Walk
     // the filtered list for text but resolve back to the same numbering the
-    // outline anchors use below (position among rendered entries).
+    // scroll anchors use below (position among rendered entries).
     const visible = source.filter((entry) => entry.kind !== "thinking");
+    const out: OutlineTick[] = [];
     visible.forEach((entry, entryIndex) => {
-      if (entry.kind === "user") {
-        out.push({ entryIndex, n: out.length + 1, text: entry.text });
+      if (entry.kind !== "user") return;
+      let reply: string | null = null;
+      for (let j = entryIndex + 1; j < visible.length; j++) {
+        const next = visible[j];
+        if (next.kind === "assistant" && next.text.trim() !== "") {
+          reply = outlinePreview(next.text, PREVIEW_REPLY_CHARS);
+          break;
+        }
       }
+      out.push({
+        entryIndex,
+        n: out.length + 1,
+        prompt: outlinePreview(entry.text, PREVIEW_PROMPT_CHARS),
+        reply,
+      });
     });
     return out;
   }, [transcript?.entries]);
-  const showOutline = prompts.length > 2;
+  // A minimap of one exchange is noise, not navigation — the rail hides
+  // below two marks.
+  const showOutline = ticks.length >= 2;
+
+  // The active tick for a scroll position: the last tick whose row is at or
+  // above the reading line (viewport top + chrome inset). Before the first
+  // tick's row, the first tick is active.
+  const updateActiveFromScroll = () => {
+    const root = scrollRef.current;
+    if (!root || ticks.length === 0) return;
+    const line = root.getBoundingClientRect().top + READ_INSET_PX;
+    let found: number | null = null;
+    ticks.forEach((tick, ix) => {
+      const el = promptRefs.current.get(tick.entryIndex);
+      if (el && el.getBoundingClientRect().top <= line) found = ix;
+    });
+    setActiveTick(found ?? 0);
+  };
 
   const jumpToPrompt = (entryIndex: number) => {
+    const root = scrollRef.current;
     const el = promptRefs.current.get(entryIndex);
-    if (!el) return;
+    if (!root || !el) return;
     // Leaving the tail breaks the pin on purpose — the stick effect would
     // otherwise yank a jump-to-#1 straight back to the bottom on next render.
     // The scroll handler re-arms it once the user returns to the bottom.
     stickRef.current = false;
-    setActivePrompt(entryIndex);
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (glideRef.current != null) cancelAnimationFrame(glideRef.current);
+    const target =
+      el.getBoundingClientRect().top -
+      root.getBoundingClientRect().top +
+      root.scrollTop -
+      JUMP_INSET_PX;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      root.scrollTop = target;
+      return;
+    }
+    // The 500ms glide drives every frame's position from the timeline, never
+    // from a percent of the remaining distance: the position is read back
+    // each frame, so a measurement correcting the estimate just re-enters
+    // the timeline, and raw >= 1 lands exactly.
+    const timeline = new GlideTimeline();
+    const started = performance.now();
+    const frame = (now: number) => {
+      const raw = Math.min(1, (now - started) / SCROLL_GLIDE_MS);
+      const frac = timeline.step(easeInOut(raw));
+      if (raw >= 1) {
+        root.scrollTop = target;
+        glideRef.current = null;
+        return;
+      }
+      root.scrollTop += frac * (target - root.scrollTop);
+      glideRef.current = requestAnimationFrame(frame);
+    };
+    glideRef.current = requestAnimationFrame(frame);
   };
 
-  // Marks the prompt nearest the top of the viewport as active while reading.
-  // An observer (not the scroll handler) so streaming growth doesn't thrash
-  // it — only actual crossings flip the highlight.
+  // Viewport height for the fixed-footprint bucket math. Pre-layout the
+  // viewport reads 0; assume a typical height for that frame rather than
+  // collapsing to a single tick.
   useEffect(() => {
-    if (!showOutline) return;
     const root = scrollRef.current;
     if (!root) return;
-    const observer = new IntersectionObserver(
-      (observed) => {
-        const visible = observed
-          .filter((o) => o.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        const top = visible[0];
-        const index = top?.target.getAttribute("data-prompt-index");
-        if (index != null) setActivePrompt(Number(index));
-      },
-      { root, rootMargin: "-72px 0px -65% 0px", threshold: 0 },
-    );
-    promptRefs.current.forEach((el) => {
-      if (el) observer.observe(el);
+    setViewportH(root.clientHeight || 600);
+    const observer = new ResizeObserver(() => {
+      setViewportH(root.clientHeight || 600);
     });
+    observer.observe(root);
     return () => observer.disconnect();
-  }, [showOutline, prompts, activeId]);
+  }, [activeId]);
+
+  // Re-resolve the active tick once layout settles — streaming growth moves
+  // rows without scrolling, and the scroll handler alone would miss it.
+  useEffect(() => {
+    if (!showOutline) return;
+    const id = requestAnimationFrame(() => updateActiveFromScroll());
+    return () => cancelAnimationFrame(id);
+  });
+
+  // A running glide yields to unmount rather than writing to a dead node.
+  useEffect(
+    () => () => {
+      if (glideRef.current != null) cancelAnimationFrame(glideRef.current);
+    },
+    [],
+  );
 
   // Stay pinned to the bottom while the user is already there; never yank them
   // back once they scroll up to read. Deliberately every render rather than on
@@ -139,12 +342,13 @@ export function TranscriptView() {
   if (!active) return <Centered title="No conversation open" detail="Press ⌘N to start one" />;
 
   return (
-    <div className="relative flex size-full flex-col">
+    <div className="relative @container flex size-full flex-col">
       <div
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          updateActiveFromScroll();
         }}
         className="rise flex flex-1 items-start justify-center overflow-y-auto px-6 pt-4 pb-2"
         style={{ animationDelay: "90ms" }}
@@ -161,7 +365,7 @@ export function TranscriptView() {
                   else promptRefs.current.delete(item.index);
                 }}
                 data-prompt-index={item.index}
-                className="scroll-mt-6"
+                className="scroll-mt-[48px]"
               >
                 <RenderEntry entry={item.entry} sessionId={active.id} />
               </div>
@@ -198,7 +402,12 @@ export function TranscriptView() {
       </div>
 
       {showOutline && (
-        <ChatOutline prompts={prompts} activeEntryIndex={activePrompt} onJump={jumpToPrompt} />
+        <ChatOutline
+          ticks={ticks}
+          activeTick={activeTick}
+          viewportH={viewportH}
+          onJump={jumpToPrompt}
+        />
       )}
 
       <div className="rise flex w-full shrink-0 flex-col items-center px-6 pb-2">
@@ -226,121 +435,98 @@ function outlinePreview(text: string, limit: number): string {
   return single.length > limit ? `${single.slice(0, limit - 1)}…` : single;
 }
 
-/** Chat outline + conversation navigation: one stop per user prompt, shown
- * once there are more than two to jump between. Hovering a stop names the
- * prompt it points at; clicking smooth-scrolls the transcript to it. The
- * full card shows on wide windows; a compact dot rail takes over below `xl`
- * so it never covers the bubbles it navigates. */
+/** MessageRail: a left vertical minimap of the user's prompts. The active
+ * tick brightens, hover grows the tick and shows a preview card (prompt +
+ * reply opening), click glides the transcript to that row. An absolute
+ * overlay in the transcript's left gutter (never over the text), hidden
+ * below a 768px transcript container. */
 function ChatOutline({
-  prompts,
-  activeEntryIndex,
+  ticks,
+  activeTick,
+  viewportH,
   onJump,
 }: {
-  prompts: { entryIndex: number; n: number; text: string }[];
-  activeEntryIndex: number | null;
+  ticks: OutlineTick[];
+  activeTick: number | null;
+  viewportH: number;
   onJump: (entryIndex: number) => void;
 }) {
-  const active = activeEntryIndex ?? prompts[prompts.length - 1]?.entryIndex ?? null;
+  const [hovered, setHovered] = useState<number | null>(null);
+  const buckets = useMemo(
+    () => tickBuckets(ticks.length, railSlots(viewportH)),
+    [ticks.length, viewportH],
+  );
+  const activeBucket = activeTick != null ? bucketOf(buckets, activeTick) : null;
 
   return (
-    <>
-      {/* Full outline card — wide windows only. */}
-      <nav
-        aria-label="Chat outline"
-        className="menu absolute top-4 right-3 z-20 hidden w-44 flex-col gap-1 rounded-xl p-2 opacity-80 transition-opacity hover:opacity-100 xl:flex"
-      >
-        <div className="flex items-center gap-1.5 px-1.5 pt-0.5 pb-1 text-[11px] text-[var(--faint)]">
-          <List size={12} strokeWidth={2} />
-          <span className="flex-1">Outline</span>
-          <span className="rounded-full bg-[var(--bubble)] px-1.5 text-[10px] text-[var(--muted)]">
-            {prompts.length}
-          </span>
-        </div>
-        <div className="flex max-h-[40vh] flex-col gap-0.5 overflow-y-auto">
-          {prompts.map((prompt) => {
-            const isActive = prompt.entryIndex === active;
-            const hoverLabel = `Prompt ${prompt.n}: ${outlinePreview(prompt.text, 200)}`;
-            return (
-              <div key={prompt.entryIndex} className="group relative">
-                <button
-                  type="button"
-                  title={hoverLabel}
-                  aria-label={`Go to prompt ${prompt.n}`}
-                  aria-current={isActive ? "true" : undefined}
-                  onClick={() => onJump(prompt.entryIndex)}
-                  className={`flex w-full cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-left text-[11px] transition-colors ${
-                    isActive
-                      ? "bg-[var(--selected)] text-[var(--ink)]"
-                      : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                  }`}
-                >
-                  <span
-                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] ${
-                      isActive
-                        ? "bg-[var(--bubble)] text-[var(--ink)]"
-                        : "bg-[var(--hover)] text-[var(--faint)]"
-                    }`}
-                  >
-                    {prompt.n}
-                  </span>
-                  <span className="flex-1 truncate">
-                    {outlinePreview(prompt.text, 42) || `Prompt ${prompt.n}`}
-                  </span>
-                </button>
-                {/* Hover card: which prompt this stop is, in full. */}
-                <div className="pointer-events-none absolute top-1/2 right-full z-30 mr-2 hidden w-60 -translate-y-1/2 group-hover:block">
-                  <div className="menu rounded-lg p-2">
-                    <div className="mb-0.5 text-[11px] font-medium text-[var(--ink)]">
-                      Prompt {prompt.n}
-                    </div>
-                    <div className="line-clamp-4 text-[11px] leading-5 whitespace-pre-wrap text-[var(--muted)]">
-                      {outlinePreview(prompt.text, 280)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </nav>
-
-      {/* Compact dot rail — narrow windows. Same stops, same tooltips. */}
-      <nav
-        aria-label="Chat outline"
-        className="menu absolute top-16 right-2 z-20 flex flex-col items-center gap-1 rounded-full px-1.5 py-2 opacity-70 transition-opacity hover:opacity-100 xl:hidden"
-      >
-        {prompts.map((prompt) => {
-          const isActive = prompt.entryIndex === active;
-          const hoverLabel = `Prompt ${prompt.n}: ${outlinePreview(prompt.text, 200)}`;
-          return (
-            <div key={prompt.entryIndex} className="group relative">
-              <button
-                type="button"
-                title={hoverLabel}
-                aria-label={`Go to prompt ${prompt.n}`}
-                aria-current={isActive ? "true" : undefined}
-                onClick={() => onJump(prompt.entryIndex)}
-                className={`cursor-pointer rounded-full transition-all ${
-                  isActive
-                    ? "h-4 w-2 bg-[var(--ink)]"
-                    : "h-2 w-2 bg-[var(--faint)] hover:bg-[var(--muted)]"
+    <nav
+      aria-label="Chat outline"
+      className="absolute top-0 bottom-0 left-4 z-20 hidden w-[26px] flex-col items-start justify-center gap-[3px] @min-[768px]:flex"
+    >
+      {buckets.map(([start, end], ix) => {
+        // The bucket's representative: the active tick when it falls inside
+        // (hover then previews what you're reading), else the range's first.
+        const rep =
+          activeTick != null && activeTick >= start && activeTick < end ? activeTick : start;
+        const tick = ticks[rep];
+        if (!tick) return null;
+        const bucketLen = end - start;
+        const isActive = activeBucket === ix;
+        const isHovered = hovered === ix;
+        const label = `Prompt ${tick.n}: ${tick.prompt}`;
+        return (
+          <div
+            key={ix}
+            className="relative flex h-[10px] w-full items-center"
+            onMouseEnter={() => setHovered(ix)}
+            onMouseLeave={() => setHovered((h) => (h === ix ? null : h))}
+          >
+            <button
+              type="button"
+              title={label}
+              aria-label={`Go to prompt ${tick.n}`}
+              aria-current={isActive ? "true" : undefined}
+              onClick={() => onJump(tick.entryIndex)}
+              className="flex h-full w-full cursor-pointer items-center"
+            >
+              {/* Only hover grows the tick; the active one just reads brighter
+                (w-3 rest, w-5 hovered). Fades ride the 150ms tailwind curve. */}
+              <span
+                className={`h-[2px] rounded-[1px] bg-[var(--ink)] transition-[width,opacity] duration-150 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+                  isHovered
+                    ? "w-5 opacity-80"
+                    : isActive
+                      ? "w-3 opacity-80"
+                      : "w-3 opacity-[0.16]"
                 }`}
               />
-              <div className="pointer-events-none absolute top-1/2 right-full z-30 mr-2 hidden w-56 -translate-y-1/2 group-hover:block">
-                <div className="menu rounded-lg p-2">
-                  <div className="mb-0.5 text-[11px] font-medium text-[var(--ink)]">
-                    Prompt {prompt.n}
+            </button>
+            {isHovered && (
+              <div className="pointer-events-none absolute top-1/2 left-full -translate-y-1/2">
+                {/* Fixed footprint: capped height with clipped text, so the
+                  card never sprawls over the transcript beneath it. */}
+                <div className="menu rail-card-in flex max-h-[220px] w-[280px] flex-col gap-1.5 overflow-hidden rounded-[12px] p-2 backdrop-blur-[16px]">
+                  <div className="truncate text-[12px] leading-5 text-[var(--ink)]">
+                    {tick.prompt}
                   </div>
-                  <div className="line-clamp-4 text-[11px] leading-5 whitespace-pre-wrap text-[var(--muted)]">
-                    {outlinePreview(prompt.text, 280)}
-                  </div>
+                  {tick.reply != null && (
+                    <div className="line-clamp-4 text-[11px] leading-5 text-[var(--muted)]">
+                      {tick.reply}
+                    </div>
+                  )}
+                  {/* Condensed bucket: say how many prompts it stands for. */}
+                  {bucketLen > 1 && (
+                    <div className="text-[10px] text-[var(--muted)]">
+                      {bucketLen} prompts
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </nav>
-    </>
+            )}
+          </div>
+        );
+      })}
+    </nav>
   );
 }
 
