@@ -53,8 +53,27 @@ Shortcuts: `⌘N` new session · `⌘K` filter · `⌘L` focus composer · `⌘B
 
 ```bash
 npm install          # once: frontend deps
-npm run tauri dev    # Vite dev server + desktop window
+npm run tauri dev    # Vite dev server (:1420) + desktop window
 ```
+
+### Second dev session (another worktree / port)
+
+Vite reads `VITE_PORT` (default `1420`, `strictPort: true` so a taken port
+fails loudly instead of drifting). Point Tauri at the same port via `--config`:
+
+```bash
+# terminal 1 (primary)
+npm run tauri dev
+
+# terminal 2 (secondary)
+VITE_PORT=1421 npm run tauri dev -- --config '{"build":{"devUrl":"http://localhost:1421"}}'
+# or the shortcut:
+npm run tauri:dev:1421
+```
+
+`beforeDevCommand` (`npm run dev`) inherits `VITE_PORT`, so the spawned Vite
+server binds `:1421` to match the overridden `devUrl`. Each extra session
+takes the next free port (`1422`, …) the same way.
 
 ### Build / test
 
@@ -110,7 +129,7 @@ See `src/components/icons/LICENSE.md` for icon rebuild notes.
 
 - **"Could not start the agent"** → `claude` not on `PATH`.
 - **"Failed to authenticate: OAuth session expired"** → run `claude login`.
-- **Blank window in `tauri dev`** → Vite must be on port 1420 (`strictPort` in `vite.config.ts`). Kill whatever holds the port.
+- **Blank window in `tauri dev`** → Vite must be on the port Tauri points at (`1420` by default, or `$VITE_PORT` with `strictPort` in `vite.config.ts`). Kill whatever holds the port, or move the session to a free one (see above).
 - **Opaque / black hole in UI** → window is `transparent: true`, `body` must stay transparent, use alpha colors only.
 
 ## Roadmap

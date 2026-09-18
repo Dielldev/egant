@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:1421": "VITE_PORT=1421 vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev:1421": "VITE_PORT=1421 tauri dev --config '{\"build\":{\"devUrl\":\"http://localhost:1421\"}}'"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
