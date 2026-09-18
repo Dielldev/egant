@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev:1421": "VITE_PORT=1421 tauri dev --config '{\"build\":{\"devUrl\":\"http://localhost:1421\"}}'"
+    "tauri:dev:1421": "VITE_PORT=1421 tauri dev --config '{\"build\":{\"devUrl\":\"http://localhost:1421\",\"beforeDevCommand\":\"npm run dev:1421\"}}'"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -283,6 +283,14 @@ impl TurnTranslator for OpencodeTranslator {
             args.push("-f".to_string());
             args.push(image.display().to_string());
         }
+        // `-f`/`--file` is a yargs array flag: with no separator, it greedily
+        // swallows the prompt that follows as another file path, and
+        // `opencode run` fails with `Error: File not found: <prompt text>`
+        // (exit 1) instead of ever reaching the model. `--` ends the option
+        // list so the prompt lands as the positional `message` again — it's
+        // a no-op when there are no images, so it's always applied rather
+        // than only when `images` is non-empty.
+        args.push("--".to_string());
         // opencode has no system-prompt flag on `run`: ground every turn in
         // the prompt itself so a resumed session keeps answering with the
         // folder it runs in.
