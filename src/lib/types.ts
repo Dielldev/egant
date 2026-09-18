@@ -198,10 +198,90 @@ export interface SessionInfo {
   modelOverride: string | null;
   /** Context window override requested at creation, if any. */
   context: number | null;
+  /** The isolated checkout this session runs in, when it has one. `cwd` names
+   * the same directory; this is what says *why* the session is somewhere other
+   * than its project folder. */
+  worktree: WorktreeInfo | null;
   ended: boolean;
   busy: boolean;
   model: string | null;
   totalCostUsd: number;
+}
+
+/** Which comparison a diff is showing. Mirrors the backend's own enum, and
+ * travels with the tab that shows it — a diff tab carries what it is a diff
+ * *of*, so reopening one never guesses. */
+export type DiffScope =
+  | { kind: "workingTree"; staged: boolean }
+  | { kind: "branch"; base: string | null }
+  | { kind: "turn"; session: number }
+  | { kind: "commit"; sha: string };
+
+/** One row of the repository's commit graph. */
+export interface Commit {
+  sha: string;
+  parents: string[];
+  subject: string;
+  authorName: string;
+  authorEmail: string;
+  /** Seconds since the epoch, UTC. */
+  authoredUnix: number;
+  refs: CommitRef[];
+}
+
+export interface CommitRef {
+  kind: "branch" | "remote" | "tag";
+  label: string;
+}
+
+export interface HistoryPage {
+  commits: Commit[];
+  /** The commit the repository is on, so the list can mark it. */
+  headSha: string | null;
+  /** Pass back as `cursor` for the next page; `null` at the end. */
+  nextCursor: number | null;
+}
+
+/** One local branch in the composer's ref picker, and where it is checked out. */
+export interface RepoRef {
+  name: string;
+  /** On the project folder itself right now. */
+  current: boolean;
+  /** The worktree this branch is checked out in, if any — which is what makes
+   * it startable without any git running at all. */
+  worktreePath: string | null;
+}
+
+/** Where a starting session should run. Mirrors the backend's own enum: the
+ * composer's two chips resolve to exactly one of these. */
+export type CheckoutPlan =
+  | { kind: "currentCheckout" }
+  | { kind: "reuseWorktree"; path: string; branch: string }
+  | { kind: "newWorktree"; base: string | null };
+
+/** A session's own checkout of its repository, on a branch egant made for it. */
+export interface WorktreeInfo {
+  path: string;
+  /** `egant/quiet-quartz`. */
+  branch: string;
+  /** The generated folder name (`quiet-quartz`). */
+  name: string;
+  /** The branch it was cut from. */
+  base: string;
+  /** The repository it belongs to: the project folder, or a parent of it. */
+  repoRoot: string;
+}
+
+/** What closing a session answers with. The worktree is given back as part of
+ * the same call, so the snapshot here already reflects whatever happened to
+ * it. */
+export interface CloseResult {
+  state: WindowState;
+  /** Set when the worktree was kept rather than removed — it says where it is
+   * and what is in it. */
+  notice: string | null;
+  /** The kept worktree, for the notice's "Delete it anyway". */
+  kept: WorktreeInfo | null;
 }
 
 export interface SettingsState {
@@ -209,6 +289,9 @@ export interface SettingsState {
   wallpaperName: string | null;
   wallpaperDim: number;
   defaultAgent: string;
+  /** Whether new sessions get their own worktree. The launch screen's toggle
+   * writes it, so the choice is made once rather than per session. */
+  worktreeDefault: boolean;
 }
 
 /** One row of `list_agents`: CLI presence and login state per agent. */
@@ -410,6 +493,55 @@ export interface RepoStatus {
   /** Whether the branch tracks anything yet. A branch that doesn't is offered
    * "Publish" rather than "Push". */
   published: boolean;
+  /** What the current branch tracks, e.g. `origin/main`. `null` when it
+   * tracks nothing. */
+  upstream: string | null;
+  /** When the repo last fetched, seconds since the epoch. `null` when never —
+   * the panel reads that as "behind may be stale, fetch to check". */
+  lastFetchedUnix: number | null;
+  /** The branch this repository integrates into — what a branch-scope diff
+   * measures against when nothing else names a base. */
+  defaultBase: string | null;
+}
+
+/** Which side of a conflict to keep. `both` only makes sense for a content
+ * conflict — a delete conflict has nothing to combine. */
+export type ConflictSide = "ours" | "theirs" | "both";
+
+/** The two-letter `git status` shape of one unmerged path. `bothModified` is
+ * the ordinary case; the rest are a delete/modify conflict from either side. */
+export type UnmergedKind =
+  | "bothModified"
+  | "bothAdded"
+  | "bothDeleted"
+  | "addedByUs"
+  | "addedByThem"
+  | "deletedByUs"
+  | "deletedByThem";
+
+export interface UnmergedFile {
+  path: string;
+  kind: UnmergedKind;
+}
+
+/** Where a stalled merge/rebase stands (`conflict_status`). `operation` is
+ * `"none"` when nothing is in progress, which can still leave `files`
+ * non-empty — e.g. right after a `stash pop` that collided. */
+export interface ConflictStatus {
+  operation: "merge" | "rebase" | "none";
+  files: UnmergedFile[];
+}
+
+/** One `<<<<<<<`/`=======`/`>>>>>>>` region in a conflicted file
+ * (`conflict_blocks`), for the quick-action buttons drawn over it. */
+export interface ConflictBlock {
+  index: number;
+  startLine: number;
+  endLine: number;
+  oursLabel: string;
+  theirsLabel: string;
+  ours: string;
+  theirs: string;
 }
 
 /** Whether the GitHub CLI is there and signed in. Everything in the Pull

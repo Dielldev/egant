@@ -29,6 +29,46 @@ interface LiveTerminal {
 
 const live = new Map<string, LiveTerminal>();
 
+/** Commands waiting for a terminal whose shell isn't up yet. The Run pill
+ * opens a tab and types into it in one click — the tab's pane hasn't mounted
+ * (let alone spawned its PTY) by the time the click lands, so the line waits
+ * here and `spawn` flushes it once the shell exists. A line for a live shell
+ * never touches this map: it goes straight to `ptyWrite`. */
+const queuedCommands = new Map<string, string[]>();
+
+/** Types `command` into a terminal tab, running it. Safe to call the moment
+ * the tab is created: when the shell isn't up yet the line is queued and
+ * flushed after the first prompt draws. `command` gains a trailing newline
+ * when it doesn't already end in one, so it executes rather than just sits
+ * on the prompt. */
+export function queueTerminalCommand(tabId: string, command: string): void {
+  const line =
+    command.endsWith("\n") || command.endsWith("\r") ? command : `${command}\n`;
+  const entry = live.get(tabId);
+  if (entry?.ptyId != null) {
+    void api.ptyWrite(entry.ptyId, line).catch(() => {
+      const waiting = queuedCommands.get(tabId) ?? [];
+      waiting.push(line);
+      queuedCommands.set(tabId, waiting);
+    });
+    return;
+  }
+  const waiting = queuedCommands.get(tabId) ?? [];
+  waiting.push(line);
+  queuedCommands.set(tabId, waiting);
+}
+
+function flushQueuedCommands(tabId: string, ptyId: number): void {
+  const waiting = queuedCommands.get(tabId);
+  if (!waiting || waiting.length === 0) return;
+  queuedCommands.delete(tabId);
+  // Let the login shell draw its first prompt before the line lands, so the
+  // user sees the command they asked for rather than it racing the prompt.
+  setTimeout(() => {
+    for (const line of waiting) void api.ptyWrite(ptyId, line).catch(() => {});
+  }, 400);
+}
+
 /** Key a CLI session's terminal is registered under. Prefixed so a session
  * and a panel tab can never collide in the one shared registry. */
 export function cliTerminalKey(sessionId: number): string {
@@ -65,6 +105,7 @@ function dispose(id: string, entry: LiveTerminal, killPty: boolean): void {
   entry.term.dispose();
   entry.host.remove();
   live.delete(id);
+  queuedCommands.delete(id);
 }
 
 /** xterm's palette, read from the app's own CSS variables so the shell sits
@@ -147,6 +188,7 @@ export function TerminalPane({
       entry.pending = [];
       setExited(false);
       setError(null);
+      flushQueuedCommands(tabId, ptyId);
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : String(problem));
     }

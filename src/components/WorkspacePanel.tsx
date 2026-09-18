@@ -1,9 +1,19 @@
-import { FolderTree, GitCompare, Plus, Terminal as TerminalIcon, X } from "lucide-react";
+import {
+  FolderTree,
+  GitBranch,
+  GitCompare,
+  Maximize2,
+  Minimize2,
+  Plus,
+  Terminal as TerminalIcon,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PanelTabKind } from "../store";
 import { useEgant, workspaceRoot } from "../store";
-import { ChangesPanel } from "./ChangesPanel";
+import { DiffsPanel } from "./DiffsPanel";
 import { FileTree } from "./FileTree";
+import { HistoryPanel } from "./HistoryPanel";
 import { disposeTerminalsExcept, TerminalPane } from "./TerminalPane";
 
 /** The column on the right: the project's files and its terminals, in tabs.
@@ -22,12 +32,27 @@ export function WorkspacePanel() {
   const closePanelTab = useEgant((s) => s.closePanelTab);
   const openFilesTab = useEgant((s) => s.openFilesTab);
   const openTerminalTab = useEgant((s) => s.openTerminalTab);
-  const openChangesTab = useEgant((s) => s.openChangesTab);
+  const openDiffsTab = useEgant((s) => s.openDiffsTab);
+  const openHistoryTab = useEgant((s) => s.openHistoryTab);
   const togglePanel = useEgant((s) => s.togglePanel);
   const snapshot = useEgant((s) => s.snapshot);
+  const maximized = useEgant((s) => s.panelMaximized);
+  const toggleMaximized = useEgant((s) => s.togglePanelMaximized);
+  const sidebarWidth = useEgant((s) => s.sidebarWidth);
+  const sidebarVisible = snapshot?.sidebarVisible ?? true;
 
   const [adding, setAdding] = useState(false);
   const [resizing, setResizing] = useState(false);
+  // Maximized means "everything the sidebar isn't using". Held as a number
+  // rather than a class so the width can be animated between the two states —
+  // `flex-1` has nothing to transition from.
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const fullWidth = Math.max(320, windowWidth - (sidebarVisible ? sidebarWidth : 0));
 
   // The file tree follows the conversation in front of you; a terminal keeps
   // the directory it was opened in.
@@ -58,8 +83,13 @@ export function WorkspacePanel() {
 
   return (
     <aside
-      style={{ width: panelWidth }}
-      className="sidebar-glass relative flex h-full shrink-0 flex-col border-l border-[var(--border)] text-[var(--muted)]"
+      style={{
+        width: maximized ? fullWidth : panelWidth,
+        // Only while it is settling between the two states: a transition left
+        // on permanently would make the drag-to-resize handle lag the pointer.
+        transition: resizing ? undefined : "width 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+      }}
+      className="sidebar-glass relative z-20 flex h-full shrink-0 flex-col border-l border-[var(--border)] text-[var(--muted)]"
     >
       {/* Same height as the window bar across the way, so the three columns
         start their content on one line. The strip doubles as a drag region. */}
@@ -111,11 +141,20 @@ export function WorkspacePanel() {
                 <MenuRow
                   icon={<GitCompare size={13} strokeWidth={2} />}
                   onClick={() => {
-                    openChangesTab();
+                    openDiffsTab();
                     setAdding(false);
                   }}
                 >
-                  Changes
+                  Diffs
+                </MenuRow>
+                <MenuRow
+                  icon={<GitBranch size={13} strokeWidth={2} />}
+                  onClick={() => {
+                    openHistoryTab();
+                    setAdding(false);
+                  }}
+                >
+                  History
                 </MenuRow>
                 <MenuRow
                   icon={<TerminalIcon size={13} strokeWidth={2} />}
@@ -130,6 +169,19 @@ export function WorkspacePanel() {
             </>
           )}
         </div>
+
+        <button
+          type="button"
+          title={maximized ? "Back to the conversation · ⌘⇧J" : "Fill the window · ⌘⇧J"}
+          onClick={() => toggleMaximized()}
+          className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+        >
+          {maximized ? (
+            <Minimize2 size={13} strokeWidth={2} />
+          ) : (
+            <Maximize2 size={13} strokeWidth={2} />
+          )}
+        </button>
 
         <button
           type="button"
@@ -152,8 +204,10 @@ export function WorkspacePanel() {
           >
             {tab.kind === "files" ? (
               <FileTree root={root} />
-            ) : tab.kind === "changes" ? (
-              <ChangesPanel root={root} />
+            ) : tab.kind === "diffs" ? (
+              <DiffsPanel root={root} tabId={tab.id} scope={tab.scope} />
+            ) : tab.kind === "history" ? (
+              <HistoryPanel root={root} />
             ) : (
               <TerminalPane tabId={tab.id} cwd={tab.cwd} active={tab.id === activeTab} />
             )}
@@ -172,9 +226,9 @@ export function WorkspacePanel() {
             />
             <ChooserButton
               icon={<GitCompare size={15} strokeWidth={1.9} />}
-              label="Changes"
-              detail="What git says you changed"
-              onClick={openChangesTab}
+              label="Diffs"
+              detail="What changed, and against what"
+              onClick={openDiffsTab}
             />
             <ChooserButton
               icon={<TerminalIcon size={15} strokeWidth={1.9} />}
@@ -182,17 +236,27 @@ export function WorkspacePanel() {
               detail="A shell in this folder"
               onClick={openTerminalTab}
             />
+            <ChooserButton
+              icon={<GitBranch size={15} strokeWidth={1.9} />}
+              label="History"
+              detail="Every commit, newest first"
+              onClick={openHistoryTab}
+            />
           </div>
         )}
       </div>
 
-      {/* Drag-to-resize, matching the sidebar's hair-thin target. */}
+      {/* Drag-to-resize, matching the sidebar's hair-thin target. Gone while
+        the panel is maximized: its width is the window's, and dragging would
+        be an argument with the button that set it. */}
       <div
         role="separator"
         aria-orientation="vertical"
         title="Drag to resize"
         onPointerDown={startResize}
-        className="absolute top-0 left-0 z-10 h-full w-3 -translate-x-1/2 cursor-col-resize"
+        className={`absolute top-0 left-0 z-10 h-full w-3 -translate-x-1/2 cursor-col-resize ${
+          maximized ? "hidden" : ""
+        }`}
       >
         <div
           className={`mx-auto h-full w-px transition-colors ${
@@ -208,11 +272,12 @@ export function WorkspacePanel() {
 function TabIcon({ kind, size = 12 }: { kind: PanelTabKind; size?: number }) {
   const props = { size, strokeWidth: 2 } as const;
   if (kind === "files") return <FolderTree {...props} />;
-  if (kind === "changes") return <GitCompare {...props} />;
+  if (kind === "diffs") return <GitCompare {...props} />;
+  if (kind === "history") return <GitBranch {...props} />;
   return <TerminalIcon {...props} />;
 }
 
-/** One of the three things the panel can hold. Big enough to be the answer to
+/** One of the things the panel can hold. Big enough to be the answer to
  * "what is this column for?" the first time it opens. */
 function ChooserButton({
   icon,

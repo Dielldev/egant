@@ -1,371 +1,124 @@
 # egant
 
-A native desktop workspace for coding agents: a Tauri window with a vibrant
-background and an embedded Claude Code session driven as a subprocess with a
-streaming transcript.
+A native desktop workspace for coding agents.
 
-> **Status: working scaffold.** It builds clean (`npx tauri build --debug`
-> produces `egant.app`), the window opens, and 31 Rust tests pass. The shell
-> is real — projects, sessions, streaming transcript, composer, wallpaper —
-> but the agent has not yet been driven end-to-end through the UI
-> (the CLI on this machine needs `claude login`), and worktrees are written
-> but not wired in.
+Egant is a Tauri (Rust + React) desktop app that runs coding agents — starting with Claude Code — in real project folders, with a streaming chat transcript, file viewer, git changes, and terminals in one window.
+
+> **Status: early working scaffold.** The shell is real — projects, sessions, streaming transcript, composer, wallpaper, files/changes/terminals panel — but agent end-to-end and worktree isolation are still in progress.
+
+## Features
+
+- **Agent chat, natively** — drives the `claude` CLI as a subprocess, streams tokens into the transcript. Interrupt mid-turn, switch permission modes mid-conversation.
+- **Sidebar for everything** — every conversation on this machine, grouped by `project @ machine`. Filter with `⌘K`, new session with `⌘N`.
+- **Composer** — glass composer on launch, docked pill once the thread starts. `@path` file mentions, model/permission chip, context-window meter.
+- **Workspace panel (`⌘J`)** — optional third column, per-window (not per-chat):
+  - **Files** — lazy tree, syntax-highlighted read-only viewer with stage tabs
+  - **Changes** — git status, stage/unstage/discard, diff (unified/split), Commit & Push
+  - **Pull requests** — via your own `gh`, with checks/commits/files/comments
+  - **Terminals** — real PTYs (`$SHELL -l`) that survive panel hide / session switch
+- **Custom wallpaper** — pick an image, persisted to settings, with dim control.
 
 ## The window
 
 ```text
-┌──────────────────────┬──────────────────────────────────────┐
-│ ●●●  ◫ ‹ › +         │ ▣ hello tehre   clean-mac @ this-mac │
-│ 📁 clean-mac @ mac ⌄≡│ ╌╌╌╌╌╌╌╌╌╌ wallpaper glow ╌╌╌╌╌╌╌╌╌╌ │
-│                      │                       ┌────────────┐ │
-│ clean-mac @ mac   1m │                       │ hello tehre│ │
-│ ▣ hello tehre        │                       └────────────┘ │
-│                      │  Hello! How can I help you today?    │
-│                      │  Sep 15, 4:09 PM ⧉                   │
-│                      │                                      │
-│                      │ ╭──────────────────────────────────╮ │
-│                      │ │ Do anything…   ▤ Model Mode ⧉ ↑  │ │
-│ Ⓛ Local only         │ ╰──────────────────────────────────╯ │
-│                      │                               ◔ 5%   │
-└──────────────────────┴──────────────────────────────────────┘
+┌─────────────┬─────────────────────────┬──────────────┐
+│ sidebar     │ stage                   │ panel (⌘J)   │
+│ threads     │ chat + file/diff tabs   │ Files /      │
+│             │ composer                │ Changes /    │
+│             │                         │ Terminal     │
+└─────────────┴─────────────────────────┴──────────────┘
 ```
 
-Two columns, and a third on request (see *Files and terminals* below).
-The **sidebar** is every conversation on this machine, newest
-last, under a header naming the project they run in (`project @ machine`) and
-above a footer saying where they run (`Local only`). Rows read as merged
-thread units: where and how long ago, then the title. Its header menu also
-holds the open projects and the wallpaper settings. The filter field stays
-hidden until the header's filter button or ⌘K asks for it.
+- **Sidebar:** thread list + project menu + wallpaper settings + `Local only` footer.
+- **Stage:** conversation transcript (user bubbles right, agent text left) + composer, or an open file/diff tab.
+- **Panel:** files, git changes, PRs, terminals. Closed by default.
 
-The **stage** is the conversation: a title line naming it, the transcript, and
-the composer. The user's turns are right-aligned bubbles, the agent's are
-plain text on the ground with the moment they landed and a copy button; the
-ring under the composer's right edge is how full the context window is.
+On launch you get a centered composer over the wallpaper. Type to pick a folder and start a session — the transcript takes over on the first message.
 
-The window is transparent with an overlay title bar, so the sidebar runs to
-the top and the traffic lights sit over it. The button row beside them —
-sidebar toggle, back/forward through conversations, new conversation — rides
-at the top of whichever column is leftmost, and moves to the stage when the
-sidebar is hidden. It carries `data-tauri-drag-region`, which is what keeps
-the window draggable by it while it holds real controls.
+Shortcuts: `⌘N` new session · `⌘K` filter · `⌘L` focus composer · `⌘B` sidebar · `⌘J` panel · `⌘⎋` interrupt · `⏎` send / `⇧⏎` newline.
 
-On launch — before the first message lands — the stage holds one centred glass
-composer with its context row (machine + project) riding above it, over a
-wallpaper that still reads as a photograph and dissolves into black
-mid-screen. The sidebar does not move or change. Typing there opens a folder
-and starts a session if needed, then delivers the message; the transcript
-takes the stage with the first turn.
+## Quickstart
 
-It is the same composer in both places — same glass, same chips, same keys —
-tall with its chips beneath on launch, a single-line pill with them inline
-once the conversation starts. Once a conversation is open the wallpaper drops
-back to a heavy blur over near-black: a glow rather than a photograph, because
-from there on the stage is text on a ground.
+### Prerequisites
 
-### Wallpaper
+| Need | Notes |
+|------|-------|
+| Rust 1.85+ | workspace is edition 2024 |
+| Node 20+ + npm | frontend dev server + builds |
+| macOS + Command Line Tools | no full Xcode needed |
+| `claude` on `PATH` + `claude login` | agent driver |
+| `gh` (optional) | only for Pull Requests section |
 
-Open the sidebar header's menu (the `⌄` beside the project name) and pick
-**Choose image…**. The choice is written to `~/Library/Application Support/egant/settings.json`
-and survives restarts; **Dim** steps the scrim over the image, because the chrome
-is translucent and an undimmed photograph makes body text unreadable. A wallpaper
-that has since been moved or deleted is forgotten rather than drawn as a blank
-rectangle.
-
-### Files, changes and terminals
-
-The stage's top-right button opens the **workspace panel** — the window's third
-column, and the only one that isn't about the conversation, which is why it
-stays shut until asked for. An empty panel asks what it should hold, with three
-buttons: **Files**, **Changes** or **Terminal**. Its own `+` adds more of any of
-them, and its tabs belong to the window rather than to a conversation — a shell
-running a build should not disappear because the sidebar moved to another
-thread.
-
-```text
-┌─sidebar─┬───────── stage ──────────┬───── panel ──────┐
-│ threads │ ▣ hello tehre            │ Files Changes  + │
-│         │ [Chat][store.ts (Wor…×]  │ ⎇ main ↑2   ⟳↓↑ │
-│         │ ── Changed ────────────  │ Changed   2    ☐ │
-│         │ 12 │ - const a = 1       │  All files  [+]  │
-│         │ 12 │ + const a = 2       │  store.ts  +8−3◼ │
-│         │                          │ Staged    0      │
-│         │                          │ Pull requests    │
-│         │                          │ ┌──────────────┐ │
-│         │                          │ │ message      │ │
-│         │                          │ │ description  │ │
-│         │                          │ │[Commit&Push] │ │
-└─────────┴──────────────────────────┴──┴──────────────┴┘
-```
-
-**Files** is the project as a tree, expanding a directory at a time — nothing
-is walked until it is opened, so a `node_modules` nobody clicked costs nothing.
-The file-type icons are the [Antigravity Icons Supercharged][icons] set,
-vendored into one generated module along with the pack's own extension and
-filename tables, so a `.tsx` gets the icon it gets in the editor — folders
-included, filled when closed and outlined when open. See
-`src/components/icons/LICENSE.md` for what the generator changes and how to
-rebuild it. Clicking a file opens it as a **tab on the stage**, beside the
-conversation: read-only, syntax-highlighted, with line numbers, because the
-agent is what edits files and a viewer is what the user needs to follow along.
-Those tabs hang off the conversation they were opened beside, so each thread
-keeps its own set.
-
-[icons]: https://marketplace.visualstudio.com/items?itemName=davidbabel.antigravity-icons-supercharged-gray
-
-**Changes** is what git says you have done. A status line heads it — the
-branch, how far ahead or behind it is, and buttons to fetch, pull and push, or
-to **publish** a branch that has never left the machine. Under it are the
-sections git actually has: **Changed** (the working tree against the index) and
-**Staged** (the index against HEAD), each with a count, a collapse, a
-select-all, and a flat/tree toggle.
-
-A row reads filename-first with its directory trailing behind, then `+8 −3` and
-a status glyph — which becomes a checkbox on hover, so picking files never
-widens the row. Above the rows, one bar says what the next action applies to:
-*All files* until something is ticked, the selection after that, so a click can
-never do more than the bar says. Staging, unstaging and discarding are there;
-discarding asks first, because nothing has ever recovered work that was never
-committed.
-
-The **commit box is pinned to the bottom of the column**, below the sections
-rather than inside one: committing is what this column is for, and it should
-never be somewhere you have to scroll to find. One button — **Commit & Push**,
-because a commit that never leaves this machine helps nobody. With nothing
-staged it stages everything first; with something staged it commits only that.
-A branch with no upstream gets one on its first push, and a repository with no
-remote is offered a plain **Commit**, since there would be nowhere to push it.
-⌘⏎ from either field does the same thing as the button.
-
-**Pull requests** are the third section, run through the user's own `gh` — the
-account they are already signed in as, no second sign-in for this window to
-keep in step and no token for it to hold. Each one expands to its checks,
-commits, files and comments, with a merge footer that says what would stop the
-merge (conflicts, a red check, changes requested) before offering it, and a
-squash/merge/rebase choice beside it. The branch you are on, if it has no PR
-yet, gets a **Create pull request** form. What `gh` can't answer in one call —
-the conversation on a PR, a failed check's log — links out to the browser
-rather than being half-rebuilt here.
-
-Clicking a row opens the diff as a **stage tab**, named for the file and the
-side of git it came from — `store.ts (Working Tree)` or `store.ts (Index)` —
-so the same file can be open twice, once against each. The diff reads unified
-or split and remembers which you prefer; an image diff shows the two pictures
-side by side over a checkerboard instead of calling itself binary; and a file
-that can be rendered (Markdown, HTML) carries a **Diff / Preview** toggle, the
-HTML in a fully sandboxed frame.
-
-Nothing here polls: the panel reads on open, after any action it takes, and on
-`turn_ended`, which is exactly when the agent has stopped editing.
-
-**Terminals** are real PTYs — the user's login shell (`$SHELL -l`, so it has
-their actual `PATH`) in the session's working directory, drawn by xterm.js over
-the panel's glass. Closing the tab is what ends the shell; hiding the panel
-does not, so a build keeps running while you talk to the agent about it.
-
-### Keys
-
-| | |
-|---|---|
-| ⌘N | new session |
-| ⌘K | reveal and focus the filter field |
-| ⌘L | focus the composer |
-| ⌘B | hide the sidebar |
-| ⌘J | open / hide the workspace panel |
-| ⌘⎋ | interrupt the running turn |
-| ⏎ / ⇧⏎ | send / newline |
-
-**Open folder…** in the header menu runs the platform folder picker and starts
-a session in whatever folder comes back. The paperclip attaches files as
-`@path` mentions. The composer's model chip cycles the agent's permission mode
-on the running session — the agent accepts that mid-conversation, so nothing
-restarts.
-
-## Requirements
-
-| | |
-|---|---|
-| Rust | stable, 1.85+ (the workspace is edition 2024) |
-| Node | 20+ with npm (frontend dev server and builds) |
-| macOS | Command Line Tools are enough; no full Xcode needed |
-| `claude` | on `PATH`, logged in (`claude login`) |
-| `gh` | optional — only for the panel's Pull requests section |
-
-## Running
+### Run
 
 ```bash
-npm install          # once: frontend dependencies
+npm install          # once: frontend deps
 npm run tauri dev    # Vite dev server + desktop window
 ```
 
-A release bundle:
+### Build / test
 
 ```bash
-npm run tauri build
+npm run tauri build   # release bundle (.app / .dmg)
+npm run build         # type-check + production frontend build
+
+cargo test -p egant -p egant-harness -p egant-vcs  # Rust tests, no window needed
 ```
 
-Rust logic tests need no window:
-
-```bash
-cargo test -p egant -p egant-harness -p egant-vcs
-```
-
-Type-check and production frontend build:
-
-```bash
-npm run build
-```
-
-## Layout
+## How it works
 
 ```
-src-tauri/   the Tauri backend — state only, no agent or git logic
-  state.rs      window root state: projects, sessions, selection
-  sessions.rs   bridges one agent to one transcript, streams `session-event`s
-  commands.rs   everything the frontend can invoke
-  dto.rs        the shapes that cross the IPC boundary
-  project.rs    the folders the app has been pointed at
-  files.rs      the panel's file tree and the viewer's reads
-  pty.rs        one real PTY per terminal tab, streamed as `pty-output`
-  github.rs     pull requests, by way of the user's own `gh`
-                (git itself lives in `commands.rs`, over the `vcs` crate)
-  settings.rs   preferences that outlive a run
-src/         the React frontend — views only
-  components/  Sidebar · WindowBar · ProjectMenu · SessionHeader ·
-               TranscriptView · Composer · ContextMeter · Wallpaper ·
-               WorkspacePanel · FileTree · FileIcon · FileView ·
-               StageTabs · TerminalPane · ChangesPanel · PullRequests ·
-               DiffTabView · ChangeStatus
-  components/icons/  the vendored file-type icon set (generated; MIT)
-  lib/         IPC wrappers, dialog pickers, the transcript fold
-  store.ts     zustand store: snapshot + live transcripts + lists
-scripts/
-  vendor-icons.py  regenerates the icon module from the published .vsix
+React (views only)  ⇄  Tauri IPC (commands + `session-event`)  ⇄  Rust backend (single source of truth)
+                                                                             ├─ Harness → `claude` subprocess
+                                                                             ├─ vcs crate → git2 (local) + `git` CLI (network/creds)
+                                                                             └─ PTY per terminal tab + `gh` for PRs
+```
+
+- **Backend owns state, frontend owns pixels.** Rust holds `AppState`, sends flattened `WindowState` snapshots. Frontend sends commands, re-renders from the snapshot.
+- **Streaming is events, rest is commands.** Each turn folds `HarnessEvent`s into a backend `Transcript` and emits `session-event`. Frontend mirrors the same fold, so streaming is one small payload per token. Full snapshots only on session switch.
+- **Agent behind a trait.** `Harness` = send turn, interrupt, answer permission, stream events. Claude wire format stays in `crates/harness`. Adding another agent = new impl, no frontend change.
+- **Git split by need.** `git2` (libgit2, no openssl/ssh) for local status/diff/stage/commit. Your own `git` CLI for push/fetch/pull so keychain, SSH agent, `.gitconfig`, hooks all just work. Network ops run on `spawn_blocking` so UI never stalls.
+- **No polling.** Panel re-reads on open, after its own actions, and on `turn_ended` (when the agent stops editing).
+
+## Project layout
+
+```
+src-tauri/   Tauri backend — state only, no agent/git logic in the shell
+  state.rs / sessions.rs / commands.rs / dto.rs
+  project.rs files.rs pty.rs github.rs settings.rs
+src/         React frontend — views only
+  components/  Sidebar, SessionHeader, TranscriptView, Composer,
+               WorkspacePanel, FileTree, ChangesPanel, TerminalPane, DiffTabView…
+  lib/ store.ts  IPC wrappers, transcript fold, zustand store
 crates/
-  harness/    agent backends behind a `Harness` trait
-    protocol.rs   Claude Code's stream-json wire types
-    claude.rs     the subprocess driver
-    transcript.rs the renderable fold of an event stream
-  vcs/        git: local ops, remote ops, worktrees, file watching
+  harness/   agent backends behind `Harness` trait (protocol.rs, claude.rs, transcript.rs)
+  vcs/       git: local ops, remote ops, worktrees, file watching
+scripts/vendor-icons.py  regenerates file icons from Antigravity set
 ```
 
-`crates/egant` (the previous GPUI shell) and `crates/webview` are excluded
-from the workspace but left on disk for reference; Tauri provides the webview
-natively, so the custom webview crate has no role anymore.
+> `crates/egant` (old GPUI shell) and `crates/webview` are excluded from the workspace but left on disk for reference. Tauri provides the webview natively.
 
-## Decisions worth knowing
+See `src/components/icons/LICENSE.md` for icon rebuild notes.
 
-### The backend owns state, the frontend owns pixels
+## Settings & data
 
-The Tauri backend holds the only copy of window truth (`AppState`) and hands
-the frontend flattened snapshots (`WindowState`). The frontend reports clicks
-back as commands and re-renders from the snapshot each command returns, so
-there is never a second answer to "which session is open".
-
-### Streaming is events, everything else is commands
-
-Each agent session folds `HarnessEvent`s into its backend `Transcript` and
-emits them on `session-event`. The frontend folds the same events into its own
-mirror (`lib/transcript.ts`, a mechanical port of `Transcript::apply`), which
-keeps streaming to one small payload per token instead of a full snapshot per
-token. Snapshots (`get_transcript`) are only fetched when switching sessions.
-
-The send path echoes on both sides: the backend's `push_user` and the
-frontend's optimistic echo are the same deterministic fold, so the message
-appears on keypress and both sides agree.
-
-### Each session runs three tasks, and the split is the point
-
-- the **pump** reads the agent's stdout in the background,
-- the **driver** owns the harness and serializes writes to it — also background,
-  because every write is `async`,
-- the **listener** folds events into the transcript and emits them to the window.
-
-Commands reach the driver through a channel rather than a shared lock. A lock
-would have to be held across `await` points, and a command handler must never
-block on that. Tauri command handlers never hold the state lock across an
-`await` either — they clone what they need and drop the guard first.
-
-### The agent sits behind a trait
-
-`Harness` is the whole surface the backend knows: send a turn, interrupt,
-answer a permission request, and read a stream of `HarnessEvent`.
-Claude-specific wire types stay in `protocol.rs` and never escape `claude.rs`.
-Adding Codex over JSON-RPC means writing one more implementation that emits
-the same events — no frontend changes.
-
-### Git is split by what each job needs
-
-`libgit2` (via `git2`) for everything local — status, diffs, staging, commits.
-It is fast enough to run synchronously, and `git2` is built with
-`default-features = false` so libgit2's ssh/https transports and the
-`openssl-sys` build dependency are out of the tree entirely.
-
-The user's own `git` for anything touching a network or a credential. Pushing
-needs credentials, and those already live where only `git` can reach them: the
-macOS keychain helper, an SSH agent, a `credential.helper`, a hardware key.
-Reimplementing that lookup would mean a second, worse credential path. Shelling
-out inherits all of it — along with their `.gitconfig`, hooks and proxy settings.
-
-Unlike the GPUI shell (where push blocked the UI), network operations run on a
-blocking thread via `spawn_blocking`, so slow remotes never stall input.
-
-### Worktrees per session
-
-Sessions get an isolated checkout under `~/.egant/worktrees/<slug>` on their own
-`egant/<slug>` branch. An agent editing the user's working tree makes two things
-impossible: reviewing what it did (the diff moves while you read it) and running
-two sessions at once.
-
-`WorktreeStore` is written but **not yet wired into the UI** — sessions currently
-start in the project root. Wiring it is the first real feature to add.
-
-### The wallpaper travels as a data URL
-
-The webview never gets filesystem access. The one image the user picked is read
-by the backend and served to an `<img>` tag as a data URL (`wallpaper_data_url`),
-which keeps the security surface to exactly that file. The dim setting is a
-plain black overlay at `wallpaper_dim` opacity.
-
-### Icons are generated, not checked in by hand
-
-`src-tauri/icons/` comes from a stdlib-only Python script plus `sips` and
-`iconutil` — a dark tile with a composer bar and the violet busy dot. Replace
-`icon-1024.png` with real artwork and re-derive the set.
+- Wallpaper + dim: `~/Library/Application Support/egant/settings.json`
+- Webview gets the wallpaper as a data URL only — no filesystem access.
+- Planned: worktree per session at `~/.egant/worktrees/<slug>` on `egant/<slug>` branch (`WorktreeStore` written, not yet wired — sessions currently start in project root).
 
 ## Troubleshooting
 
-**"Could not start the agent"** in a new session — `claude` is not on `PATH`.
+- **"Could not start the agent"** → `claude` not on `PATH`.
+- **"Failed to authenticate: OAuth session expired"** → run `claude login`.
+- **Blank window in `tauri dev`** → Vite must be on port 1420 (`strictPort` in `vite.config.ts`). Kill whatever holds the port.
+- **Opaque / black hole in UI** → window is `transparent: true`, `body` must stay transparent, use alpha colors only.
 
-**"Failed to authenticate: OAuth session expired"** in the transcript — run
-`claude login`. (This was the state of the CLI on this machine when the scaffold
-was written.)
+## Roadmap
 
-**Blank window in `tauri dev`** — the Vite dev server must be on port 1420
-(`strictPort`); another process on that port fails the boot.
+1. Real turn end-to-end against live `claude` traffic, harden transcript fold
+2. Wire `WorktreeStore` into session creation
+3. Persist sessions (`session_id` → `--resume`)
+4. Per-file diff + stage/unstage/commit UI wiring
+5. Live-refresh Changes via `RepoWatcher`
 
-## Next steps
-
-1. Drive a real turn end-to-end (`claude login` first) and see where the
-   transcript's event fold needs adjusting against live traffic.
-2. Wire `WorktreeStore` into session creation.
-3. Persist sessions — `session_id` from the handshake is all `--resume` needs.
-4. Per-file diff view in the Changes tab (`diff_file` already returns hunks;
-   `stage_files` / `unstage_files` / `commit_changes` are waiting for UI).
-5. Wire the `RepoWatcher` to live-refresh the Changes tab while the agent works.
-
-## Frontend notes
-
-Things that cost time to find, recorded so they do not have to be found twice:
-
-- The window is `transparent: true`, so `body` must stay transparent and every
-  surface uses an alpha colour — an opaque background anywhere punches a hole
-  in the design (or rather, fills one).
-- No `StrictMode`: its dev-only double-mount subscribes `session-event` twice
-  and folds every delta twofold.
-- `data-tauri-drag-region` on the title-bar row makes the window draggable;
-  buttons inside it still receive clicks.
-- `git2::Repository` is neither `Send` nor `Sync`; all git commands use it
-  synchronously inside the handler and never hold it across an `await`.
-- An `Option<String>` command argument arrives as `null` vs string — `undefined`
-  is not sent by `invoke`, so optional params must be passed explicitly.
+MIT — see `Cargo.toml` (`repository: https://github.com/dielldev/egant`).

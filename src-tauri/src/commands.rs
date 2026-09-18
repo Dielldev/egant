@@ -4,17 +4,21 @@
 //! so the frontend never has to refetch after acting; errors are plain strings
 //! for `invoke` rejection messages. Locks are never held across an `await`.
 
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
-    ChangeDto, ClaudeUsageDto, DiffHunkDto, DiffLineDto, RepoStatusDto, StateDto, TranscriptDto,
+    ChangeDto, ClaudeUsageDto, CloseResultDto, CommitDto, CommitRefDto, ConflictBlockDto,
+    ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, RepoRefDto, RepoStatusDto,
+    StateDto, TranscriptDto, UnmergedFileDto, WorktreeDto,
 };
 use crate::sessions;
 use crate::settings::{SettingsDto, is_supported_image};
 use crate::state::AppState;
+use crate::worktrees::{self, CheckoutPlan, Released, SessionWorktree};
 use egant_harness::{AgentId, AgentModel, AgentStatus, CatalogStatus, InstallOutcome, UpdateInfo};
 
 type BackendState<'a> = State<'a, Mutex<AppState>>;
@@ -30,7 +34,7 @@ fn get_state(state: BackendState<'_>) -> StateDto {
 }
 
 #[tauri::command]
-fn add_project(
+async fn add_project(
     app: AppHandle,
     state: BackendState<'_>,
     path: String,
@@ -38,26 +42,36 @@ fn add_project(
     model: Option<String>,
     variant: Option<String>,
     context: Option<u64>,
+    checkout: Option<CheckoutPlan>,
 ) -> Result<StateDto, String> {
     log::info!("add_project path={path} agent={agent:?}");
+    // Two locked stretches with the (blocking) worktree call between them, so
+    // `git worktree add` never runs with the state lock held. See
+    // [`cut_worktree`].
+    let project_id = {
+        let mut guard = state.lock().unwrap();
+        // Re-opening a folder that is already open must select it, not stack a
+        // duplicate empty session beside it. The path is verified and
+        // canonicalized inside `add_project`, so `/tmp/x`, `/private/tmp/x`
+        // and a differently cased spelling of the same folder on macOS all
+        // land on one row — but that check lives here too so a re-open returns
+        // without spawning a second session.
+        let incoming = PathBuf::from(&path);
+        if let Some(existing) = guard
+            .projects
+            .iter()
+            .find(|p| crate::project::same_project(&p.fs_path(), &incoming))
+        {
+            let id = existing.id;
+            guard.select_project(id);
+            return Ok(guard.snapshot());
+        }
+        guard.add_project(incoming)?
+    };
+
+    let worktree = resolve_checkout(&state, project_id, checkout).await?;
+
     let mut guard = state.lock().unwrap();
-    // Re-opening a folder that is already open must select it, not stack a
-    // duplicate empty session beside it. The path is verified and
-    // canonicalized inside `add_project`, so `/tmp/x`, `/private/tmp/x` and
-    // a differently cased spelling of the same folder on macOS all land on
-    // one row — but that check lives here too so a re-open returns without
-    // spawning a second session.
-    let incoming = PathBuf::from(&path);
-    if let Some(existing) = guard
-        .projects
-        .iter()
-        .find(|p| crate::project::same_project(&p.fs_path(), &incoming))
-    {
-        let id = existing.id;
-        guard.select_project(id);
-        return Ok(guard.snapshot());
-    }
-    let id = guard.add_project(incoming)?;
     let requested = agent
         .as_deref()
         .and_then(AgentId::from_str)
@@ -65,12 +79,20 @@ fn add_project(
     let model = model.filter(|model| !model.trim().is_empty());
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
-    sessions::spawn_session(&app, &mut guard, id, requested, model, variant, context).map_err(
-        |error| {
-            log::error!("add_project spawn failed: {error}");
-            error
-        },
-    )?;
+    sessions::spawn_session(
+        &app,
+        &mut guard,
+        project_id,
+        requested,
+        model,
+        variant,
+        context,
+        worktree,
+    )
+    .map_err(|error| {
+        log::error!("add_project spawn failed: {error}");
+        error
+    })?;
     Ok(guard.snapshot())
 }
 
@@ -103,20 +125,28 @@ fn clear_active_project(state: BackendState<'_>) -> StateDto {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn create_session(
+async fn create_session(
     app: AppHandle,
     state: BackendState<'_>,
     agent: Option<String>,
     model: Option<String>,
     variant: Option<String>,
     context: Option<u64>,
+    checkout: Option<CheckoutPlan>,
 ) -> Result<StateDto, String> {
-    log::info!("create_session agent={agent:?} model={model:?}");
-    let mut guard = state.lock().unwrap();
-    let Some(project) = guard.active_project else {
-        log::warn!("create_session with no folder open");
-        return Err("open a folder first".to_string());
+    log::info!("create_session agent={agent:?} model={model:?} checkout={checkout:?}");
+    let project = {
+        let guard = state.lock().unwrap();
+        let Some(project) = guard.active_project else {
+            log::warn!("create_session with no folder open");
+            return Err("open a folder first".to_string());
+        };
+        project
     };
+
+    let worktree = resolve_checkout(&state, project, checkout).await?;
+
+    let mut guard = state.lock().unwrap();
     let requested = agent
         .as_deref()
         .and_then(AgentId::from_str)
@@ -124,13 +154,210 @@ fn create_session(
     let model = model.filter(|model| !model.trim().is_empty());
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
-    sessions::spawn_session(&app, &mut guard, project, requested, model, variant, context).map_err(
-        |error| {
-            log::error!("create_session spawn failed: {error}");
-            error
-        },
-    )?;
+    sessions::spawn_session(
+        &app,
+        &mut guard,
+        project,
+        requested,
+        model,
+        variant,
+        context,
+        worktree,
+    )
+    .map_err(|error| {
+        log::error!("create_session spawn failed: {error}");
+        error
+    })?;
     Ok(guard.snapshot())
+}
+
+/// Resolves the composer's checkout pick into the worktree a session starts in.
+///
+/// `plan` is what the chips resolved to; `None` falls back to the saved default
+/// (the chip's own remembered state), so a caller that never showed the chips —
+/// opening a folder from the sidebar, say — still does what the user last
+/// picked. The git work runs on the blocking pool with no lock held: on a large
+/// repository `worktree add` writes a whole checkout, and the window has to
+/// keep drawing while it does.
+async fn resolve_checkout(
+    state: &BackendState<'_>,
+    project_id: usize,
+    plan: Option<CheckoutPlan>,
+) -> Result<Option<SessionWorktree>, String> {
+    let (plan, project_path) = {
+        let guard = state.lock().unwrap();
+        let plan = plan.unwrap_or(if guard.settings.worktree_default {
+            CheckoutPlan::NewWorktree { base: None }
+        } else {
+            CheckoutPlan::CurrentCheckout
+        });
+        if matches!(plan, CheckoutPlan::CurrentCheckout) {
+            return Ok(None);
+        }
+        let Some(project) = guard.project(project_id) else {
+            return Err("unknown project".to_string());
+        };
+        (plan, project.fs_path())
+    };
+    tauri::async_runtime::spawn_blocking(move || worktrees::prepare(&plan, &project_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Which comparison the Diffs tab is showing. Mirrors the frontend's own
+/// `DiffScope`, so the panel's dropdown and the git call behind it are one
+/// shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DiffScopeArg {
+    /// Uncommitted work: the index against HEAD, and the disk against the
+    /// index. `staged` picks the side when one file is being diffed.
+    WorkingTree {
+        #[serde(default)]
+        staged: bool,
+    },
+    /// Everything this branch adds over the branch it was cut from, the
+    /// working tree included.
+    Branch { base: Option<String> },
+    /// What has changed since the session's current turn began.
+    Turn { session: u64 },
+    /// One commit, against its first parent.
+    Commit { sha: String },
+}
+
+/// The point in history a scope measures from. `None` is the working tree
+/// itself, which is the one scope that isn't measured from a tree at all.
+enum ScopeBase {
+    /// A tree id, as `egant-vcs` hands them out.
+    Tree(String),
+    Commit(String),
+}
+
+/// Turns the panel's scope into something git can be asked about.
+///
+/// Both fallbacks here are deliberate. A branch scope with no base named falls
+/// back to the repository's integration branch, because "what does this branch
+/// add" has an answer even when nobody said what it was cut from. A turn scope
+/// with no baseline yet — no turn has run in this session since the app
+/// started — falls back to HEAD, which reads as "everything uncommitted": more
+/// than the turn did, never less, and it stops the tab from being empty for a
+/// reason the user can't see.
+fn resolve_scope(
+    state: &BackendState<'_>,
+    repo: &egant_vcs::Repo,
+    scope: &DiffScopeArg,
+) -> Result<Option<ScopeBase>, String> {
+    match scope {
+        DiffScopeArg::WorkingTree { .. } => Ok(None),
+        DiffScopeArg::Commit { sha } => Ok(Some(ScopeBase::Commit(sha.clone()))),
+        DiffScopeArg::Branch { base } => {
+            let base = base.clone().or_else(|| default_base(repo));
+            let Some(base) = base else {
+                return Err("nothing to compare this branch against".to_string());
+            };
+            let tree = repo
+                .merge_base_tree(&base)
+                .map_err(|error| format!("could not find where this branch left {base}: {error}"))?;
+            Ok(Some(ScopeBase::Tree(tree)))
+        }
+        DiffScopeArg::Turn { session } => {
+            let baseline = {
+                let guard = state.lock().unwrap();
+                guard
+                    .sessions
+                    .get(session)
+                    .and_then(|session| session.turn_baseline.clone())
+            };
+            match baseline {
+                Some(tree) => Ok(Some(ScopeBase::Tree(tree))),
+                None => {
+                    let head = repo
+                        .head_tree()
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| "this repository has no commits yet".to_string())?;
+                    Ok(Some(ScopeBase::Tree(head)))
+                }
+            }
+        }
+    }
+}
+
+/// The branch a repository integrates into, for a branch scope nobody named a
+/// base for: what `origin/HEAD` points at, else the usual two names, else
+/// nothing.
+fn default_base(repo: &egant_vcs::Repo) -> Option<String> {
+    for candidate in ["origin/HEAD", "main", "master"] {
+        if repo.has_ref(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// A page of the repository's commit graph, for the panel's History tab.
+#[tauri::command]
+async fn git_history(
+    root: String,
+    cursor: Option<usize>,
+    limit: Option<usize>,
+) -> Result<HistoryPageDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        let page = repo
+            .history(None, cursor.unwrap_or(0), limit.unwrap_or(60).clamp(1, 200))
+            .map_err(|error| error.to_string())?;
+        Ok(HistoryPageDto {
+            commits: page
+                .commits
+                .into_iter()
+                .map(|commit| CommitDto {
+                    sha: commit.sha,
+                    parents: commit.parents,
+                    subject: commit.subject,
+                    author_name: commit.author_name,
+                    author_email: commit.author_email,
+                    authored_unix: commit.authored_unix,
+                    refs: commit
+                        .refs
+                        .into_iter()
+                        .map(|reference| CommitRefDto {
+                            kind: match reference.kind {
+                                egant_vcs::RefKind::Branch => "branch",
+                                egant_vcs::RefKind::Remote => "remote",
+                                egant_vcs::RefKind::Tag => "tag",
+                            },
+                            label: reference.label,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            head_sha: page.head_sha,
+            next_cursor: page.next_cursor,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Local branches, most recently committed to first, each saying where it is
+/// checked out — the composer's ref picker.
+#[tauri::command]
+async fn repo_refs(root: String) -> Result<Vec<RepoRefDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        let store = egant_vcs::WorktreeStore::with_default_base(repo.root());
+        let refs = store.refs().map_err(|error| error.to_string())?;
+        Ok(refs
+            .into_iter()
+            .map(|row| RepoRefDto {
+                name: row.name,
+                current: row.current,
+                worktree_path: row.worktree_path.map(|path| path.display().to_string()),
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Opens a session that runs `agent`'s own CLI in a terminal instead of
@@ -140,14 +367,25 @@ fn create_session(
 /// Errors when the CLI isn't installed, so the picker can say which agent
 /// and why rather than opening a terminal onto "command not found".
 #[tauri::command]
-fn create_cli_session(state: BackendState<'_>, agent: String) -> Result<StateDto, String> {
-    log::info!("create_cli_session agent={agent}");
-    let mut guard = state.lock().unwrap();
-    let Some(project) = guard.active_project else {
-        log::warn!("create_cli_session with no folder open");
-        return Err("open a folder first".to_string());
+async fn create_cli_session(
+    state: BackendState<'_>,
+    agent: String,
+    checkout: Option<CheckoutPlan>,
+) -> Result<StateDto, String> {
+    log::info!("create_cli_session agent={agent} checkout={checkout:?}");
+    let project = {
+        let guard = state.lock().unwrap();
+        let Some(project) = guard.active_project else {
+            log::warn!("create_cli_session with no folder open");
+            return Err("open a folder first".to_string());
+        };
+        project
     };
-    sessions::spawn_cli_session(&mut guard, project, &agent).map_err(|error| {
+
+    let worktree = resolve_checkout(&state, project, checkout).await?;
+
+    let mut guard = state.lock().unwrap();
+    sessions::spawn_cli_session(&mut guard, project, &agent, worktree).map_err(|error| {
         log::error!("create_cli_session failed: {error}");
         error
     })?;
@@ -178,11 +416,93 @@ fn select_session(state: BackendState<'_>, id: u64) -> Result<StateDto, String> 
     Ok(guard.snapshot())
 }
 
+/// Closes a session and gives its worktree back, when it had one.
+///
+/// `force` is the user answering "delete it anyway" to a worktree that was
+/// kept; without it the decision is [`worktrees::release`]'s, and a checkout
+/// holding work is left on disk with a notice saying where.
 #[tauri::command]
-fn close_session(state: BackendState<'_>, id: u64) -> Result<StateDto, String> {
-    let mut guard = state.lock().unwrap();
-    sessions::close_session(&mut guard, id);
-    Ok(guard.snapshot())
+async fn close_session(
+    state: BackendState<'_>,
+    id: u64,
+    force: Option<bool>,
+) -> Result<CloseResultDto, String> {
+    let worktree = {
+        let mut guard = state.lock().unwrap();
+        sessions::close_session(&mut guard, id)
+    };
+
+    let mut notice = None;
+    let mut kept = None;
+    if let Some(worktree) = worktree {
+        let force = force.unwrap_or(false);
+        let dto = worktree_dto(&worktree);
+        let released =
+            tauri::async_runtime::spawn_blocking(move || worktrees::release(&worktree, force))
+                .await
+                .map_err(|error| error.to_string())?;
+        match released {
+            // The expected outcomes, neither worth a line on screen: the
+            // checkout went with the conversation, or it was never egant's.
+            Released::Removed { .. } | Released::NotOurs => {}
+            Released::Kept { why, path } => {
+                notice = Some(format!(
+                    "Kept the worktree at {} — {why}.",
+                    path.display()
+                ));
+                kept = Some(dto);
+            }
+        }
+    }
+
+    let snapshot = state.lock().unwrap().snapshot();
+    Ok(CloseResultDto {
+        state: snapshot,
+        notice,
+        kept,
+    })
+}
+
+/// Removes a worktree that closing its session decided to keep — the
+/// "Delete it anyway" the notice offers, once the user has seen what is in it.
+///
+/// Takes the worktree's own fields rather than a session id because by the
+/// time this can be called the session that owned it is gone.
+#[tauri::command]
+async fn discard_worktree(
+    repo_root: String,
+    path: String,
+    branch: String,
+    base: String,
+) -> Result<(), String> {
+    log::info!("discard_worktree {branch} at {path}");
+    let worktree = SessionWorktree {
+        name: Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        repo_root: PathBuf::from(repo_root),
+        path: PathBuf::from(path),
+        branch,
+        base,
+        // Only a worktree egant made can end up here: a borrowed one is never
+        // kept back, so the notice that offers this never names one.
+        owned: true,
+    };
+    tauri::async_runtime::spawn_blocking(move || worktrees::release(&worktree, true))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn worktree_dto(worktree: &SessionWorktree) -> WorktreeDto {
+    WorktreeDto {
+        path: worktree.path.display().to_string(),
+        branch: worktree.branch.clone(),
+        name: worktree.name.clone(),
+        base: worktree.base.clone(),
+        repo_root: worktree.repo_root.display().to_string(),
+    }
 }
 
 /// Sends a turn, returning the session's new title when the turn renamed it
@@ -333,6 +653,15 @@ fn set_default_agent(state: BackendState<'_>, agent: String) -> Result<SettingsD
 /// Every known agent with its CLI presence and login state. Detection is a
 /// filesystem probe, never a spawn, so this stays cheap enough to call on
 /// every settings open.
+/// The launch screen's worktree toggle: applies to the session about to start
+/// and stays as the default for the next one.
+#[tauri::command]
+fn set_worktree_default(state: BackendState<'_>, on: bool) -> SettingsDto {
+    let mut guard = state.lock().unwrap();
+    guard.settings.set_worktree_default(on);
+    guard.settings.dto()
+}
+
 #[tauri::command]
 fn list_agents() -> Vec<AgentStatus> {
     let agents = egant_harness::detect_agents();
@@ -587,15 +916,32 @@ fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<(),
 
 /// What git reports as changed in the project, staged rows first.
 #[tauri::command]
-fn changes_list(path: String) -> Result<Vec<ChangeDto>, String> {
+fn changes_list(
+    state: BackendState<'_>,
+    path: String,
+    scope: Option<DiffScopeArg>,
+) -> Result<Vec<ChangeDto>, String> {
     let repo = egant_vcs::Repo::discover(&path).map_err(|error| {
         log::warn!("changes_list {path} discover failed: {error}");
         error.to_string()
     })?;
-    let changes = repo.changes().map_err(|error| {
-        log::warn!("changes_list {path} failed: {error}");
-        error.to_string()
-    })?;
+    let scope = scope.unwrap_or(DiffScopeArg::WorkingTree { staged: false });
+    let changes = match resolve_scope(&state, &repo, &scope)? {
+        // The working tree is the only scope with two sides to it — the index
+        // and the disk — and the only one the panel can act on.
+        None => repo.changes().map_err(|error| {
+            log::warn!("changes_list {path} failed: {error}");
+            error.to_string()
+        })?,
+        Some(ScopeBase::Tree(tree)) => repo.changes_since(&tree).map_err(|error| {
+            log::warn!("changes_list {path} scope failed: {error}");
+            error.to_string()
+        })?,
+        Some(ScopeBase::Commit(sha)) => repo.commit_changes(&sha).map_err(|error| {
+            log::warn!("changes_list {path} commit {sha} failed: {error}");
+            error.to_string()
+        })?,
+    };
 
     let mut rows: Vec<ChangeDto> = changes
         .into_iter()
@@ -614,11 +960,22 @@ fn changes_list(path: String) -> Result<Vec<ChangeDto>, String> {
 }
 
 #[tauri::command]
-fn diff_file(root: String, path: String, staged: bool) -> Result<Vec<DiffHunkDto>, String> {
+fn diff_file(
+    state: BackendState<'_>,
+    root: String,
+    path: String,
+    scope: Option<DiffScopeArg>,
+) -> Result<Vec<DiffHunkDto>, String> {
     let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
-    let hunks = repo
-        .diff(Path::new(&path), staged)
-        .map_err(|error| error.to_string())?;
+    let scope = scope.unwrap_or(DiffScopeArg::WorkingTree { staged: false });
+    let staged = matches!(scope, DiffScopeArg::WorkingTree { staged: true });
+    let file = Path::new(&path);
+    let hunks = match resolve_scope(&state, &repo, &scope)? {
+        None => repo.diff(file, staged),
+        Some(ScopeBase::Tree(tree)) => repo.diff_since(&tree, file),
+        Some(ScopeBase::Commit(sha)) => repo.commit_diff(&sha, file),
+    }
+    .map_err(|error| error.to_string())?;
     Ok(hunks
         .into_iter()
         .map(|hunk| DiffHunkDto {
@@ -672,12 +1029,15 @@ fn repo_status(path: String) -> Result<RepoStatusDto, String> {
                 .cloned()
         });
     Ok(RepoStatusDto {
+        default_base: default_base(&repo),
         root: repo.root().display().to_string(),
         branch,
         head_summary,
         ahead: ahead_behind.map(|(ahead, _)| ahead),
         behind: ahead_behind.map(|(_, behind)| behind),
         published,
+        upstream: repo.upstream_branch(),
+        last_fetched_unix: repo.last_fetch_unix(),
         remote,
     })
 }
@@ -785,6 +1145,7 @@ fn repo_branch(path: String) -> Result<Option<String>, String> {
 async fn git_pull(root: String, remote: String, branch: String) -> Result<String, String> {
     log::info!("git_pull {remote}/{branch} in {root}");
     tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::ensure_clear(Path::new(&root)).map_err(|error| error.to_string())?;
         egant_vcs::remote::pull_ff_only(Path::new(&root), &remote, &branch)
             .map(|output| output.summary().to_owned())
             .map_err(|error| error.to_string())
@@ -793,6 +1154,219 @@ async fn git_pull(root: String, remote: String, branch: String) -> Result<String
     .map_err(|error| error.to_string())?
     .map_err(|error| {
         log::error!("git_pull failed: {error}");
+        error
+    })
+}
+
+/// Merges the upstream (e.g. `origin/main`) into the current branch.
+///
+/// Explicit-only companion to `git_pull`: fast-forward pull refuses diverged
+/// branches on purpose, so this is the button that says "yes, merge them".
+/// Creates a merge commit; conflicts fail with git's own output and leave the
+/// tree conflicted for the panel to show.
+#[tauri::command]
+async fn git_merge(root: String, upstream: String) -> Result<String, String> {
+    log::info!("git_merge {upstream} in {root}");
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::ensure_clear(Path::new(&root)).map_err(|error| error.to_string())?;
+        egant_vcs::remote::merge_no_edit(Path::new(&root), &upstream)
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("git_merge failed: {error}");
+        error
+    })
+}
+
+/// Rebases the current branch onto its upstream.
+///
+/// Rewrites local commits — the banner confirms before calling this. A
+/// conflict stops mid-rebase for terminal resolution; the error says so.
+#[tauri::command]
+async fn git_rebase(root: String, upstream: String) -> Result<String, String> {
+    log::info!("git_rebase {upstream} in {root}");
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::ensure_clear(Path::new(&root)).map_err(|error| error.to_string())?;
+        egant_vcs::remote::rebase_onto(Path::new(&root), &upstream)
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("git_rebase failed: {error}");
+        error
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Conflict resolution
+// ---------------------------------------------------------------------------
+
+fn operation_name(operation: Option<egant_vcs::OperationKind>) -> &'static str {
+    match operation {
+        Some(egant_vcs::OperationKind::Merge) => "merge",
+        Some(egant_vcs::OperationKind::Rebase) => "rebase",
+        None => "none",
+    }
+}
+
+fn unmerged_kind_name(kind: egant_vcs::UnmergedKind) -> &'static str {
+    use egant_vcs::UnmergedKind;
+    match kind {
+        UnmergedKind::BothModified => "bothModified",
+        UnmergedKind::BothAdded => "bothAdded",
+        UnmergedKind::BothDeleted => "bothDeleted",
+        UnmergedKind::AddedByUs => "addedByUs",
+        UnmergedKind::AddedByThem => "addedByThem",
+        UnmergedKind::DeletedByUs => "deletedByUs",
+        UnmergedKind::DeletedByThem => "deletedByThem",
+    }
+}
+
+fn parse_side(side: &str) -> Result<egant_vcs::ConflictSide, String> {
+    match side {
+        "ours" => Ok(egant_vcs::ConflictSide::Ours),
+        "theirs" => Ok(egant_vcs::ConflictSide::Theirs),
+        "both" => Ok(egant_vcs::ConflictSide::Both),
+        other => Err(format!("unknown conflict side {other:?}")),
+    }
+}
+
+/// Whether a merge/rebase is stalled, and which files it left unmerged — what
+/// the conflict toolbar renders itself from.
+#[tauri::command]
+async fn conflict_status(root: String) -> Result<ConflictStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state =
+            egant_vcs::conflict::detect(Path::new(&root)).map_err(|error| error.to_string())?;
+        Ok(ConflictStatusDto {
+            operation: operation_name(state.operation).to_owned(),
+            files: state
+                .files
+                .into_iter()
+                .map(|file| UnmergedFileDto {
+                    path: file.path.display().to_string(),
+                    kind: unmerged_kind_name(file.kind).to_owned(),
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// The `<<<<<<<`/`=======`/`>>>>>>>` regions in one conflicted file, for the
+/// quick-action buttons the inline viewer draws over each one. Empty for a
+/// delete conflict, which has no markers to show.
+#[tauri::command]
+fn conflict_blocks(root: String, path: String) -> Result<Vec<ConflictBlockDto>, String> {
+    let full = Path::new(&root).join(&path);
+    let text = std::fs::read_to_string(&full).map_err(|error| error.to_string())?;
+    Ok(egant_vcs::conflict::parse_markers(&text)
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| ConflictBlockDto {
+            index,
+            start_line: block.start_line,
+            end_line: block.end_line,
+            ours_label: block.ours_label,
+            theirs_label: block.theirs_label,
+            ours: block.ours,
+            theirs: block.theirs,
+        })
+        .collect())
+}
+
+/// Resolves one file entirely to `side` — `resolveWithOurs`/`resolveWithTheirs`
+/// from the toolbar's per-file actions, plus `both` for a content conflict.
+#[tauri::command]
+async fn resolve_conflict_file(root: String, path: String, side: String) -> Result<(), String> {
+    log::info!("resolve_conflict_file {path} side={side} in {root}");
+    let side = parse_side(&side)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::resolve_file(Path::new(&root), Path::new(&path), side)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Resolves one `<<<<<<<`/`>>>>>>>` block inside a file — the inline viewer's
+/// per-conflict quick action, leaving any other block in the same file alone.
+#[tauri::command]
+async fn resolve_conflict_block(
+    root: String,
+    path: String,
+    index: usize,
+    side: String,
+) -> Result<(), String> {
+    log::info!("resolve_conflict_block {path}#{index} side={side} in {root}");
+    let side = parse_side(&side)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::resolve_block(Path::new(&root), Path::new(&path), index, side)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// "Keep All Local Changes" / "Accept All Incoming Changes": resolves every
+/// currently unmerged file to one side, then finishes the operation the same
+/// way `continue_conflict_operation` does.
+#[tauri::command]
+async fn resolve_all_conflicts(root: String, side: String) -> Result<String, String> {
+    log::info!("resolve_all_conflicts side={side} in {root}");
+    let side = parse_side(&side)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&root);
+        egant_vcs::conflict::resolve_all(root, side).map_err(|error| error.to_string())?;
+        egant_vcs::conflict::continue_operation(root)
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("resolve_all_conflicts failed: {error}");
+        error
+    })
+}
+
+/// `git rebase --continue` / a no-edit merge commit, once every file is clean.
+#[tauri::command]
+async fn continue_conflict_operation(root: String) -> Result<String, String> {
+    log::info!("continue_conflict_operation in {root}");
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::continue_operation(Path::new(&root))
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("continue_conflict_operation failed: {error}");
+        error
+    })
+}
+
+/// "Abort & Reset": `git merge --abort` or `git rebase --abort`, whichever is
+/// actually in progress.
+#[tauri::command]
+async fn abort_conflict_operation(root: String) -> Result<String, String> {
+    log::info!("abort_conflict_operation in {root}");
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_vcs::conflict::abort(Path::new(&root))
+            .map(|output| output.summary().to_owned())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::error!("abort_conflict_operation failed: {error}");
         error
     })
 }
@@ -896,6 +1470,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         create_cli_session,
         select_session,
         close_session,
+        discard_worktree,
         send_message,
         interrupt_session,
         answer_permission,
@@ -906,6 +1481,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         set_wallpaper,
         cycle_dim,
         set_default_agent,
+        set_worktree_default,
         list_agents,
         list_agent_catalog,
         install_agent,
@@ -932,6 +1508,8 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::pty::pty_kill,
         changes_list,
         repo_status,
+        repo_refs,
+        git_history,
         discard_files,
         blob_data_url,
         blob_text,
@@ -945,7 +1523,16 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         git_remotes,
         git_push,
         git_pull,
+        git_merge,
+        git_rebase,
         git_publish,
         git_fetch,
+        conflict_status,
+        conflict_blocks,
+        resolve_conflict_file,
+        resolve_conflict_block,
+        resolve_all_conflicts,
+        continue_conflict_operation,
+        abort_conflict_operation,
     ]
 }

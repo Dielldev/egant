@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { CliLaunchDialog } from "./components/CliLaunchDialog";
 import { CliStage } from "./components/CliStage";
+import { ConflictFileView } from "./components/ConflictResolution";
 import { DiffTabView } from "./components/DiffTabView";
 import { FileView } from "./components/FileView";
 import { LaunchScreen } from "./components/LaunchScreen";
+import { NoticeToast } from "./components/NoticeToast";
 import { LogoLoader } from "./components/Logo";
 import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
@@ -49,6 +51,7 @@ export default function App() {
   const settingsOpen = useEgant((s) => s.settingsOpen);
   const startingNewSession = useEgant((s) => s.startingNewSession);
   const panelOpen = useEgant((s) => s.panelOpen);
+  const panelMaximized = useEgant((s) => s.panelMaximized);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -142,6 +145,12 @@ export default function App() {
         case "j":
           e.preventDefault();
           store.togglePanel();
+          break;
+        // Shift makes it fill the window. `e.key` is already the shifted
+        // character, which is what tells the two apart.
+        case "J":
+          e.preventDefault();
+          store.togglePanelMaximized();
           break;
         case "Escape":
           e.preventDefault();
@@ -255,12 +264,35 @@ export default function App() {
             fill instead (see `.stage-glass`). The tint stays on underneath
             in every state now — `heroVisible`'s wallpaper dissolves off the
             top of it on dock instead of the stage cutting to it in one frame. */}
-          <div className="stage-glass relative flex h-full min-w-[420px] flex-1 flex-col overflow-hidden">
+          {/* The stage slides out from under a maximizing panel rather than
+            being squeezed by it: the panel's width animates over 280ms, and
+            without this the transcript would reflow through every width on the
+            way. Fading as it goes is what makes the squeeze invisible. */}
+          <div
+            style={{
+              transition:
+                "opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+            }}
+            className={`stage-glass relative flex h-full flex-1 flex-col overflow-hidden ${
+              // Only while there is a panel to have taken the room: the
+              // maximized flag outlives closing the panel, and a stage slid
+              // out from under nothing is an empty window.
+              panelMaximized && panelOpen
+                ? "pointer-events-none min-w-0 -translate-x-10 opacity-0"
+                : "min-w-0 translate-x-0 opacity-100"
+            }`}
+          >
             {heroVisible && <Wallpaper launch exiting={docking} />}
+            {/* Outside the stage's own states: closing the last conversation
+              is exactly when there is something to say about its worktree,
+              and by then the transcript it would have sat above is gone. */}
+            <NoticeToast />
             <div className="relative z-10 flex h-full flex-col">
               <SessionHeader bare={stage !== "thread"} />
               <StageTabs sessionKey={stageKey} />
-              {openTab?.kind === "diff" ? (
+              {openTab?.kind === "diff" && openTab.status === "conflicted" ? (
+                <ConflictFileView tab={openTab} />
+              ) : openTab?.kind === "diff" ? (
                 <DiffTabView tab={openTab} />
               ) : openTab ? (
                 <FileView path={openTab.path} name={openTab.name} />

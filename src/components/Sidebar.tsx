@@ -1,7 +1,16 @@
-import { Check, ChevronRight, ListFilter, Plus, Search, TerminalSquare, X } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  FolderGit2,
+  ListFilter,
+  Plus,
+  Search,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { shouldOpenUpward } from "../lib/popover";
-import type { SessionInfo } from "../lib/types";
+import type { SessionInfo, WorktreeInfo } from "../lib/types";
 import { agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 import { useEgant } from "../store";
@@ -31,8 +40,12 @@ export function Sidebar() {
   const setSidebarShowBranch = useEgant((s) => s.setSidebarShowBranch);
   const sidebarShowHarness = useEgant((s) => s.sidebarShowHarness);
   const setSidebarShowHarness = useEgant((s) => s.setSidebarShowHarness);
+  const sidebarWorktreesOnly = useEgant((s) => s.sidebarWorktreesOnly);
+  const setSidebarWorktreesOnly = useEgant((s) => s.setSidebarWorktreesOnly);
   const collapsedProjects = useEgant((s) => s.collapsedProjects);
   const toggleProjectCollapsed = useEgant((s) => s.toggleProjectCollapsed);
+  const collapsedWorktrees = useEgant((s) => s.collapsedWorktrees);
+  const toggleWorktreeCollapsed = useEgant((s) => s.toggleWorktreeCollapsed);
   const selectProject = useEgant((s) => s.selectProject);
   const selectSession = useEgant((s) => s.selectSession);
   const closeSession = useEgant((s) => s.closeSession);
@@ -94,8 +107,9 @@ export function Sidebar() {
 
   const matched = sessions.filter(
     (session) =>
-      needle === "" ||
-      `${session.title} ${projectNameOf(session.projectId)}`.toLowerCase().includes(needle),
+      (!sidebarWorktreesOnly || session.worktree != null) &&
+      (needle === "" ||
+        `${session.title} ${projectNameOf(session.projectId)}`.toLowerCase().includes(needle)),
   );
 
   const rows = useMemo(() => {
@@ -110,7 +124,12 @@ export function Sidebar() {
 
   // Grouping preserves the sort order above — a group's position is wherever
   // its first (by that order) session lands, so switching sort still moves
-  // the groups sensibly instead of relying on project-list order.
+  // the groups sensibly instead of relying on project-list order. Within a
+  // project, sessions running in their own worktree are further split into
+  // one folder per worktree — the checkout is what actually separates them,
+  // same as separate branches in a real folder tree — while sessions still on
+  // the project's own checkout stay flat under the project, as they always
+  // did.
   const groups = useMemo(() => {
     if (sidebarOrganize !== "byProject") return null;
     const map = new Map<number, SessionInfo[]>();
@@ -119,7 +138,30 @@ export function Sidebar() {
       if (list) list.push(session);
       else map.set(session.projectId, [session]);
     }
-    return Array.from(map.entries());
+    return Array.from(map.entries()).map(([projectId, list]) => {
+      const main: SessionInfo[] = [];
+      const worktreeOrder: string[] = [];
+      const worktreeMap = new Map<string, { worktree: WorktreeInfo; sessions: SessionInfo[] }>();
+      for (const session of list) {
+        const worktree = session.worktree;
+        if (!worktree) {
+          main.push(session);
+          continue;
+        }
+        const entry = worktreeMap.get(worktree.path);
+        if (entry) entry.sessions.push(session);
+        else {
+          worktreeMap.set(worktree.path, { worktree, sessions: [session] });
+          worktreeOrder.push(worktree.path);
+        }
+      }
+      return {
+        projectId,
+        total: list.length,
+        main,
+        worktrees: worktreeOrder.map((path) => worktreeMap.get(path)!),
+      };
+    });
   }, [rows, sidebarOrganize]);
 
   const rowProps = (session: SessionInfo) => {
@@ -148,6 +190,14 @@ export function Sidebar() {
     const run = async () => {
       if (snapshot?.activeProject !== projectId) await selectProject(projectId);
       await createSession();
+    };
+    void run();
+  };
+
+  const newSessionInWorktree = (projectId: number, worktree: WorktreeInfo) => {
+    const run = async () => {
+      if (snapshot?.activeProject !== projectId) await selectProject(projectId);
+      await createSession(worktree);
     };
     void run();
   };
@@ -233,6 +283,15 @@ export function Sidebar() {
                   </OptionRow>
 
                   <div className="mx-1.5 my-1 border-t border-[var(--border)]" />
+                  <SectionLabel>Filter</SectionLabel>
+                  <OptionRow
+                    checked={sidebarWorktreesOnly}
+                    onClick={() => setSidebarWorktreesOnly(!sidebarWorktreesOnly)}
+                  >
+                    Worktrees only
+                  </OptionRow>
+
+                  <div className="mx-1.5 my-1 border-t border-[var(--border)]" />
                   <SectionLabel>Sort</SectionLabel>
                   <OptionRow
                     checked={sidebarSort === "updated"}
@@ -270,7 +329,7 @@ export function Sidebar() {
 
       <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1.5 pb-2">
         {groups
-          ? groups.map(([projectId, list]) => {
+          ? groups.map(({ projectId, total, main, worktrees }) => {
               // A search in progress overrides collapse: hiding the very
               // match the user is looking for would defeat the search.
               const collapsed = needle === "" && !!collapsedProjects[String(projectId)];
@@ -299,7 +358,7 @@ export function Sidebar() {
                     </button>
                     {collapsed && (
                       <span className="shrink-0 text-[10.5px] text-[var(--faint)]">
-                        {list.length}
+                        {total}
                       </span>
                     )}
                     <button
@@ -311,10 +370,64 @@ export function Sidebar() {
                       <Plus size={12} strokeWidth={2} />
                     </button>
                   </div>
-                  {!collapsed &&
-                    list.map((session) => (
-                      <SessionRow {...rowProps(session)} showProject={false} />
-                    ))}
+                  {!collapsed && (
+                    <>
+                      {main.map((session) => (
+                        <SessionRow {...rowProps(session)} showProject={false} />
+                      ))}
+                      {worktrees.map(({ worktree, sessions }) => {
+                        const worktreeKey = `${projectId}:${worktree.path}`;
+                        const worktreeCollapsed =
+                          needle === "" && !!collapsedWorktrees[worktreeKey];
+                        return (
+                          <div key={worktreeKey} className="flex flex-col gap-px">
+                            <div className="group flex w-full items-center gap-1 rounded-md py-1 pr-1 pl-4">
+                              <button
+                                type="button"
+                                title={worktreeCollapsed ? "Expand" : "Collapse"}
+                                onClick={() => toggleWorktreeCollapsed(worktreeKey)}
+                                className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                              >
+                                <ChevronRight
+                                  size={10}
+                                  strokeWidth={2.5}
+                                  className={`transition-transform ${worktreeCollapsed ? "" : "rotate-90"}`}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                title={`${worktree.branch} — cut from ${worktree.base}`}
+                                onClick={() => toggleWorktreeCollapsed(worktreeKey)}
+                                className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left text-[var(--faint)] hover:text-[var(--ink)]"
+                              >
+                                <FolderGit2 size={11} strokeWidth={2} className="shrink-0" />
+                                <span className="min-w-0 flex-1 truncate text-[11.5px] font-normal">
+                                  {worktree.name}
+                                </span>
+                              </button>
+                              {worktreeCollapsed && (
+                                <span className="shrink-0 text-[10.5px] text-[var(--faint)]">
+                                  {sessions.length}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                title={`New conversation in ${worktree.name}`}
+                                onClick={() => newSessionInWorktree(projectId, worktree)}
+                                className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] opacity-100 hover:bg-[var(--hover)] hover:text-[var(--ink)] group-hover:opacity-100"
+                              >
+                                <Plus size={11} strokeWidth={2} />
+                              </button>
+                            </div>
+                            {!worktreeCollapsed &&
+                              sessions.map((session) => (
+                                <SessionRow {...rowProps(session)} showProject={false} indent />
+                              ))}
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
                 </div>
               );
             })
@@ -406,6 +519,7 @@ function SessionRow({
   agent,
   cli,
   branch,
+  indent,
   onClick,
   onClose,
 }: {
@@ -419,6 +533,8 @@ function SessionRow({
   /** This session is the agent's own CLI in a terminal, not a chat. */
   cli?: boolean;
   branch?: string | null;
+  /** Nested under a worktree folder — pushed in to read as a child of it. */
+  indent?: boolean;
   onClick: () => void;
   onClose: () => void;
 }) {
@@ -431,9 +547,9 @@ function SessionRow({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
-      className={`group flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] text-left ${
-        selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"
-      }`}
+      className={`group flex w-full cursor-pointer items-center gap-2 rounded-md py-[5px] pr-2 text-left ${
+        indent ? "pl-8" : "pl-2"
+      } ${selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"}`}
     >
       <ProviderGlyph
         provider={AGENT_PROVIDER[agent] ?? agent}

@@ -371,10 +371,89 @@ pub struct SessionDto {
     pub model_override: Option<String>,
     /// Context window override requested at creation, if any.
     pub context: Option<u64>,
+    /// The isolated checkout this session runs in, when it has one. `cwd`
+    /// already names the same directory; this is what lets the window say
+    /// *why* the session is somewhere other than its project folder.
+    pub worktree: Option<WorktreeDto>,
     pub ended: bool,
     pub busy: bool,
     pub model: Option<String>,
     pub total_cost_usd: f64,
+}
+
+/// A session's worktree, as the window draws it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeDto {
+    pub path: String,
+    /// `egant/quiet-quartz` — what the sidebar and the header show.
+    pub branch: String,
+    /// The generated folder name (`quiet-quartz`).
+    pub name: String,
+    /// The branch it was cut from.
+    pub base: String,
+    /// The repository it belongs to, which is the project folder or a parent
+    /// of it.
+    pub repo_root: String,
+}
+
+/// One row of the repository's commit graph.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDto {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub subject: String,
+    pub author_name: String,
+    pub author_email: String,
+    /// Seconds since the epoch, UTC. The window formats it in local time.
+    pub authored_unix: i64,
+    pub refs: Vec<CommitRefDto>,
+}
+
+/// A branch or tag pointing at a commit, as the chip on its row.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitRefDto {
+    /// `branch` | `remote` | `tag`.
+    pub kind: &'static str,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPageDto {
+    pub commits: Vec<CommitDto>,
+    /// The commit the repository is on, so the list can mark it.
+    pub head_sha: Option<String>,
+    /// Pass back as `cursor` for the next page; `null` at the end.
+    pub next_cursor: Option<usize>,
+}
+
+/// One local branch in the composer's ref picker, and where it is checked out.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoRefDto {
+    pub name: String,
+    /// On the project folder itself right now.
+    pub current: bool,
+    /// The worktree this branch is checked out in, if any — which is what
+    /// makes it startable without any git running at all.
+    pub worktree_path: Option<String>,
+}
+
+/// Closing a session answers with the fresh snapshot and, when there was a
+/// worktree whose fate the user should know about, a sentence saying so.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseResultDto {
+    pub state: StateDto,
+    /// `None` when there is nothing worth interrupting the user for — no
+    /// worktree, or one that was removed exactly as expected.
+    pub notice: Option<String>,
+    /// The worktree that was kept, when one was. The session that owned it no
+    /// longer exists, so this is what "Delete it anyway" acts on.
+    pub kept: Option<WorktreeDto>,
 }
 
 pub fn permission_mode_name(mode: PermissionMode) -> &'static str {
@@ -461,9 +540,21 @@ pub struct RepoStatusDto {
     /// Whether the branch has an upstream at all. A branch that doesn't is
     /// offered "Publish" rather than "Push".
     pub published: bool,
+    /// What the current branch tracks, e.g. `origin/main`. `None` when it
+    /// tracks nothing — which is the same condition `published` reports, but
+    /// this names the other end so the panel can say what "Pull" would read.
+    pub upstream: Option<String>,
+    /// When this repository last fetched from any remote, as seconds since
+    /// the epoch. `None` when it never has — the panel reads that as "your
+    /// behind count may be stale, fetch to check".
+    pub last_fetched_unix: Option<i64>,
     /// First remote's name (`origin`, usually), or `null` when there is none —
     /// which is what decides whether "Commit & Push" is on offer.
     pub remote: Option<String>,
+    /// The branch this repository integrates into — what a branch-scope diff
+    /// measures against when nothing else names a base. `None` in a repository
+    /// with no such branch at all.
+    pub default_base: Option<String>,
 }
 
 /// One row of the workspace panel's file tree.
@@ -522,4 +613,36 @@ pub struct DiffLineDto {
 pub struct DiffHunkDto {
     pub header: String,
     pub lines: Vec<DiffLineDto>,
+}
+
+/// Where a stalled merge/rebase stands, for the conflict toolbar.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictStatusDto {
+    /// `merge` | `rebase` | `none`.
+    pub operation: String,
+    pub files: Vec<UnmergedFileDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmergedFileDto {
+    pub path: String,
+    /// `bothModified` | `bothAdded` | `bothDeleted` | `addedByUs` |
+    /// `addedByThem` | `deletedByUs` | `deletedByThem`.
+    pub kind: String,
+}
+
+/// One `<<<<<<<`/`=======`/`>>>>>>>` region in a conflicted file, for the
+/// inline quick-action buttons over it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictBlockDto {
+    pub index: usize,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub ours_label: String,
+    pub theirs_label: String,
+    pub ours: String,
+    pub theirs: String,
 }

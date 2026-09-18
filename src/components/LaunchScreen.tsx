@@ -2,6 +2,7 @@ import { Monitor } from "lucide-react";
 import { useEgant } from "../store";
 import { Composer } from "./Composer";
 import { ProjectMenu } from "./ProjectMenu";
+import { CheckoutChips } from "./Worktree";
 
 /** The stage before the first message lands: the same composer the
  * conversation uses, centred, over the launch wallpaper. Nothing here is a
@@ -37,6 +38,15 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
           <ProjectMenu variant="chip" />
         </div>
         <Composer sessionId={null} hero autoFocus />
+        {/* Under the composer rather than in the row above it: that row names
+          where you are — this machine, this project — while these two name
+          what the next send will do with it. */}
+        <div
+          className="mt-2.5 flex items-center gap-4 pl-6 text-xs"
+          style={{ textShadow: "0 1px 6px rgba(0,0,0,0.75), 0 1px 2px rgba(0,0,0,0.9)" }}
+        >
+          <CheckoutChips />
+        </div>
       </div>
     </div>
   );

@@ -1,53 +1,18 @@
-import hljs from "highlight.js/lib/common";
 import { AlignJustify, Columns2, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { api } from "../lib/api";
-import type { DiffHunk, DiffLine } from "../lib/types";
+import type { DiffHunk } from "../lib/types";
 import type { StageTab } from "../store";
 import { useEgant } from "../store";
+import type { DiffStyle } from "./DiffHunks";
+import { DiffHunks } from "./DiffHunks";
 import { isImage, languageFor, previewKind, PreviewPane } from "./FileView";
 import { useEditorFontSize } from "./SettingsKit";
 
-/** Unified reads as one column with markers; split puts the two sides beside
- * each other. Remembered across tabs, because it is a preference about reading
- * diffs, not about this file. */
-export type DiffStyle = "unified" | "split";
+export type { DiffStyle };
 
 const STYLE_KEY = "egant.diffStyle";
-
-/** One row of a split diff: what each side shows on the same line. A context
- * line is the same line on both. */
-interface SplitRow {
-  left?: DiffLine;
-  right?: DiffLine;
-}
-
-/** Pairs a hunk's lines into rows: runs of removals line up against the runs
- * of additions that replaced them, and context lands on both sides. */
-function splitRows(lines: DiffLine[]): SplitRow[] {
-  const rows: SplitRow[] = [];
-  let removed: DiffLine[] = [];
-  let added: DiffLine[] = [];
-
-  const flush = () => {
-    const height = Math.max(removed.length, added.length);
-    for (let i = 0; i < height; i += 1) rows.push({ left: removed[i], right: added[i] });
-    removed = [];
-    added = [];
-  };
-
-  for (const line of lines) {
-    if (line.origin === "-") removed.push(line);
-    else if (line.origin === "+") added.push(line);
-    else {
-      flush();
-      rows.push({ left: line, right: line });
-    }
-  }
-  flush();
-  return rows;
-}
 
 /** A diff open as a tab on the stage. Fetched on open and again whenever the
  * working tree may have moved — a turn ending, or a stage/commit from the
@@ -66,13 +31,18 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
   const editorFontSize = useEditorFontSize();
 
   const root = tab.root ?? "";
-  const staged = tab.group === "staged";
+  // The tab carries what it is a diff of. `undefined` is the working tree,
+  // where the group still picks which of its two sides to show.
+  const scope = tab.scope ?? { kind: "workingTree" as const, staged: tab.group === "staged" };
+  // `scope` is a fresh object every render; what the fetch depends on is the
+  // comparison it names (including `staged` / `base` / `session` / `sha`).
+  const scopeKey = JSON.stringify(scope);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     api
-      .diffFile(root, tab.path, staged)
+      .diffFile(root, tab.path, scope)
       .then((result) => {
         if (cancelled) return;
         setHunks(result);
@@ -89,7 +59,8 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
     return () => {
       cancelled = true;
     };
-  }, [root, tab.path, staged, changesToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, tab.path, tab.group, scopeKey, changesToken]);
 
   const chooseStyle = (next: DiffStyle) => {
     setStyle(next);
@@ -102,19 +73,25 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
 
   const language = languageFor(tab.name);
   const empty = hunks !== null && hunks.length === 0;
+  const workingTree = scope.kind === "workingTree";
+  const staged = workingTree && scope.staged;
   // What each side of this diff is, in the terms `blob_data_url` uses: an
   // unstaged diff is the index against what is on disk; a staged one is HEAD
   // against the index.
   const before = staged ? "head" : "index";
   const after = staged ? "index" : "workdir";
   const preview = previewKind(tab.name);
-  const image = isImage(tab.name);
+  // Rendered views read blobs from the index, HEAD or the disk — the three
+  // places `blob_data_url` knows. A branch, a turn or a commit is measured
+  // from a tree that is none of them, so those scopes show the text diff and
+  // say so rather than rendering the wrong side of the comparison.
+  const image = isImage(tab.name) && workingTree;
 
   if (image) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <DiffToolbar
-          staged={staged}
+          label={scopeLabel(tab)}
           style={style}
           onStyle={chooseStyle}
           onRefresh={() => refreshChanges()}
@@ -131,35 +108,27 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
       style={{ "--editor-font-size": `${editorFontSize}px` } as CSSProperties}
     >
       <DiffToolbar
-        staged={staged}
+        label={scopeLabel(tab)}
         style={style}
         onStyle={chooseStyle}
         onRefresh={() => refreshChanges()}
         showStyle={mode === "diff"}
-        preview={preview !== null}
+        preview={preview !== null && workingTree}
         mode={mode}
         onMode={setMode}
       />
 
-      {mode === "preview" && preview ? (
+      {mode === "preview" && preview && workingTree ? (
         <DiffPreview root={root} path={tab.path} source={after} kind={preview} token={changesToken} />
       ) : error ? (
         <Centered text={error} danger />
       ) : loading && hunks === null ? (
         <Centered text="Reading…" />
       ) : empty ? (
-        <Centered
-          text={staged ? "Nothing staged for this file" : "No unstaged changes to this file"}
-        />
+        <Centered text={emptyText(tab, staged)} />
       ) : (
         <div className="min-h-0 flex-1 overflow-auto pb-3">
-          {(hunks ?? []).map((hunk, index) =>
-            style === "unified" ? (
-              <UnifiedHunk key={index} hunk={hunk} language={language} />
-            ) : (
-              <SplitHunk key={index} hunk={hunk} language={language} />
-            ),
-          )}
+          <DiffHunks hunks={hunks ?? []} language={language} style={style} />
         </div>
       )}
     </div>
@@ -195,102 +164,6 @@ function StyleButton({
   );
 }
 
-function HunkHeader({ header }: { header: string }) {
-  return (
-    <div className="code-hunk-header">{header}</div>
-  );
-}
-
-function UnifiedHunk({ hunk, language }: { hunk: DiffHunk; language: string | null }) {
-  return (
-    <div className="flex flex-col">
-      <HunkHeader header={hunk.header} />
-      <div className="flex flex-col">
-        {hunk.lines.map((line, index) => (
-          <div key={index} className={`code-diff-row ${toneFor(line.origin)}`}>
-            <span className="code-diff-num">{line.oldLineno ?? ""}</span>
-            <span className="code-diff-num">{line.newLineno ?? ""}</span>
-            <span className="code-diff-marker">{markerFor(line.origin)}</span>
-            <Code text={line.content} language={language} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SplitHunk({ hunk, language }: { hunk: DiffHunk; language: string | null }) {
-  const rows = useMemo(() => splitRows(hunk.lines), [hunk]);
-  return (
-    <div className="flex flex-col">
-      <HunkHeader header={hunk.header} />
-      {rows.map((row, index) => (
-        <div key={index} className="grid grid-cols-2">
-          <Side line={row.left} side="left" language={language} />
-          <Side line={row.right} side="right" language={language} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** One half of a split row. An absent line is the blank that keeps the two
- * sides level when one side is longer than the other. */
-function Side({
-  line,
-  side,
-  language,
-}: {
-  line?: DiffLine;
-  side: "left" | "right";
-  language: string | null;
-}) {
-  if (!line) return <div className="code-diff-row code-diff-blank" />;
-  // A context line is the same line on both sides, so it is never tinted; an
-  // edit is only ever a removal on the left or an addition on the right.
-  const tone =
-    line.origin === " " ? "" : side === "left" ? toneFor("-") : toneFor("+");
-  return (
-    <div className={`code-diff-row ${tone}`}>
-      <span className="code-diff-num">
-        {(side === "left" ? line.oldLineno : line.newLineno) ?? ""}
-      </span>
-      <Code text={line.content} language={language} />
-    </div>
-  );
-}
-
-function toneFor(origin: string): string {
-  if (origin === "+") return "code-diff-add";
-  if (origin === "-") return "code-diff-del";
-  return "";
-}
-
-function markerFor(origin: string): string {
-  return origin === "+" || origin === "-" ? origin : " ";
-}
-
-/** One line of code, highlighted on its own. A line at a time loses the
- * context a whole-file parse has — a string spanning three lines colours only
- * where it opens — but a diff hands out fragments, not files, and per-line is
- * what keeps it honest about what it can know. */
-function Code({ text, language }: { text: string; language: string | null }) {
-  const html = useMemo(() => {
-    const body = text.replace(/\n$/, "");
-    if (!language) return escapeHtml(body);
-    try {
-      return hljs.highlight(body, { language, ignoreIllegals: true }).value;
-    } catch {
-      return escapeHtml(body);
-    }
-  }, [text, language]);
-  return <span className="code-pane code-diff-text" dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 function Centered({ text, danger }: { text: string; danger?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
@@ -301,10 +174,40 @@ function Centered({ text, danger }: { text: string; danger?: boolean }) {
   );
 }
 
+/** What a diff tab is showing, for the strip above it. */
+function scopeLabel(tab: StageTab): string {
+  switch (tab.group) {
+    case "staged":
+      return "Staged";
+    case "branch":
+      return "Branch changes";
+    case "turn":
+      return "Latest turn";
+    case "commit":
+      return `Commit ${(tab.scope?.kind === "commit" ? tab.scope.sha : "").slice(0, 7)}`;
+    default:
+      return "Changed";
+  }
+}
+
+/** Why there is nothing to show, in the terms of whatever was being compared. */
+function emptyText(tab: StageTab, staged: boolean): string {
+  switch (tab.group) {
+    case "branch":
+      return "This branch has not touched this file";
+    case "turn":
+      return "This turn has not touched this file";
+    case "commit":
+      return "This commit did not change this file";
+    default:
+      return staged ? "Nothing staged for this file" : "No unstaged changes to this file";
+  }
+}
+
 /** The strip above a diff: which side of git it is on the left, and how to
  * read it on the right. Mirrors the toolbar emdash puts over its diff editor. */
 function DiffToolbar({
-  staged,
+  label,
   style,
   onStyle,
   onRefresh,
@@ -313,7 +216,8 @@ function DiffToolbar({
   mode = "diff",
   onMode,
 }: {
-  staged: boolean;
+  /** What this diff is of — the side of git, or the comparison it came from. */
+  label: string;
   style: DiffStyle;
   onStyle: (style: DiffStyle) => void;
   onRefresh: () => void;
@@ -326,7 +230,7 @@ function DiffToolbar({
   return (
     <div className="flex h-[38px] shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-4">
       <span className="min-w-0 truncate text-[11px] font-semibold tracking-[0.08em] text-[var(--faint)] uppercase">
-        {staged ? "Staged" : "Changed"}
+        {label}
       </span>
       <div className="flex shrink-0 items-center gap-1.5">
         <button

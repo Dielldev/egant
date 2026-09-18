@@ -58,6 +58,23 @@ export function Composer({
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  // Below this the picker/attach/send block and the text box are fighting
+  // over the same row — Zeron's answer is to stop sharing the row instead of
+  // letting either one lose, so the toolbar drops beneath the text once
+  // there isn't room for both. Measured on the composer's own box, not the
+  // window: a wide window with the workspace panel dragged out squeezes this
+  // exactly the way a narrow window would.
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || hero) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setNarrow(entry.contentRect.width < 480);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hero]);
 
   useEffect(() => {
     if (autoFocus) areaRef.current?.focus();
@@ -405,9 +422,13 @@ export function Composer({
     </>
   );
 
-  if (hero) {
+  // Hero always stacks; a threaded composer stacks too once its own box gets
+  // too narrow for the toolbar to share a row with the text — see `narrow`.
+  const stacked = hero || narrow;
+
+  if (stacked) {
     return (
-      <div className="composer w-full rounded-2xl px-5 py-4">
+      <div ref={wrapRef} className="composer w-full rounded-2xl px-5 py-4">
         {connectionNotice && (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
             <span className="flex min-w-0 items-center gap-1.5">
@@ -427,7 +448,7 @@ export function Composer({
         {area}
         {/* Picker left, actions right — matches the reference bar where the
           model (`Fable 5.1 High · 200K`) sits opposite the paperclip/send. */}
-        <div className="mt-4 flex min-w-0 items-center justify-between gap-2.5">
+        <div className="mt-3 flex min-w-0 items-center justify-between gap-2.5">
           <div className="min-w-0">{picker}</div>
           <div className="flex shrink-0 items-center gap-2.5">{actions}</div>
         </div>
@@ -437,7 +458,7 @@ export function Composer({
   }
 
   return (
-    <div className="composer flex w-full items-end gap-2.5 rounded-[22px] py-2 pr-2 pl-4">
+    <div ref={wrapRef} className="composer flex w-full items-end gap-2.5 rounded-[22px] py-2 pr-2 pl-4">
       <div className="min-w-0 flex-1 py-1">
         {imageRow}
         {area}

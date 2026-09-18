@@ -186,25 +186,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         npm_package: Some("opencode-ai"),
     },
     CatalogEntry {
-        id: "aider",
-        name: "Aider",
-        binaries: &["aider"],
-        env_override: None,
-        extra_paths: &["~/.aider/bin/aider"],
-        vendor: "aider",
-        website: "https://aider.chat",
-        supports: PROMPTS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[InstallOption {
-            method: InstallMethod::Pip,
-            command: "python3 -m pip install -U aider-chat",
-            update_command: None,
-            recommended: true,
-        }],
-        npm_package: None,
-    },
-    CatalogEntry {
         id: "amp",
         name: "Amp",
         binaries: &["amp"],
@@ -246,20 +227,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         npm_package: None,
     },
     CatalogEntry {
-        id: "auggie",
-        name: "Auggie",
-        binaries: &["auggie"],
-        env_override: None,
-        extra_paths: &[],
-        vendor: "augment",
-        website: "https://docs.augmentcode.com/cli/overview",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[npm("npm install -g @augmentcode/auggie", true)],
-        npm_package: Some("@augmentcode/auggie"),
-    },
-    CatalogEntry {
         id: "cline",
         name: "Cline",
         binaries: &["cline"],
@@ -274,34 +241,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         npm_package: None,
     },
     CatalogEntry {
-        id: "codebuff",
-        name: "Codebuff",
-        binaries: &["codebuff"],
-        env_override: None,
-        extra_paths: &[],
-        vendor: "codebuff",
-        website: "https://codebuff.com",
-        supports: PROMPTS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[npm("npm install -g codebuff", true)],
-        npm_package: Some("codebuff"),
-    },
-    CatalogEntry {
-        id: "continue",
-        name: "Continue",
-        binaries: &["cn"],
-        env_override: None,
-        extra_paths: &[],
-        vendor: "continue",
-        website: "https://continue.dev",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[npm("npm install -g @continuedev/cli", true)],
-        npm_package: Some("@continuedev/cli"),
-    },
-    CatalogEntry {
         id: "copilot",
         name: "GitHub Copilot",
         binaries: &["copilot"],
@@ -314,28 +253,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         recommended: false,
         install_options: &[npm("npm install -g @github/copilot", true)],
         npm_package: Some("@github/copilot"),
-    },
-    CatalogEntry {
-        id: "crush",
-        name: "Crush",
-        binaries: &["crush"],
-        env_override: None,
-        extra_paths: &[],
-        vendor: "charm",
-        website: "https://github.com/charmbracelet/crush",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[
-            npm("npm install -g @charmland/crush", true),
-            InstallOption {
-                method: InstallMethod::Brew,
-                command: "brew install charmbracelet/tap/crush",
-                update_command: Some("brew upgrade crush"),
-                recommended: false,
-            },
-        ],
-        npm_package: Some("@charmland/crush"),
     },
     CatalogEntry {
         id: "cursor",
@@ -364,34 +281,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         recommended: false,
         install_options: &[],
         npm_package: None,
-    },
-    CatalogEntry {
-        id: "droid",
-        name: "Factory Droid",
-        binaries: &["droid"],
-        env_override: None,
-        extra_paths: &["~/.factory/bin/droid"],
-        vendor: "factory",
-        website: "https://factory.ai",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[curl("curl -fsSL https://app.factory.ai/cli | sh", true)],
-        npm_package: None,
-    },
-    CatalogEntry {
-        id: "gemini",
-        name: "Gemini CLI",
-        binaries: &["gemini"],
-        env_override: None,
-        extra_paths: &[],
-        vendor: "google",
-        website: "https://github.com/google-gemini/gemini-cli",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[npm("npm install -g @google/gemini-cli", true)],
-        npm_package: Some("@google/gemini-cli"),
     },
     CatalogEntry {
         id: "goose",
@@ -469,20 +358,6 @@ pub const CATALOG: &[CatalogEntry] = &[
         chat_ui: false,
         recommended: false,
         install_options: &[],
-        npm_package: None,
-    },
-    CatalogEntry {
-        id: "plandex",
-        name: "Plandex",
-        binaries: &["plandex", "pdx"],
-        env_override: None,
-        extra_paths: &[],
-        vendor: "plandex",
-        website: "https://plandex.ai",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
-        install_options: &[curl("curl -sL https://plandex.ai/install.sh | bash", true)],
         npm_package: None,
     },
     CatalogEntry {
@@ -1062,11 +937,10 @@ mod tests {
     /// The name on the row and the name of the binary are not the same
     /// thing. Probing the product name instead of the installed binary is
     /// what made Antigravity report "not installed" after a successful
-    /// install, so the two that differ are pinned here.
+    /// install, so the ones that differ are pinned here.
     #[test]
     fn entries_probe_the_installed_binary_not_the_product_name() {
         assert_eq!(entry("antigravity").unwrap().binaries, &["agy", "antigravity"]);
-        assert_eq!(entry("continue").unwrap().binaries, &["cn"]);
         assert_eq!(entry("cursor").unwrap().binaries, &["cursor-agent"]);
         for entry in CATALOG {
             assert!(!entry.binaries.is_empty(), "{} probes nothing", entry.id);

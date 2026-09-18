@@ -1000,6 +1000,15 @@ html[data-theme="light"] {
   min-height: 1.55em;
 }
 
+/* Wrapped diff lines (the Diffs pane's wrap toggle): a long line folds onto
+ * the next row instead of running off to the right. `anywhere` rather than
+ * `break-word` because the long lines in a diff are usually minified CSS or a
+ * data URI, which have no word boundaries to break on. */
+.code-pane.code-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* `@@ -12,7 +12,9 @@` — the address of what follows, not part of it. */
 .code-hunk-header {
   padding: 3px 16px;

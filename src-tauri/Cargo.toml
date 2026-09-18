@@ -27,5 +27,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 window-vibrancy = "0.8.0"
 
+[dev-dependencies]
+# Real repositories for the worktree tests: what `release` decides is only
+# meaningful against git's own answers.
+tempfile = "3"
+
 [features]
 default = []

@@ -1,12 +1,14 @@
 //! Local git operations through libgit2.
 
 use crate::VcsError;
-use git2::{Delta, DiffOptions, IndexAddOption, Repository, Signature, StatusOptions};
+use git2::{Delta, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, StatusOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct Repo {
-    inner: Repository,
+    // `pub(crate)` for [`crate::history`], which walks the same repository
+    // rather than opening a second handle to it.
+    pub(crate) inner: Repository,
     root: PathBuf,
 }
 
@@ -215,6 +217,131 @@ impl Repo {
         Ok(changes)
     }
 
+    /// Files that differ between `tree` and the working tree, index included.
+    ///
+    /// This is what every scope other than the panel's own two sides is built
+    /// from: "everything this branch adds" measures from the merge base, and
+    /// "what this turn did" measures from the tree the working directory was
+    /// in when the turn began. Both are one tree and one comparison.
+    pub fn changes_since(&self, tree: &str) -> Result<Vec<FileChange>, VcsError> {
+        let tree = self.inner.find_tree(Oid::from_str(tree)?)?;
+        let mut options = DiffOptions::new();
+        options
+            .context_lines(0)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+        // Deliberately not the `_with_index` variant: that one merges
+        // tree→index→workdir, so a file the baseline already holds an
+        // unstaged edit of reads as changed because the *index* disagrees with
+        // it. What every scope here asks is simpler — how does the working
+        // directory differ from this point in history — and the index is not
+        // part of that question.
+        let diff = self
+            .inner
+            .diff_tree_to_workdir(Some(&tree), Some(&mut options))?;
+        changes_from_diff(&diff)
+    }
+
+    /// Files one commit changed, against its first parent. A root commit —
+    /// which has no parent — reads as every one of its files added.
+    pub fn commit_changes(&self, sha: &str) -> Result<Vec<FileChange>, VcsError> {
+        let commit = self.inner.find_commit(Oid::from_str(sha)?)?;
+        let tree = commit.tree()?;
+        let parent = commit.parent(0).ok().map(|parent| parent.tree()).transpose()?;
+        let mut options = DiffOptions::new();
+        options.context_lines(0);
+        let diff = self.inner.diff_tree_to_tree(
+            parent.as_ref(),
+            Some(&tree),
+            Some(&mut options),
+        )?;
+        changes_from_diff(&diff)
+    }
+
+    /// A unified diff for one path, measured from `tree` to the working tree.
+    pub fn diff_since(&self, tree: &str, path: &Path) -> Result<Vec<DiffHunk>, VcsError> {
+        let tree = self.inner.find_tree(Oid::from_str(tree)?)?;
+        let mut options = DiffOptions::new();
+        options
+            .pathspec(path)
+            .context_lines(3)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+        let diff = self
+            .inner
+            .diff_tree_to_workdir(Some(&tree), Some(&mut options))?;
+        hunks_from_diff(&diff)
+    }
+
+    /// A unified diff for one path inside one commit.
+    pub fn commit_diff(&self, sha: &str, path: &Path) -> Result<Vec<DiffHunk>, VcsError> {
+        let commit = self.inner.find_commit(Oid::from_str(sha)?)?;
+        let tree = commit.tree()?;
+        let parent = commit.parent(0).ok().map(|parent| parent.tree()).transpose()?;
+        let mut options = DiffOptions::new();
+        options.pathspec(path).context_lines(3);
+        let diff = self.inner.diff_tree_to_tree(
+            parent.as_ref(),
+            Some(&tree),
+            Some(&mut options),
+        )?;
+        hunks_from_diff(&diff)
+    }
+
+    /// The tree of the merge base between HEAD and `base` — where this branch
+    /// left the one it was cut from, which is what "everything this branch
+    /// adds" has to be measured against rather than `base`'s own tip (that
+    /// would count every commit the other branch has made since as a deletion).
+    ///
+    /// Falls back to `base`'s own tree when the two share no history.
+    pub fn merge_base_tree(&self, base: &str) -> Result<String, VcsError> {
+        let base_commit = self
+            .inner
+            .revparse_single(base)
+            .and_then(|object| object.peel_to_commit())?;
+        let head = self.inner.head()?.peel_to_commit()?;
+        let merge_base = self
+            .inner
+            .merge_base(head.id(), base_commit.id())
+            .and_then(|oid| self.inner.find_commit(oid))
+            .unwrap_or(base_commit);
+        Ok(merge_base.tree()?.id().to_string())
+    }
+
+    /// HEAD's own tree, or `None` in a repository with no commits.
+    pub fn head_tree(&self) -> Result<Option<String>, VcsError> {
+        match self.inner.head() {
+            Ok(head) => Ok(Some(head.peel_to_tree()?.id().to_string())),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Whether a ref name resolves here — `origin/HEAD`, `main`, a tag.
+    pub fn has_ref(&self, name: &str) -> bool {
+        self.inner.revparse_single(name).is_ok()
+    }
+
+    /// The working tree as it stands, written out as a tree object without
+    /// touching the index or the working directory — the baseline a "what did
+    /// this turn do" diff is taken from.
+    ///
+    /// `git stash create` does exactly this and nothing else: it writes a
+    /// dangling commit for the current state and prints its id. Untracked
+    /// files are not in it (stash leaves them alone), so a file the user
+    /// created before the turn reads as one the turn added. A clean tree has
+    /// nothing to stash and answers with HEAD's own tree.
+    pub fn snapshot_tree(&self) -> Result<String, VcsError> {
+        let out = crate::remote::run(&self.root, &["stash", "create"])?;
+        let printed = out.stdout.trim();
+        if printed.is_empty() {
+            return Ok(self.inner.head()?.peel_to_commit()?.tree()?.id().to_string());
+        }
+        let commit = self.inner.find_commit(Oid::from_str(printed)?)?;
+        Ok(commit.tree()?.id().to_string())
+    }
+
     /// Lines added and removed per path, for one side of the panel: the index
     /// against HEAD (`staged`), or the working tree against the index.
     fn line_counts(&self, staged: bool) -> Result<HashMap<PathBuf, (usize, usize)>, VcsError> {
@@ -344,9 +471,14 @@ impl Repo {
             self.inner
                 .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut options))?
         } else {
-            // include_untracked makes a brand-new file show its contents rather
-            // than an empty diff.
-            options.include_untracked(true).recurse_untracked_dirs(true);
+            // Both flags are needed: `include_untracked` lists a brand-new
+            // file at all, and `show_untracked_content` gives it hunks rather
+            // than an empty diff (which the panel reads as "binary or
+            // unchanged").
+            options
+                .include_untracked(true)
+                .recurse_untracked_dirs(true)
+                .show_untracked_content(true);
             self.inner.diff_index_to_workdir(None, Some(&mut options))?
         };
 
@@ -444,16 +576,62 @@ impl Repo {
     /// Whether the current branch tracks anything. False means it has never
     /// been pushed, which is a different offer than "push".
     pub fn has_upstream(&self) -> bool {
-        let Ok(head) = self.inner.head() else {
-            return false;
-        };
-        let Ok(name) = head.shorthand() else {
-            return false;
-        };
-        self.inner
-            .find_branch(name, git2::BranchType::Local)
-            .and_then(|branch| branch.upstream())
-            .is_ok()
+        self.upstream_branch().is_some()
+    }
+
+    /// What the current branch tracks, e.g. `origin/main`. `None` when it
+    /// tracks nothing (never pushed) or HEAD is unborn/detached.
+    pub fn upstream_branch(&self) -> Option<String> {
+        let head = self.inner.head().ok()?;
+        let name = head.shorthand().ok()?.to_owned();
+        let branch = self
+            .inner
+            .find_branch(&name, git2::BranchType::Local)
+            .ok()?;
+        let upstream = branch.upstream().ok()?;
+        if let Ok(shorthand) = upstream.get().shorthand() {
+            return Some(shorthand.to_owned());
+        }
+        upstream.name().ok()?.map(|s| s.to_owned())
+    }
+
+    /// When this repository last fetched from any remote, as seconds since
+    /// the epoch. Read from `FETCH_HEAD`'s mtime, which `git fetch` (and the
+    /// fetch half of `git pull`) rewrites on every run — including runs from
+    /// a terminal outside the app, so the panel's "last checked" hint stays
+    /// honest. `None` when it has never been fetched.
+    ///
+    /// Checks both the worktree's own gitdir and the common dir, because a
+    /// linked worktree fetches through the main repository's refs.
+    pub fn last_fetch_unix(&self) -> Option<i64> {
+        use std::time::SystemTime;
+
+        let gitdir = self.inner.path();
+        let mut candidates = vec![gitdir.join("FETCH_HEAD")];
+        // `commondir` is a file in a linked worktree's gitdir naming the
+        // main `.git` dir (usually a relative path like `../..`).
+        if let Ok(common) = std::fs::read_to_string(gitdir.join("commondir")) {
+            let common = common.trim();
+            if !common.is_empty() {
+                let base = if std::path::Path::new(common).is_absolute() {
+                    std::path::PathBuf::from(common)
+                } else {
+                    gitdir.join(common)
+                };
+                candidates.push(base.join("FETCH_HEAD"));
+            }
+        }
+        candidates
+            .into_iter()
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .filter_map(|meta| meta.modified().ok())
+            .filter_map(|mtime| {
+                mtime
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
+            })
+            .max()
     }
 
     /// Commits ahead of and behind the upstream branch, when one is set.
@@ -464,6 +642,114 @@ impl Repo {
         let upstream = branch.upstream()?;
         let remote = upstream.get().peel_to_commit()?.id();
         Ok(self.inner.graph_ahead_behind(local, remote)?)
+    }
+}
+
+/// One row per changed path, with its line counts, read from a diff that was
+/// already computed. Scope diffs have no staged/unstaged split — they compare
+/// two points in the repository's history, and everything between them is one
+/// change — so every row comes back unstaged.
+fn changes_from_diff(diff: &Diff<'_>) -> Result<Vec<FileChange>, VcsError> {
+    // The two callbacks run under one `foreach` call and so cannot share a
+    // collection: each is handed its own, and they are joined by path after.
+    let mut files: Vec<(PathBuf, FileStatus)> = Vec::new();
+    let mut counts: HashMap<PathBuf, (usize, usize)> = HashMap::new();
+    diff.foreach(
+        &mut |delta, _progress| {
+            if let Some(path) = delta_path(&delta) {
+                files.push((path, delta_status(delta.status())));
+            }
+            true
+        },
+        None,
+        None,
+        Some(&mut |delta, _hunk, line| {
+            if let Some(path) = delta_path(&delta) {
+                let entry = counts.entry(path).or_insert((0, 0));
+                match line.origin() {
+                    '+' => entry.0 += 1,
+                    '-' => entry.1 += 1,
+                    _ => {}
+                }
+            }
+            true
+        }),
+    )?;
+
+    let mut changes: Vec<FileChange> = files
+        .into_iter()
+        .map(|(path, status)| {
+            let (additions, deletions) = counts.get(&path).copied().unwrap_or((0, 0));
+            FileChange {
+                path,
+                status,
+                staged: false,
+                additions,
+                deletions,
+            }
+        })
+        .collect();
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    changes.dedup_by(|a, b| a.path == b.path);
+    Ok(changes)
+}
+
+/// Hunks for a diff that was already narrowed to one path.
+fn hunks_from_diff(diff: &Diff<'_>) -> Result<Vec<DiffHunk>, VcsError> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
+        let content = String::from_utf8_lossy(line.content()).into_owned();
+        match line.origin() {
+            // File and hunk headers are rebuilt from `hunk` below; printing
+            // them as lines would put `@@ -1,4 +1,6 @@` in the body too.
+            'H' | 'F' => {}
+            _ => {
+                if let Some(hunk) = hunk {
+                    let header = String::from_utf8_lossy(hunk.header()).trim_end().to_owned();
+                    if hunks.last().map(|last| &last.header) != Some(&header) {
+                        hunks.push(DiffHunk {
+                            header,
+                            lines: Vec::new(),
+                        });
+                    }
+                }
+                if let Some(current) = hunks.last_mut() {
+                    current.lines.push(DiffLine {
+                        origin: line.origin(),
+                        content,
+                        old_lineno: line.old_lineno(),
+                        new_lineno: line.new_lineno(),
+                    });
+                }
+            }
+        }
+        true
+    })?;
+    Ok(hunks)
+}
+
+/// The path a delta is about: where the file ended up, or where it was when it
+/// no longer exists.
+fn delta_path(delta: &git2::DiffDelta<'_>) -> Option<PathBuf> {
+    delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .map(Path::to_path_buf)
+}
+
+/// How a tree-to-tree delta reads as a row. `Typechange` (a file becoming a
+/// symlink) has no letter of its own in the panel and reads as a modification,
+/// which is what it is from the outside.
+fn delta_status(delta: Delta) -> FileStatus {
+    match delta {
+        Delta::Added => FileStatus::Added,
+        Delta::Deleted => FileStatus::Deleted,
+        Delta::Renamed => FileStatus::Renamed,
+        Delta::Copied => FileStatus::Added,
+        Delta::Untracked => FileStatus::Untracked,
+        Delta::Conflicted => FileStatus::Conflicted,
+        _ => FileStatus::Modified,
     }
 }
 
@@ -527,10 +813,111 @@ mod tests {
         assert!(!snapshot.is_clean());
     }
 
+    /// A repository with one commit on `main`, and a second branch with a
+    /// commit of its own checked out — the shape every scope below is about.
+    fn branched_repo() -> (tempfile::TempDir, Repo) {
+        let (dir, repo) = init_repo();
+        fs::write(dir.path().join("base.txt"), "one\n").unwrap();
+        repo.stage(&[PathBuf::from("base.txt")]).unwrap();
+        repo.commit("base").unwrap();
+        let base = repo.head_branch().unwrap().expect("a branch");
+
+        crate::remote::run(dir.path(), &["checkout", "--quiet", "-b", "work"]).unwrap();
+        fs::write(dir.path().join("added.txt"), "two\n").unwrap();
+        repo.stage(&[PathBuf::from("added.txt")]).unwrap();
+        repo.commit("on the branch").unwrap();
+        assert_ne!(base, "work");
+        (dir, repo)
+    }
+
+    #[test]
+    fn a_commit_lists_what_it_changed() {
+        let (_dir, repo) = branched_repo();
+        let head = repo.history(None, 0, 1).unwrap();
+        let sha = &head.commits[0].sha;
+
+        let changes = repo.commit_changes(sha).unwrap();
+        assert_eq!(changes.len(), 1, "one commit, one file");
+        assert_eq!(changes[0].path, PathBuf::from("added.txt"));
+        assert_eq!(changes[0].status, FileStatus::Added);
+        assert_eq!(changes[0].additions, 1);
+    }
+
+    #[test]
+    fn branch_scope_spans_commits_and_uncommitted_work_alike() {
+        let (dir, repo) = branched_repo();
+        // Something committed on the branch, and something not yet.
+        fs::write(dir.path().join("wip.txt"), "three\n").unwrap();
+
+        let base = repo.merge_base_tree("main").or_else(|_| repo.merge_base_tree("master"));
+        let changes = repo.changes_since(&base.expect("a merge base")).unwrap();
+
+        let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from("added.txt")), "the commit is missing");
+        assert!(paths.contains(&PathBuf::from("wip.txt")), "the working tree is missing");
+        assert!(!paths.contains(&PathBuf::from("base.txt")), "the base is not a change");
+    }
+
+    #[test]
+    fn a_turn_baseline_hides_what_was_already_there() {
+        let (dir, repo) = branched_repo();
+        // Before the turn: an edit the user made themselves.
+        fs::write(dir.path().join("base.txt"), "one and a half\n").unwrap();
+        let baseline = repo.snapshot_tree().unwrap();
+
+        // During the turn: the agent's own edit.
+        fs::write(dir.path().join("agent.txt"), "four\n").unwrap();
+
+        let changes = repo.changes_since(&baseline).unwrap();
+        let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from("agent.txt")), "the turn's own work is missing");
+        assert!(
+            !paths.contains(&PathBuf::from("base.txt")),
+            "an edit that predates the turn is not the turn's"
+        );
+    }
+
     #[test]
     fn a_fresh_repository_has_nothing_to_push_to() {
         let (_dir, repo) = init_repo();
         assert!(!repo.has_upstream());
+        assert_eq!(repo.upstream_branch(), None);
+        assert_eq!(repo.last_fetch_unix(), None);
+    }
+
+    #[test]
+    fn merging_a_side_branch_rejoins_two_moved_heads() {
+        // Pure CLI setup on purpose: the app merges real repositories its
+        // git2 handle never staged anything in, so the test should too.
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| crate::remote::run(dir.path(), args).unwrap();
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+
+        fs::write(dir.path().join("base.txt"), "one\n").unwrap();
+        git(&["add", "base.txt"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+
+        git(&["checkout", "--quiet", "-b", "side"]);
+        fs::write(dir.path().join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "--quiet", "-m", "side work"]);
+
+        git(&["checkout", "--quiet", "main"]);
+        fs::write(dir.path().join("main.txt"), "main\n").unwrap();
+        git(&["add", "main.txt"]);
+        git(&["commit", "--quiet", "-m", "main work"]);
+
+        // Both heads moved: a fast-forward is impossible, an explicit merge
+        // joins them — the diverged banner's Merge button runs this.
+        crate::remote::merge_no_edit(dir.path(), "side").unwrap();
+
+        assert!(dir.path().join("side.txt").exists());
+        assert!(dir.path().join("main.txt").exists());
+        let repo = Repo::discover(dir.path()).unwrap();
+        let head = repo.history(None, 0, 1).unwrap();
+        assert_eq!(head.commits[0].parents.len(), 2, "a merge joins two parents");
     }
 
     #[test]
@@ -683,5 +1070,17 @@ mod tests {
             .collect();
         assert_eq!(added.len(), 1);
         assert_eq!(added[0].content.trim_end(), "two");
+    }
+
+    #[test]
+    fn untracked_file_diff_shows_contents() {
+        let (dir, repo) = init_repo();
+        fs::write(dir.path().join("new.txt"), "one\ntwo\nthree\n").unwrap();
+
+        let hunks = repo.diff(Path::new("new.txt"), false).unwrap();
+        assert!(
+            !hunks.is_empty(),
+            "untracked file should diff as all additions, got empty hunks"
+        );
     }
 }

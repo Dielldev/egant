@@ -47,20 +47,11 @@ const LOGOS: Record<string, string> = {
   qwen: qwenLogo,
 };
 
-/** Accent for the monogram tile an agent with no vendored mark falls back to
- * (Aider, Auggie, Codebuff, Continue, Crush, Droid, Plandex). A tinted
- * initial reads as a deliberate placeholder; the default grey letter read as
- * a missing asset. Marks themselves stay monochrome, so the row is one
+/** Accent for the monogram tile an agent with no vendored mark falls back to.
+ * A tinted initial reads as a deliberate placeholder; the default grey letter
+ * read as a missing asset. Marks themselves stay monochrome, so the row is one
  * consistent icon system rather than a mix of tinted and untinted art. */
-const TINTS: Record<string, string> = {
-  aider: "#4ea87a",
-  augment: "#7c6cf6",
-  charm: "#e86fb0",
-  codebuff: "#e0954a",
-  continue: "#5b8def",
-  factory: "#dd7455",
-  plandex: "#3fbfae",
-};
+const TINTS: Record<string, string> = {};
 
 export function providerSvg(provider: string): string | null {
   return LOGOS[provider.toLowerCase()] ?? null;

@@ -49,6 +49,11 @@ pub struct SessionMeta {
     /// How much freedom the agent has. Mirrors what the driver last sent, so
     /// the composer's mode chip reads the same value the agent runs under.
     pub permission_mode: PermissionMode,
+    /// The isolated checkout this session runs in, when it was started with
+    /// one. `cwd` is then that checkout's path rather than the project folder,
+    /// which is what puts the agent, the file tree, the terminals and the
+    /// Changes tab all on the same side of the repository.
+    pub worktree: Option<crate::worktrees::SessionWorktree>,
     pub ended: bool,
 }
 
@@ -69,6 +74,14 @@ pub struct ManagedSession {
     pub last_user_text: Option<String>,
     /// Images attached to that same last turn, so a retry carries them too.
     pub last_user_images: Vec<PathBuf>,
+    /// The tree the working directory was in when this session's current turn
+    /// began — what the panel's "Latest turn" scope measures from.
+    ///
+    /// In-memory only, and deliberately: a baseline describes a working tree
+    /// that has moved on by the time the app is restarted, so a persisted one
+    /// would answer a question nobody asked any more. Recorded off-thread (see
+    /// `sessions::mark_turn_baseline`), so a turn never waits on git.
+    pub turn_baseline: Option<String>,
 }
 
 pub struct AppState {
@@ -142,23 +155,53 @@ impl AppState {
             // it was — reopen it in its project instead of spawning the agent
             // in a deleted folder, which is how a revived `Arka` thread kept
             // answering as `egant`'s neighbour that no longer resolves.
-            let cwd = if persisted.meta.cwd.is_dir() {
-                crate::project::canonicalize_path(&persisted.meta.cwd)
+            // A session that ran in a worktree reopens in it, but only while
+            // git still calls it one: a checkout removed from a terminal (or
+            // pruned) leaves a directory that looks fine to `is_dir` and is no
+            // longer part of the repository.
+            let expected_worktree = persisted.meta.worktree.is_some();
+            let worktree = persisted
+                .meta
+                .worktree
+                .filter(|worktree| crate::worktrees::is_live(worktree));
+            if expected_worktree && worktree.is_none() {
+                log::info!(
+                    "session {} lost its worktree — reopening in {}",
+                    persisted.meta.id,
+                    project.fs_path().display()
+                );
+            }
+            let cwd = match &worktree {
+                Some(worktree) => worktree.path.clone(),
+                // Same fallback as a project folder that moved, and for the
+                // same reason: better the project than a deleted directory.
+                None if expected_worktree => project.fs_path(),
+                None if persisted.meta.cwd.is_dir() => {
+                    crate::project::canonicalize_path(&persisted.meta.cwd)
+                }
+                None => project.fs_path(),
+            };
+            // A session that came back without its worktree is on whatever
+            // its project folder is on; the branch it recorded belongs to a
+            // checkout that no longer exists, and the sidebar shows it.
+            let branch = if expected_worktree && worktree.is_none() {
+                crate::sessions::branch_of(&cwd)
             } else {
-                project.fs_path()
+                persisted.meta.branch
             };
             let meta = SessionMeta {
                 id: persisted.meta.id,
                 title: persisted.meta.title,
                 project_id: project.id,
                 cwd,
-                branch: persisted.meta.branch,
+                branch,
                 started_unix_ms: persisted.meta.started_unix_ms,
                 agent: persisted.meta.agent,
                 cli_agent: persisted.meta.cli_agent,
                 model: persisted.meta.model,
                 context: persisted.meta.context,
                 permission_mode: persisted.meta.permission_mode,
+                worktree,
                 ended: true,
             };
             next_session_id = next_session_id.max(meta.id + 1);
@@ -180,6 +223,7 @@ impl AppState {
                     allowed_patterns: Vec::new(),
                     last_user_text: None,
                     last_user_images: Vec::new(),
+                    turn_baseline: None,
                 },
             );
         }
@@ -249,6 +293,7 @@ impl AppState {
             model: session.meta.model.clone(),
             context: session.meta.context,
             permission_mode: session.meta.permission_mode,
+            worktree: session.meta.worktree.clone(),
         };
         persist::save_session(&meta, &session.transcript);
     }
@@ -417,6 +462,13 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
             .unwrap_or_else(|| meta.agent.as_str().to_string()),
         model_override: meta.model.clone(),
         context: meta.context,
+        worktree: meta.worktree.as_ref().map(|worktree| crate::dto::WorktreeDto {
+            path: worktree.path.display().to_string(),
+            branch: worktree.branch.clone(),
+            name: worktree.name.clone(),
+            base: worktree.base.clone(),
+            repo_root: worktree.repo_root.display().to_string(),
+        }),
         ended: meta.ended,
         busy: session.transcript.is_busy(),
         model: session.transcript.model.clone(),
@@ -452,6 +504,7 @@ mod tests {
                     model: None,
                     context: None,
                     permission_mode: PermissionMode::Auto,
+                    worktree: None,
                     ended: false,
                 },
                 transcript: Transcript::new(),
@@ -459,6 +512,7 @@ mod tests {
                 allowed_patterns: Vec::new(),
                 last_user_text: None,
                 last_user_images: Vec::new(),
+turn_baseline: None,
             },
         );
         AppState {
@@ -516,6 +570,7 @@ mod tests {
                     model: None,
                     context: None,
                     permission_mode: PermissionMode::Auto,
+                    worktree: None,
                     ended: true,
                 },
                 transcript: Transcript::new(),
@@ -523,13 +578,14 @@ mod tests {
                 allowed_patterns: Vec::new(),
                 last_user_text: None,
                 last_user_images: Vec::new(),
+turn_baseline: None,
             },
         );
         state.order.push(2);
         state.active_project = Some(1);
         state.active_session = Some(2);
 
-        crate::sessions::close_session(&mut state, 2);
+        let _ = crate::sessions::close_session(&mut state, 2);
         // The stage falls back to the `egant` thread, so the project must come
         // with it — otherwise the sidebar still reads `meme-cam` over an
         // `egant` transcript.

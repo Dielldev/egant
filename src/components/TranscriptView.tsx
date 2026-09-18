@@ -6,6 +6,7 @@ import { useEgant } from "../store";
 import { Composer } from "./Composer";
 import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
+import { RunPill } from "./RunPill";
 import { StatusLine } from "./StatusLine";
 import { groupEntries, ReadGroupCard, ToolCard } from "./ToolCards";
 
@@ -115,6 +116,14 @@ export function TranscriptView() {
           {busy && transcript && (
             <div className="-mt-2.5">
               <StatusLine state={transcript.state} startedAt={transcript.turnStartedAt} />
+            </div>
+          )}
+          {/* The task is done — offer to run what it just changed, in the
+            checkout it changed it in. A worktree session's work isn't in the
+            folder you opened, so the pill names the branch it runs on. */}
+          {!busy && transcript && entries.length > 0 && (
+            <div className="-mt-1">
+              <RunPill cwd={active.cwd} worktree={active.worktree} />
             </div>
           )}
         </div>

@@ -114,6 +114,13 @@ pub struct PersistedMeta {
     pub model: Option<String>,
     pub context: Option<u64>,
     pub permission_mode: PermissionMode,
+    /// The isolated checkout this session runs in, when it has one. `cwd` is
+    /// that checkout's path; both are recorded because a worktree removed
+    /// while the app was closed has to be told apart from a project folder
+    /// that moved. `#[serde(default)]` so sessions written before worktrees
+    /// existed still load — they all ran in their project folder.
+    #[serde(default)]
+    pub worktree: Option<crate::worktrees::SessionWorktree>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +252,7 @@ mod tests {
             model: Some("sonnet".into()),
             context: None,
             permission_mode: PermissionMode::Auto,
+            worktree: None,
         };
 
         let text = serde_json::to_string(&PersistedSession {
@@ -277,6 +285,7 @@ mod tests {
             model: None,
             context: None,
             permission_mode: PermissionMode::Auto,
+            worktree: None,
         };
         let mut value = serde_json::to_value(&PersistedSession {
             meta,

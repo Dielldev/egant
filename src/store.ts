@@ -21,15 +21,19 @@ import type {
   AgentCatalogEntry,
   AgentModel,
   AgentStatus,
+  CheckoutPlan,
   ClaudeUsage,
   DecisionRequest,
   DecisionResponse,
+  DiffScope,
   GitChange,
   GitChangeStatus,
+  RepoRef,
   SessionEventPayload,
   SessionInfo,
   TranscriptState,
   WindowState,
+  WorktreeInfo,
 } from "./lib/types";
 
 export type SettingsSection =
@@ -43,14 +47,63 @@ export type SettingsSection =
   | "appshots"
   | "archived";
 
+/** Something the window has to say that the user didn't ask to see: a
+ * worktree kept back rather than deleted with its session. Not an error — the
+ * work was preserved on purpose — so it gets its own channel rather than
+ * borrowing the red one. */
+export interface Notice {
+  text: string;
+  /** Set when the notice is about a kept worktree, which the window then
+   * offers to delete after all. */
+  worktree: WorktreeInfo | null;
+}
+
+/** Which side of the repository the next session runs on. `current` is the
+ * folder the user opened; `worktree` cuts a fresh checkout for the session.
+ * `null` follows the saved default — see [`checkoutKind`]. */
+export type CheckoutKind = "current" | "worktree";
+
+/** The effective checkout kind: the explicit pick, else what was saved. */
+export function checkoutKind(
+  picked: CheckoutKind | null,
+  snapshot: WindowState | null,
+): CheckoutKind {
+  if (picked) return picked;
+  return snapshot?.settings.worktreeDefault ? "worktree" : "current";
+}
+
+/** The branch the project folder is on, once the refs have loaded. */
+export function currentRef(refs: RepoRef[]): string | null {
+  return refs.find((row) => row.current)?.name ?? null;
+}
+
+/** What the two chips resolve to, in the backend's own words.
+ *
+ * Three outcomes from two controls: a fresh worktree off the picked ref; an
+ * existing worktree the picked ref already lives in, borrowed as a working
+ * directory; or the project folder as it stands. egant never checks a branch
+ * out in the folder you opened — see `setComposerRef`. */
+export function checkoutPlan(
+  kind: CheckoutKind,
+  picked: string | null,
+  refs: RepoRef[],
+): CheckoutPlan {
+  if (kind === "worktree") return { kind: "newWorktree", base: picked };
+  const row = refs.find((candidate) => candidate.name === picked);
+  if (row?.worktreePath) {
+    return { kind: "reuseWorktree", path: row.worktreePath, branch: row.name };
+  }
+  return { kind: "currentCheckout" };
+}
+
 /** Sidebar filter popover — ORGANIZE section. */
 export type SidebarOrganize = "flat" | "byProject";
 /** Sidebar filter popover — SORT section. */
 export type SidebarSort = "updated" | "created";
 
-/** What a workspace-panel tab holds: the project's files, a shell, or what git
- * says has changed. */
-export type PanelTabKind = "files" | "terminal" | "changes";
+/** What a workspace-panel tab holds: the project's files, a shell, a diff of
+ * the repository, or its commit graph. */
+export type PanelTabKind = "files" | "terminal" | "diffs" | "history";
 
 /** One tab in the workspace panel on the right. The Files tab is a tree of
  * the project; a terminal tab owns one PTY for as long as it is open. */
@@ -63,15 +116,75 @@ export interface PanelTab {
    * tab ignores it and follows the conversation in front of you instead —
    * a tree, unlike a shell, has nothing running in it to disturb. */
   cwd: string;
+  /** Which comparison a Diffs tab is showing. Per tab rather than per window,
+   * so two of them can sit side by side on different scopes — which is the
+   * point of being able to open a second one. */
+  scope?: DiffScopeKind;
+  /** What a branch scope measures against, when the user has picked something
+   * other than the obvious answer. `undefined` follows the session's worktree
+   * base, then the repository's own integration branch. */
+  base?: string;
   /** The live PTY, once the pane has spawned its shell. Terminal tabs only. */
   ptyId?: number;
   /** Set when that shell exits, so the tab can say so instead of looking live. */
   exited?: boolean;
 }
 
-/** Which side of git a diff is showing: the working tree against the index
- * (`disk`), or the index against HEAD (`staged`). */
-export type DiffGroup = "disk" | "staged";
+/** The comparisons a Diffs tab offers, in the order its menu lists them.
+ * A commit scope is never in this list — a commit tab is opened by clicking a
+ * row in History, and stays pinned to that commit. */
+export type DiffScopeKind = "workingTree" | "branch" | "turn";
+
+export const DIFF_SCOPES: readonly DiffScopeKind[] = ["workingTree", "branch", "turn"];
+
+export function diffScopeLabel(scope: DiffScopeKind): string {
+  switch (scope) {
+    case "branch":
+      return "Branch changes";
+    case "turn":
+      return "Latest turn";
+    default:
+      return "Working tree";
+  }
+}
+
+export function diffScopeHint(scope: DiffScopeKind): string {
+  switch (scope) {
+    case "branch":
+      return "Everything this branch adds over the one it was cut from, uncommitted work included";
+    case "turn":
+      return "What has changed since the last message was sent";
+    default:
+      return "Uncommitted work: the index against HEAD, and the disk against the index";
+  }
+}
+
+/** The scope payload for a tab's kind, resolved against the session it is
+ * showing — a branch scope needs to know what the branch was cut from, and a
+ * turn scope needs to know whose turn. */
+export function panelScope(
+  kind: DiffScopeKind,
+  session: SessionInfo | undefined,
+  base?: string,
+): DiffScope | undefined {
+  switch (kind) {
+    case "branch":
+      // The tab's own pick first, then what this session's worktree was cut
+      // from, and failing both the backend's answer for the repository.
+      return { kind: "branch", base: base ?? session?.worktree?.base ?? null };
+    case "turn":
+      // No session to measure a turn against: fall back to uncommitted work
+      // rather than asking the backend about a turn that doesn't exist.
+      return session ? { kind: "turn", session: session.id } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** Which side of git a diff is showing. `disk` and `staged` are the working
+ * tree's two sides — the only ones the panel can stage or discard — and the
+ * rest are read-only comparisons a diff tab was opened onto. */
+export type DiffGroup = "disk" | "staged" | "branch" | "turn" | "commit";
 
 /** One tab on the stage beside the conversation: a file from the tree, or a
  * diff from the Changes tab. */
@@ -86,20 +199,37 @@ export interface StageTab {
   name: string;
   /** Diffs only. */
   group?: DiffGroup;
+  /** Diffs only: exactly what this tab is a diff *of*, captured when it was
+   * opened. A tab that outlives the panel's own scope menu still shows what it
+   * was opened to show. */
+  scope?: DiffScope;
   status?: GitChangeStatus;
   /** Diffs only: the repository the path is relative to. */
   root?: string;
 }
 
-/** The suffix a diff tab carries after its filename, naming which side of git
- * it shows. */
-export function diffGroupSuffix(group: DiffGroup): string {
-  return group === "staged" ? "(Index)" : "(Working Tree)";
+/** The suffix a diff tab carries after its filename, naming what it is a diff
+ * of. A commit's is its short sha, which is the only one of these that names a
+ * specific thing rather than a side. */
+export function diffGroupSuffix(group: DiffGroup, sha?: string): string {
+  switch (group) {
+    case "staged":
+      return "(Index)";
+    case "branch":
+      return "(Branch)";
+    case "turn":
+      return "(Latest turn)";
+    case "commit":
+      return `(${(sha ?? "").slice(0, 7)})`;
+    default:
+      return "(Working Tree)";
+  }
 }
 
-/** The key a diff tab is addressed by. */
-export function diffTabKey(group: DiffGroup, path: string): string {
-  return `diff:${group}:${path}`;
+/** The key a diff tab is addressed by. The sha is part of it so two commits'
+ * versions of one file are two tabs, not one that keeps replacing itself. */
+export function diffTabKey(group: DiffGroup, path: string, sha?: string): string {
+  return sha ? `diff:${group}:${sha}:${path}` : `diff:${group}:${path}`;
 }
 
 /** The stage's tab strip addresses the conversation by this key; every other
@@ -121,6 +251,12 @@ export interface AppearanceState {
   glass: GlassMode;
   bgEffect: BgEffect;
 }
+
+// The workspace panel's hard ceiling — a fixed pixel position, not one
+// computed off the window size, so how far it can be dragged never changes
+// out from under the user. The chat stage has no matching floor: it's meant
+// to flex into whatever room is left, the way Claude's own chat column does.
+const PANEL_MAX_WIDTH = 560;
 
 const APPEARANCE_KEY = "egant.appearance";
 
@@ -220,6 +356,11 @@ interface EgantStore {
    * shows regardless — this only adds the text). */
   sidebarShowHarness: boolean;
   setSidebarShowHarness: (on: boolean) => void;
+  /** Hides every session still on its project's own checkout, leaving only
+   * the ones running in a worktree of their own — just the folders, not the
+   * "normal" chats sitting outside any of them. */
+  sidebarWorktreesOnly: boolean;
+  setSidebarWorktreesOnly: (on: boolean) => void;
   /** Sidebar width in px — dragged from its right edge, clamped to a
    * sensible range. Persisted so a resize survives reopening the window. */
   sidebarWidth: number;
@@ -230,10 +371,21 @@ interface EgantStore {
    * to just its header, the way a folder does. */
   collapsedProjects: Record<string, boolean>;
   toggleProjectCollapsed: (projectId: number) => void;
+  /** Which worktree folders are collapsed within a "by project" sidebar,
+   * keyed `${projectId}:${worktree.path}` — a worktree's path is unique
+   * across the whole machine, so this survives two projects happening to cut
+   * a worktree with the same generated name. */
+  collapsedWorktrees: Record<string, boolean>;
+  toggleWorktreeCollapsed: (key: string) => void;
   /** The workspace panel on the right: the project's files and its
    * terminals. Closed until asked for — the window is a conversation first. */
   panelOpen: boolean;
   panelWidth: number;
+  /** The panel filling everything right of the sidebar, with the conversation
+   * slid out from under it. Persisted: it is a way of working (reading a diff
+   * full width) rather than a mode you fall into by accident. */
+  panelMaximized: boolean;
+  togglePanelMaximized: () => void;
   setPanelWidth: (width: number) => void;
   /** Panel tabs are the window's, not a conversation's: a shell running a
    * build should not vanish because the sidebar moved to another thread. */
@@ -247,9 +399,18 @@ interface EgantStore {
   /** Reveals the file tree — focuses the existing Files tab rather than
    * opening a second copy of the same tree. */
   openFilesTab: () => void;
-  openTerminalTab: () => void;
+  /** Opens a shell. `cwd` pins where it spawns — the Run pill passes its
+   * session's working directory so the shell lands in the worktree, not
+   * wherever the panel happened to point. Returns the new tab's id so the
+   * caller can type into it. */
+  openTerminalTab: (cwd?: string) => string;
+  openHistoryTab: () => void;
+  /** Changes which comparison a Diffs tab is showing. */
+  setPanelScope: (tabId: string, scope: DiffScopeKind) => void;
+  /** Changes what a branch scope measures against. */
+  setPanelBase: (tabId: string, base: string) => void;
   /** Same one-of-a-kind rule as the tree: one Changes tab per window. */
-  openChangesTab: () => void;
+  openDiffsTab: () => void;
   closePanelTab: (id: string) => void;
   /** The pane reports the PTY it spawned back to the tab that owns it, which
    * is what lets closing the tab kill the shell. */
@@ -263,7 +424,15 @@ interface EgantStore {
   stageTab: Record<number, string>;
   openFile: (sessionId: number, path: string, name: string) => void;
   /** Opens a change as a diff tab, or focuses it if it is already open. */
-  openDiff: (sessionId: number, root: string, change: GitChange, group: DiffGroup) => void;
+  openDiff: (
+    sessionId: number,
+    root: string,
+    change: GitChange,
+    group: DiffGroup,
+    scope?: DiffScope,
+  ) => void;
+  /** Opens one file's diff inside one commit, from a History row. */
+  openCommitDiff: (sessionId: number, root: string, sha: string, change: GitChange) => void;
   closeStageTab: (sessionId: number, key: string) => void;
   setStageTab: (sessionId: number, key: string) => void;
   /** Bumped whenever something may have changed the working tree — a turn
@@ -276,12 +445,41 @@ interface EgantStore {
   focusComposerToken: number;
   focusFilterToken: number;
   error: string | null;
+  notice: Notice | null;
+  dismissNotice: () => void;
+  /** Deletes a worktree that closing its session decided to keep — the
+   * notice's "Delete it anyway", taken after the user has read what is in it. */
+  discardKeptWorktree: (worktree: WorktreeInfo) => Promise<void>;
+  /** Whether new sessions get their own checkout of the project. Persisted:
+   * it is a working habit, not a per-session decision, and the launch screen's
+   * chip is the only place it is set. */
+  setWorktreeDefault: (on: boolean) => Promise<void>;
+
+  /** The launch composer's checkout chip. `null` follows the saved default;
+   * picking from the menu sets it *and* saves it. */
+  composerCheckout: CheckoutKind | null;
+  setComposerCheckout: (kind: CheckoutKind) => Promise<void>;
+  /** The ref the next session starts from — a worktree's base, or the branch
+   * of an existing worktree to run in. `null` means the project folder's own
+   * branch. */
+  composerRef: string | null;
+  setComposerRef: (name: string) => void;
+  /** Local branches of the project in front of you, for the ref chip. */
+  refs: RepoRef[];
+  refsLoading: boolean;
+  fetchRefs: (root: string) => Promise<void>;
 
   /** True from the moment "+"/⌘N is clicked until the resulting first
    * message actually creates a session. Keeps the picker's pick from being
    * discarded by an already-spawned session sitting behind the launch
    * screen — see `createSession` and `sendOnLaunch`. */
   startingNewSession: boolean;
+  /** Set when the pending new session (above) was started from a worktree
+   * folder's own "+" — the launch composer's checkout chips are for a fresh
+   * pick, so this pins `sendOnLaunch` to reuse this exact worktree instead of
+   * resolving `composerCheckout`/`composerRef`. Cleared wherever
+   * `startingNewSession` is. */
+  startingNewSessionWorktree: WorktreeInfo | null;
 
   /** `list_agents` snapshot: CLI presence and login per agent. Powers the
    * composer picker and the Agents/Accounts settings sections. */
@@ -423,7 +621,9 @@ interface EgantStore {
   selectAllProjects: () => Promise<void>;
   toggleSidebar: () => Promise<void>;
 
-  createSession: () => Promise<void>;
+  /** Optionally pins the session about to start to an existing worktree —
+   * see `startingNewSessionWorktree`. */
+  createSession: (worktree?: WorktreeInfo) => Promise<void>;
   selectSession: (id: number) => Promise<void>;
   closeSession: (id: number) => Promise<void>;
   selectPrevSession: () => Promise<void>;
@@ -931,6 +1131,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ sidebarShowHarness });
       saveString("egant.sidebarShowHarness", String(sidebarShowHarness));
     },
+    sidebarWorktreesOnly: loadBool("egant.sidebarWorktreesOnly", false),
+    setSidebarWorktreesOnly: (sidebarWorktreesOnly) => {
+      set({ sidebarWorktreesOnly });
+      saveString("egant.sidebarWorktreesOnly", String(sidebarWorktreesOnly));
+    },
     sidebarWidth: loadNumber("egant.sidebarWidth", 250),
     setSidebarWidth: (width) => {
       const sidebarWidth = Math.round(Math.min(480, Math.max(200, width)));
@@ -947,10 +1152,24 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ collapsedProjects });
       localStorage.setItem("egant.collapsedProjects", JSON.stringify(collapsedProjects));
     },
+    collapsedWorktrees: loadBoolRecord("egant.collapsedWorktrees", {}),
+    toggleWorktreeCollapsed: (key) => {
+      const collapsedWorktrees = {
+        ...get().collapsedWorktrees,
+        [key]: !get().collapsedWorktrees[key],
+      };
+      set({ collapsedWorktrees });
+      localStorage.setItem("egant.collapsedWorktrees", JSON.stringify(collapsedWorktrees));
+    },
     panelOpen: loadBool("egant.panelOpen", false),
     panelWidth: loadNumber("egant.panelWidth", 320),
+    panelMaximized: loadBool("egant.panelMaximized", false),
     setPanelWidth: (width) => {
-      const panelWidth = Math.round(Math.min(720, Math.max(240, width)));
+      // A flat cap, not one computed off the window or the sidebar: the panel
+      // simply can't be dragged past this position, so it never has to fight
+      // the chat stage for room — the stage just flexes into whatever's left
+      // (see `min-w-0` on the stage in App.tsx).
+      const panelWidth = Math.round(Math.min(PANEL_MAX_WIDTH, Math.max(240, width)));
       set({ panelWidth });
       saveString("egant.panelWidth", String(panelWidth));
     },
@@ -981,16 +1200,19 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
       saveString("egant.panelOpen", "true");
     },
-    openChangesTab: () => {
+    openDiffsTab: () => {
       const { panelTabs } = get();
-      const existing = panelTabs.find((tab) => tab.kind === "changes");
+      const existing = panelTabs.find((tab) => tab.kind === "diffs");
       if (existing) {
         set({ panelOpen: true, panelTab: existing.id });
       } else {
         const tab: PanelTab = {
-          id: `changes-${nextPanelTabId()}`,
-          kind: "changes",
-          title: "Changes",
+          id: `diffs-${nextPanelTabId()}`,
+          kind: "diffs",
+          // The tab is named after what it is showing, so two of them on
+          // different scopes are told apart on the strip itself.
+          title: diffScopeLabel("workingTree"),
+          scope: "workingTree",
           cwd: workspaceRoot(get().snapshot),
         };
         set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
@@ -999,7 +1221,46 @@ export const useEgant = create<EgantStore>()((set, get) => {
       // Opening it is a good moment to be sure it is current.
       get().refreshChanges();
     },
-    openTerminalTab: () => {
+    openHistoryTab: () => {
+      const { panelTabs } = get();
+      const existing = panelTabs.find((tab) => tab.kind === "history");
+      if (existing) {
+        set({ panelOpen: true, panelTab: existing.id });
+      } else {
+        const tab: PanelTab = {
+          id: `history-${nextPanelTabId()}`,
+          kind: "history",
+          title: "History",
+          cwd: workspaceRoot(get().snapshot),
+        };
+        set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
+      }
+      saveString("egant.panelOpen", "true");
+    },
+    togglePanelMaximized: () => {
+      const panelMaximized = !get().panelMaximized;
+      // Maximizing is also a way of opening it: the button is on the panel's
+      // own header, but a keyboard path to it should not leave the window
+      // showing a panel that isn't there.
+      set({ panelMaximized, panelOpen: panelMaximized ? true : get().panelOpen });
+      saveString("egant.panelMaximized", String(panelMaximized));
+      if (panelMaximized) saveString("egant.panelOpen", "true");
+    },
+    setPanelBase: (tabId, base) => {
+      set({
+        panelTabs: get().panelTabs.map((tab) => (tab.id === tabId ? { ...tab, base } : tab)),
+      });
+      get().refreshChanges();
+    },
+    setPanelScope: (tabId, scope) => {
+      set({
+        panelTabs: get().panelTabs.map((tab) =>
+          tab.id === tabId ? { ...tab, scope, title: diffScopeLabel(scope) } : tab,
+        ),
+      });
+      get().refreshChanges();
+    },
+    openTerminalTab: (cwd) => {
       const { panelTabs } = get();
       // The lowest number not already on the strip, so closing "Terminal" and
       // opening another doesn't produce a second "Terminal 2".
@@ -1010,10 +1271,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
         id: `term-${nextPanelTabId()}`,
         kind: "terminal",
         title: terminalTitle(n),
-        cwd: workspaceRoot(get().snapshot),
+        cwd: cwd || workspaceRoot(get().snapshot),
       };
       set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
       saveString("egant.panelOpen", "true");
+      return tab.id;
     },
     closePanelTab: (id) => {
       const { panelTabs, panelTab } = get();
@@ -1059,7 +1321,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     openFile: (sessionId, path, name) => {
       openStageTab(sessionId, { key: path, kind: "file", path, name });
     },
-    openDiff: (sessionId, root, change, group) => {
+    openDiff: (sessionId, root, change, group, scope) => {
       const name = change.path.split("/").pop() ?? change.path;
       openStageTab(sessionId, {
         key: diffTabKey(group, change.path),
@@ -1067,6 +1329,20 @@ export const useEgant = create<EgantStore>()((set, get) => {
         path: change.path,
         name,
         group,
+        scope,
+        status: change.status,
+        root,
+      });
+    },
+    openCommitDiff: (sessionId, root, sha, change) => {
+      const name = change.path.split("/").pop() ?? change.path;
+      openStageTab(sessionId, {
+        key: diffTabKey("commit", change.path, sha),
+        kind: "diff",
+        path: change.path,
+        name,
+        group: "commit",
+        scope: { kind: "commit", sha },
         status: change.status,
         root,
       });
@@ -1094,7 +1370,13 @@ export const useEgant = create<EgantStore>()((set, get) => {
     focusComposerToken: 0,
     focusFilterToken: 0,
     error: null,
+    notice: null,
+    composerCheckout: null,
+    composerRef: null,
+    refs: [],
+    refsLoading: false,
     startingNewSession: false,
+    startingNewSessionWorktree: null,
 
     agents: [],
     composerAgent: loadString("egant.composerAgent"),
@@ -1266,8 +1548,16 @@ export const useEgant = create<EgantStore>()((set, get) => {
         }
       }
       try {
-        applySnapshot(await api.createCliSession(agent));
-        set({ cliLaunch: null, startingNewSession: false });
+        // A CLI session is a terminal in a directory, so the chips mean the
+        // same thing here as they do for a chat: the shell opens in whatever
+        // checkout the user picked.
+        const checkout = checkoutPlan(
+          checkoutKind(get().composerCheckout, get().snapshot),
+          get().composerRef,
+          get().refs,
+        );
+        applySnapshot(await api.createCliSession(agent, checkout));
+        set({ cliLaunch: null, startingNewSession: false, startingNewSessionWorktree: null });
         return true;
       } catch (error) {
         fail(set, error);
@@ -1361,6 +1651,76 @@ export const useEgant = create<EgantStore>()((set, get) => {
     closeSearch: () => set({ searchOpen: false }),
     requestFocusComposer: () => set((s) => ({ focusComposerToken: s.focusComposerToken + 1 })),
     dismissError: () => set({ error: null }),
+    dismissNotice: () => set({ notice: null }),
+
+    discardKeptWorktree: async (worktree) => {
+      try {
+        await api.discardWorktree(worktree);
+        log.info("store", `discarded worktree ${worktree.branch}`);
+        set({ notice: null });
+      } catch (error) {
+        fail(set, error);
+      }
+    },
+
+    setComposerCheckout: async (kind) => {
+      // Coming back to the project folder with a ref picked that only a
+      // worktree could have reached: drop the pick, or the chip would name a
+      // branch the session is not going to be on. The folder's own branch
+      // takes over, which is what "Current checkout" means.
+      const picked = get().composerRef;
+      const row = get().refs.find((candidate) => candidate.name === picked);
+      const stranded = kind === "current" && row != null && !row.current && row.worktreePath == null;
+      set({ composerCheckout: kind, ...(stranded ? { composerRef: null } : {}) });
+      await get().setWorktreeDefault(kind === "worktree");
+    },
+
+    setComposerRef: (name) => {
+      const row = get().refs.find((candidate) => candidate.name === name);
+      // A ref that is neither what the project folder is on nor already
+      // checked out somewhere can only be acted on by cutting a worktree off
+      // it: egant never moves the branch of the folder you opened. Rather than
+      // leave the chips in a state that means nothing, the pick carries the
+      // checkout chip with it — visibly, so the consequence is on screen.
+      const strandedRef = row != null && !row.current && row.worktreePath == null;
+      const kind = checkoutKind(get().composerCheckout, get().snapshot);
+      set({
+        composerRef: name,
+        composerCheckout: strandedRef && kind === "current" ? "worktree" : get().composerCheckout,
+      });
+    },
+
+    fetchRefs: async (root) => {
+      if (!root) {
+        set({ refs: [], refsLoading: false });
+        return;
+      }
+      set({ refsLoading: true });
+      try {
+        const refs = await api.repoRefs(root);
+        // A ref picked in another project (or a branch deleted since) names
+        // nothing here — drop it rather than send it to the backend.
+        const picked = get().composerRef;
+        const stale = picked != null && !refs.some((row) => row.name === picked);
+        set({ refs, refsLoading: false, ...(stale ? { composerRef: null } : {}) });
+      } catch (error) {
+        // A folder that isn't a repository is the ordinary case, not a
+        // failure: the chips hide themselves and the session runs where it
+        // always did.
+        log.info("store", `no refs for ${root}: ${String(error)}`);
+        set({ refs: [], refsLoading: false, composerRef: null });
+      }
+    },
+
+    setWorktreeDefault: async (on) => {
+      try {
+        const settings = await api.setWorktreeDefault(on);
+        const snapshot = get().snapshot;
+        if (snapshot) set({ snapshot: { ...snapshot, settings } });
+      } catch (error) {
+        fail(set, error);
+      }
+    },
 
     init: async () => {
       log.info("store", "initialising egant");
@@ -1424,7 +1784,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     selectProject: async (id) => {
-      set({ startingNewSession: false });
+      set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
         applySnapshot(await api.selectProject(id));
       } catch (error) {
@@ -1433,7 +1793,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     selectAllProjects: async () => {
-      set({ startingNewSession: false });
+      set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
         applySnapshot(await api.clearActiveProject());
       } catch (error) {
@@ -1458,17 +1818,17 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // resulting empty-transcript screen would silently do nothing — that
     // screen's session already existed and was already running the old
     // model.
-    createSession: async () => {
+    createSession: async (worktree) => {
       const snapshot = get().snapshot;
       if (!snapshot || snapshot.activeProject == null) {
         await get().openFolderDialog();
         return;
       }
-      set({ startingNewSession: true });
+      set({ startingNewSession: true, startingNewSessionWorktree: worktree ?? null });
     },
 
     selectSession: async (id) => {
-      set({ startingNewSession: false });
+      set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
         const snapshot = await api.selectSession(id);
         applySnapshot(snapshot);
@@ -1494,7 +1854,12 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     closeSession: async (id) => {
       try {
-        applySnapshot(await api.closeSession(id));
+        const result = await api.closeSession(id);
+        applySnapshot(result.state);
+        // Only ever set when the worktree was kept: a session that ran in the
+        // project folder, or whose checkout was removed as expected, closes
+        // without a word.
+        if (result.notice) set({ notice: { text: result.notice, worktree: result.kept } });
       } catch (error) {
         fail(set, error);
       }
@@ -1506,7 +1871,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const index = snapshot.sessions.findIndex((s) => s.id === snapshot.activeSession);
       const target = index > 0 ? snapshot.sessions[index - 1] : undefined;
       if (!target) return;
-      set({ startingNewSession: false });
+      set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
         applySnapshot(await api.selectSession(target.id));
       } catch (error) {
@@ -1523,7 +1888,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
           ? snapshot.sessions[index + 1]
           : undefined;
       if (!target) return;
-      set({ startingNewSession: false });
+      set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
         applySnapshot(await api.selectSession(target.id));
       } catch (error) {
@@ -1536,6 +1901,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       log.info("store", `send on launch: ${preview(text)}`);
       try {
         const forceNew = get().startingNewSession;
+        const pendingWorktree = get().startingNewSessionWorktree;
         let id = forceNew ? null : get().snapshot?.activeSession ?? null;
         // Defensive: never send into a session that belongs to another
         // project. If the backend ever hands back a stale pairing again
@@ -1567,6 +1933,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
               get().defaultContexts,
               agent,
             );
+            // A folder picked in the dialog has no chips behind it yet — its
+            // refs were never loaded — so the saved default decides, which is
+            // what omitting the plan asks the backend for.
             applySnapshot(await api.addProject(path, agent, model, variant, context));
           } else {
             const agent = selectNextAgent(get().snapshot, get().composerAgent);
@@ -1580,13 +1949,25 @@ export const useEgant = create<EgantStore>()((set, get) => {
               get().defaultContexts,
               agent,
             );
-            applySnapshot(await api.createSession(agent, model, variant, context));
+            // A worktree folder's own "+" pins the checkout to that exact
+            // worktree, bypassing the composer's chips entirely — those chips
+            // are for a fresh pick, and this session already has one.
+            const checkout = pendingWorktree
+              ? { kind: "reuseWorktree" as const, path: pendingWorktree.path, branch: pendingWorktree.branch }
+              : checkoutPlan(
+                  checkoutKind(get().composerCheckout, get().snapshot),
+                  get().composerRef,
+                  get().refs,
+                );
+            applySnapshot(
+              await api.createSession(agent, model, variant, context, checkout),
+            );
           }
           id = get().snapshot?.activeSession ?? null;
           if (id == null) return;
           await applyComposerBypass(id);
         }
-        if (forceNew) set({ startingNewSession: false });
+        if (forceNew) set({ startingNewSession: false, startingNewSessionWorktree: null });
         await get().ensureTranscript(id);
         await get().send(id, text, images);
       } catch (error) {

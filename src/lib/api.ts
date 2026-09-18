@@ -10,18 +10,27 @@ import type {
   AgentModel,
   AgentStatus,
   AgentUpdate,
+  CheckoutPlan,
   ClaudeUsage,
+  CloseResult,
+  ConflictBlock,
+  ConflictSide,
+  ConflictStatus,
   DiffHunk,
+  DiffScope,
   FileContent,
   FileEntry,
   GhStatus,
   GitChange,
+  HistoryPage,
   PrDetail,
   PullRequest,
+  RepoRef,
   RepoStatus,
   SettingsState,
   TranscriptDto,
   WindowState,
+  WorktreeInfo,
 } from "./types";
 
 export const api = {
@@ -32,9 +41,10 @@ export const api = {
     model?: string | null,
     variant?: string | null,
     context?: number | null,
+    checkout?: CheckoutPlan,
   ) =>
     traced("add_project", `path=${path} agent=${agent ?? "-"}`, () =>
-      invoke<WindowState>("add_project", { path, agent, model, variant, context }),
+      invoke<WindowState>("add_project", { path, agent, model, variant, context, checkout }),
     ),
   selectProject: (id: number) =>
     traced("select_project", `id=${id}`, () => invoke<WindowState>("select_project", { id })),
@@ -42,25 +52,44 @@ export const api = {
   clearActiveProject: () =>
     traced("clear_active_project", "", () => invoke<WindowState>("clear_active_project")),
 
+  /** `checkout` is where the session runs — the composer's two chips, resolved.
+   * Omitted, the backend falls back to the saved default. */
   createSession: (
     agent?: string | null,
     model?: string | null,
     variant?: string | null,
     context?: number | null,
+    checkout?: CheckoutPlan,
   ) =>
     traced("create_session", `agent=${agent ?? "-"} model=${model ?? "-"}`, () =>
-      invoke<WindowState>("create_session", { agent, model, variant, context }),
+      invoke<WindowState>("create_session", { agent, model, variant, context, checkout }),
     ),
   /** Opens a session that runs the agent's own CLI in a terminal instead of
    * driving it through a harness. Rejects when that CLI isn't installed. */
-  createCliSession: (agent: string) =>
+  createCliSession: (agent: string, checkout?: CheckoutPlan) =>
     traced("create_cli_session", `agent=${agent}`, () =>
-      invoke<WindowState>("create_cli_session", { agent }),
+      invoke<WindowState>("create_cli_session", { agent, checkout }),
     ),
   selectSession: (id: number) =>
     traced("select_session", `id=${id}`, () => invoke<WindowState>("select_session", { id })),
-  closeSession: (id: number) =>
-    traced("close_session", `id=${id}`, () => invoke<WindowState>("close_session", { id })),
+  /** Closing also gives the session's worktree back; see `CloseResult`.
+   * `force` is the user answering "delete it anyway" to a worktree that was
+   * kept the first time. */
+  closeSession: (id: number, force?: boolean) =>
+    traced("close_session", `id=${id}`, () =>
+      invoke<CloseResult>("close_session", { id, force }),
+    ),
+  /** Removes a worktree that closing its session decided to keep. Takes the
+   * worktree's own fields because the session that owned it is already gone. */
+  discardWorktree: (worktree: WorktreeInfo) =>
+    traced("discard_worktree", `branch=${worktree.branch}`, () =>
+      invoke<void>("discard_worktree", {
+        repoRoot: worktree.repoRoot,
+        path: worktree.path,
+        branch: worktree.branch,
+        base: worktree.base,
+      }),
+    ),
   /** Returns the session's new title when this turn renamed it away from
    * "New session" — the sidebar patches the row with it right away. `images`
    * are paths already on disk (a pasted screenshot, saved via
@@ -105,6 +134,14 @@ export const api = {
   setDefaultAgent: (agent: string) =>
     traced("set_default_agent", `agent=${agent}`, () =>
       invoke<SettingsState>("set_default_agent", { agent }),
+    ),
+  /** Local branches for the composer's ref picker, most recently committed to
+   * first, each saying where it is checked out. */
+  repoRefs: (root: string) =>
+    traced("repo_refs", `root=${root}`, () => invoke<RepoRef[]>("repo_refs", { root })),
+  setWorktreeDefault: (on: boolean) =>
+    traced("set_worktree_default", `on=${on}`, () =>
+      invoke<SettingsState>("set_worktree_default", { on }),
     ),
   listAgents: () => traced("list_agents", "", () => invoke<AgentStatus[]>("list_agents")),
   /** Every agent the Agents tab lists, with CLI presence. A filesystem
@@ -190,13 +227,23 @@ export const api = {
   // Git, for the panel's Changes tab. Local operations go through libgit2 and
   // are cheap enough to call on every refresh; `gitPush` shells out to the
   // user's own git so it uses their credentials.
-  changesList: (path: string) =>
-    traced("changes_list", path, () => invoke<GitChange[]>("changes_list", { path })),
+  /** Changed files. `scope` picks the comparison — uncommitted work by
+   * default, otherwise what this branch adds, what the last turn did, or one
+   * commit. Only the default scope has a staged side to it. */
+  changesList: (path: string, scope?: DiffScope) =>
+    traced("changes_list", `${path} ${scope?.kind ?? "workingTree"}`, () =>
+      invoke<GitChange[]>("changes_list", { path, scope }),
+    ),
   repoStatus: (path: string) =>
     traced("repo_status", path, () => invoke<RepoStatus>("repo_status", { path })),
-  diffFile: (root: string, path: string, staged: boolean) =>
-    traced("diff_file", `${path} staged=${staged}`, () =>
-      invoke<DiffHunk[]>("diff_file", { root, path, staged }),
+  diffFile: (root: string, path: string, scope?: DiffScope) =>
+    traced("diff_file", `${path} ${scope?.kind ?? "workingTree"}`, () =>
+      invoke<DiffHunk[]>("diff_file", { root, path, scope }),
+    ),
+  /** A page of the commit graph, newest first. */
+  gitHistory: (root: string, cursor?: number, limit?: number) =>
+    traced("git_history", `${root} cursor=${cursor ?? 0}`, () =>
+      invoke<HistoryPage>("git_history", { root, cursor, limit }),
     ),
   stageFiles: (root: string, paths: string[]) =>
     traced("stage_files", `${paths.length} files`, () =>
@@ -231,8 +278,57 @@ export const api = {
     traced("git_pull", `${remote}/${branch}`, () =>
       invoke<string>("git_pull", { root, remote, branch }),
     ),
+  /** Merges the upstream into the current branch — the explicit answer to a
+   * diverged branch, where fast-forward pull refuses. Creates a merge
+   * commit; conflicts come back as an error and leave the tree conflicted. */
+  gitMerge: (root: string, upstream: string) =>
+    traced("git_merge", upstream, () => invoke<string>("git_merge", { root, upstream })),
+  /** Rebases the current branch onto its upstream. Rewrites local commits;
+   * the panel confirms before calling this. */
+  gitRebase: (root: string, upstream: string) =>
+    traced("git_rebase", upstream, () => invoke<string>("git_rebase", { root, upstream })),
   gitFetch: (root: string, remote: string) =>
     traced("git_fetch", remote, () => invoke<string>("git_fetch", { root, remote })),
+
+  // Conflict resolution — a stalled merge/rebase and the toolbar over it.
+  /** Whether a merge/rebase is stalled and which paths it left unmerged. */
+  conflictStatus: (root: string) =>
+    traced("conflict_status", root, () => invoke<ConflictStatus>("conflict_status", { root })),
+  /** The conflict markers inside one file, for the inline quick-action
+   * buttons. Empty for a delete conflict, which has no markers at all. */
+  conflictBlocks: (root: string, path: string) =>
+    traced("conflict_blocks", path, () =>
+      invoke<ConflictBlock[]>("conflict_blocks", { root, path }),
+    ),
+  /** Resolves one file entirely to `side` and stages it. */
+  resolveConflictFile: (root: string, path: string, side: ConflictSide) =>
+    traced("resolve_conflict_file", `${path} side=${side}`, () =>
+      invoke<void>("resolve_conflict_file", { root, path, side }),
+    ),
+  /** Resolves one conflict block inside a file, leaving any other block in it
+   * alone. Auto-stages the file once no marker is left in it. */
+  resolveConflictBlock: (root: string, path: string, index: number, side: ConflictSide) =>
+    traced("resolve_conflict_block", `${path}#${index} side=${side}`, () =>
+      invoke<void>("resolve_conflict_block", { root, path, index, side }),
+    ),
+  /** "Keep All Local" / "Accept All Incoming": resolves every unmerged file to
+   * one side, then finishes the operation the same way `continueConflictOperation`
+   * does. */
+  resolveAllConflicts: (root: string, side: ConflictSide) =>
+    traced("resolve_all_conflicts", `side=${side}`, () =>
+      invoke<string>("resolve_all_conflicts", { root, side }),
+    ),
+  /** `rebase --continue` / a no-edit merge commit, once every file is clean. */
+  continueConflictOperation: (root: string) =>
+    traced("continue_conflict_operation", root, () =>
+      invoke<string>("continue_conflict_operation", { root }),
+    ),
+  /** "Abort & Reset": backs out of the stalled merge/rebase entirely. */
+  abortConflictOperation: (root: string) =>
+    traced("abort_conflict_operation", root, () =>
+      invoke<string>("abort_conflict_operation", { root }),
+    ),
+
   /** One side of a file as a data URL (`workdir` | `index` | `head`), for the
    * image diff. `null` means that side has no such file. */
   blobDataUrl: (root: string, path: string, source: "workdir" | "index" | "head") =>

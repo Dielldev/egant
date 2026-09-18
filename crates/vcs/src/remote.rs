@@ -78,6 +78,25 @@ pub fn pull_ff_only(root: &Path, remote: &str, branch: &str) -> Result<GitOutput
     run(root, &["pull", "--ff-only", remote, branch])
 }
 
+/// Merges `upstream` (e.g. `origin/main`) into the current branch.
+///
+/// Explicit and user-initiated only: unlike `pull_ff_only` this creates a
+/// merge commit, so no automatic path may call it. Conflicts fail loudly and
+/// leave the working tree conflicted — the panel already renders that state,
+/// and the user finishes by resolving, staging and committing.
+pub fn merge_no_edit(root: &Path, upstream: &str) -> Result<GitOutput, VcsError> {
+    run(root, &["merge", "--no-edit", upstream])
+}
+
+/// Rebases the current branch onto `upstream`.
+///
+/// Rewrites local commits, so this is likewise explicit-only. A conflict
+/// stops the rebase mid-flight for the user to resolve in a terminal
+/// (`git rebase --continue` / `--abort`); the failure output says so.
+pub fn rebase_onto(root: &Path, upstream: &str) -> Result<GitOutput, VcsError> {
+    run(root, &["rebase", upstream])
+}
+
 /// Remote names, in config order.
 pub fn remotes(root: &Path) -> Result<Vec<String>, VcsError> {
     Ok(run(root, &["remote"])?

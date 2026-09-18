@@ -38,6 +38,11 @@ pub struct Settings {
     /// Agent id new sessions start with (`claude`, `codex`, `opencode`).
     /// Unknown values fall back to `claude` when read.
     pub default_agent: String,
+    /// Whether a new session gets its own worktree. Off to begin with: a
+    /// session that runs somewhere other than the folder the user opened is a
+    /// surprise the first time, so the choice is theirs to make. The launch
+    /// screen's toggle writes it, so it is only ever made once.
+    pub worktree_default: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +51,7 @@ impl Default for Settings {
             wallpaper: None,
             wallpaper_dim: DEFAULT_DIM,
             default_agent: "claude".to_string(),
+            worktree_default: false,
         }
     }
 }
@@ -58,6 +64,7 @@ pub struct SettingsDto {
     pub wallpaper_name: Option<String>,
     pub wallpaper_dim: f32,
     pub default_agent: String,
+    pub worktree_default: bool,
 }
 
 impl Settings {
@@ -135,6 +142,14 @@ impl Settings {
         self.save();
     }
 
+    /// Whether new sessions get their own worktree. The launch screen's toggle
+    /// is both the choice for the session about to start and the default for
+    /// the next one, so the user never sets this twice.
+    pub fn set_worktree_default(&mut self, on: bool) {
+        self.worktree_default = on;
+        self.save();
+    }
+
     /// Steps the scrim one notch darker, wrapping to the lightest end so a
     /// single control can walk the whole range.
     pub fn cycle_dim(&mut self) {
@@ -157,6 +172,7 @@ impl Settings {
             }),
             wallpaper_dim: self.wallpaper_dim,
             default_agent: self.default_agent.clone(),
+            worktree_default: self.worktree_default,
         }
     }
 

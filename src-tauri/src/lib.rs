@@ -5,6 +5,10 @@
 //! header, its transcript, and the composer that drives it — over a wallpaper.
 //! The agent lives behind `egant-harness`, git behind `egant-vcs`; this crate
 //! is only presentation state and wiring.
+//!
+//! A session can run in the project folder or in an isolated checkout of it —
+//! see [`worktrees`] for which, and for what becomes of the checkout when the
+//! conversation is closed.
 
 mod commands;
 mod dto;
@@ -16,6 +20,7 @@ mod pty;
 mod sessions;
 mod settings;
 mod state;
+mod worktrees;
 
 use std::sync::Mutex;
 use state::AppState;

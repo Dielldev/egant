@@ -4,6 +4,7 @@ import { log } from "../lib/logger";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 import { WindowBar } from "./WindowBar";
+import { WorktreeChip } from "./Worktree";
 
 /** The line across the top of the stage: which conversation this is, and where
  * it runs. It replaced a tab strip — the sidebar already lists every session,
@@ -74,6 +75,9 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
                 ` · ${agentLabel}${active?.kind === "cli" ? " CLI" : ""}`}
             </span>
           )}
+          {/* A session in a worktree is not in the folder its project names,
+            and the header is the one line that says where it is. */}
+          {active?.worktree && <WorktreeChip worktree={active.worktree} />}
           {active?.busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
           {/* Stops short of the panel button so the title can't run under it. */}
           <div data-tauri-drag-region className="h-full flex-1" />

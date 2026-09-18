@@ -27,6 +27,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{EventDto, SessionEventPayload};
 use crate::state::{AppState, SessionMeta};
+use crate::worktrees::SessionWorktree;
 
 /// What the backend asks of a running agent.
 pub enum SessionCommand {
@@ -90,6 +91,11 @@ fn command_name(command: &SessionCommand) -> &'static str {
 /// A failure to spawn is not an error the caller has to handle: the session
 /// still exists and shows what went wrong in its own transcript, which is
 /// where the user is already looking.
+///
+/// `worktree` is an isolated checkout already cut for this session (see
+/// [`crate::worktrees`]); when there is one the agent runs there instead of in
+/// the project folder, and so does everything that follows the session's
+/// working directory.
 pub fn spawn_session(
     app: &AppHandle,
     state: &mut AppState,
@@ -98,6 +104,7 @@ pub fn spawn_session(
     model: Option<String>,
     variant: Option<String>,
     context: Option<u64>,
+    worktree: Option<SessionWorktree>,
 ) -> Result<u64, String> {
     let project = state
         .project(project_id)
@@ -107,6 +114,13 @@ pub fn spawn_session(
     // must fail here with a readable notice, not spawn the agent in a stale
     // directory where it answers with the wrong folder.
     let cwd = crate::project::verify_project_path(&project.fs_path())?;
+    // The worktree is where the session actually runs. The project keeps
+    // naming the session in the sidebar, but every path below — the agent's
+    // own working directory included — is the checkout's.
+    let cwd = match &worktree {
+        Some(worktree) => worktree.path.clone(),
+        None => cwd,
+    };
     let project_name = project.name.clone();
 
     let count = state
@@ -129,13 +143,17 @@ pub fn spawn_session(
         title,
         project_id,
         cwd: cwd.clone(),
-        branch: branch_of(&cwd),
+        branch: worktree
+            .as_ref()
+            .map(|worktree| worktree.branch.clone())
+            .or_else(|| branch_of(&cwd)),
         started_unix_ms: unix_now_ms(),
         agent,
         cli_agent: None,
         model: model.clone(),
         context,
         permission_mode: PermissionMode::Auto,
+        worktree,
         ended: false,
     };
 
@@ -168,6 +186,7 @@ pub fn spawn_session(
                     allowed_patterns: Vec::new(),
                     last_user_text: None,
                     last_user_images: Vec::new(),
+turn_baseline: None,
                 },
             );
             state.order.push(id);
@@ -194,6 +213,7 @@ pub fn spawn_session(
             allowed_patterns: Vec::new(),
             last_user_text: None,
             last_user_images: Vec::new(),
+turn_baseline: None,
         },
     );
     state.order.push(id);
@@ -228,6 +248,7 @@ pub fn spawn_cli_session(
     state: &mut AppState,
     project_id: usize,
     agent: &str,
+    worktree: Option<SessionWorktree>,
 ) -> Result<u64, String> {
     log::info!("spawn cli session agent={agent} project={project_id}");
     let launch = egant_harness::catalog::launch(agent).map_err(|error| {
@@ -239,6 +260,13 @@ pub fn spawn_cli_session(
         .cloned()
         .ok_or_else(|| "unknown project".to_string())?;
     let cwd = crate::project::verify_project_path(&project.fs_path())?;
+    // As for a chat session: the terminal opens in the checkout, so the CLI
+    // the user drives by hand is on the same branch as everything else the
+    // session shows.
+    let cwd = match &worktree {
+        Some(worktree) => worktree.path.clone(),
+        None => cwd,
+    };
 
     // Numbered per agent, not per project: "Pi CLI" beside "Claude Code CLI"
     // reads as two different things, which is what they are.
@@ -265,7 +293,10 @@ pub fn spawn_cli_session(
         title,
         project_id,
         cwd: cwd.clone(),
-        branch: branch_of(&cwd),
+        branch: worktree
+            .as_ref()
+            .map(|worktree| worktree.branch.clone())
+            .or_else(|| branch_of(&cwd)),
         started_unix_ms: unix_now_ms(),
         // Placeholder. `cli_agent` is what every reader of a CLI session
         // actually looks at — see [`crate::state::SessionMeta::cli_agent`].
@@ -274,6 +305,7 @@ pub fn spawn_cli_session(
         model: None,
         context: None,
         permission_mode: PermissionMode::Auto,
+        worktree,
         // Live for as long as the row exists: "ended" is a statement about a
         // harness, and there isn't one. The terminal reports its own CLI's
         // exit, in the terminal, where it happened.
@@ -289,6 +321,7 @@ pub fn spawn_cli_session(
             allowed_patterns: Vec::new(),
             last_user_text: None,
             last_user_images: Vec::new(),
+turn_baseline: None,
         },
     );
     state.order.push(id);
@@ -694,6 +727,18 @@ pub fn send_text(
             let recovered = fallback.filter(|p| p.is_dir());
             if let Some(path) = recovered {
                 if let Some(session) = state.sessions.get_mut(&id) {
+                    // A worktree that is no longer on disk was removed from
+                    // somewhere egant doesn't watch. The session carries on in
+                    // its project folder, and stops claiming a branch it is no
+                    // longer on — the header's chip reads `meta.worktree`.
+                    if let Some(worktree) = session.meta.worktree.take() {
+                        log::info!(
+                            "session {id} lost its worktree at {} — continuing in {}",
+                            worktree.path.display(),
+                            path.display()
+                        );
+                        session.meta.branch = branch_of(&path);
+                    }
                     session.meta.cwd = path;
                 }
             } else {
@@ -710,6 +755,14 @@ pub fn send_text(
         .is_some_and(|session| session.meta.ended && session.commands.is_none());
     if needs_revive {
         revive(app, state, id)?;
+    }
+
+    // The turn starts here, so this is where "what has this turn done" gets
+    // its answer to measure from.
+    if let Some(session) = state.sessions.get(&id) {
+        if !session.meta.ended {
+            mark_turn_baseline(app, id, session.meta.cwd.clone());
+        }
     }
 
     let mut new_title = None;
@@ -733,6 +786,36 @@ pub fn send_text(
     }
     state.persist_session(id);
     Ok(new_title)
+}
+
+/// Records the tree the working directory was in as a turn begins, so the
+/// panel's "Latest turn" scope has a point to measure from.
+///
+/// Off the calling thread and best-effort. It shells out (`git stash create`),
+/// and a turn must never wait on git to start — which does mean an agent fast
+/// enough to write a file in the first few milliseconds would have that file
+/// counted as something that was already there. The alternative is a composer
+/// that stalls on every send in a large repository, which is the worse trade.
+///
+/// A folder that isn't a repository simply never gets a baseline, and the
+/// scope falls back to HEAD (see `commands::resolve_scope`).
+fn mark_turn_baseline(app: &AppHandle, id: u64, cwd: PathBuf) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let baseline = tauri::async_runtime::spawn_blocking(move || {
+            let repo = egant_vcs::Repo::discover(&cwd).ok()?;
+            repo.snapshot_tree().ok()
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(baseline) = baseline else { return };
+        let state = app.state::<Mutex<AppState>>();
+        let mut guard = state.lock().unwrap();
+        if let Some(session) = guard.sessions.get_mut(&id) {
+            session.turn_baseline = Some(baseline);
+        }
+    });
 }
 
 /// Turns a first message into a short session title, so the sidebar reads
@@ -1037,17 +1120,28 @@ pub fn set_permission_mode(
     Ok(mode.as_cli_arg())
 }
 
-pub fn close_session(state: &mut AppState, id: u64) {
+/// Forgets a session: shuts its agent down, drops the row and deletes what was
+/// saved of it.
+///
+/// Returns the worktree it was running in, when it had one. Giving that back
+/// shells out to `git` and so cannot happen here, under the state lock and on
+/// the UI's thread — the caller does it off-thread through
+/// [`crate::worktrees::release`], which is also where the decision not to
+/// delete it lives.
+#[must_use]
+pub fn close_session(state: &mut AppState, id: u64) -> Option<SessionWorktree> {
     log::info!("close session {id}");
     let Some(position) = state.order.iter().position(|sid| *sid == id) else {
-        return;
+        return None;
     };
     let active_index = state
         .active_session
         .and_then(|active| state.order.iter().position(|sid| *sid == active));
 
     state.order.remove(position);
+    let mut worktree = None;
     if let Some(session) = state.sessions.remove(&id) {
+        worktree = session.meta.worktree;
         if let Some(commands) = session.commands {
             let _ = commands.try_send(SessionCommand::Shutdown);
         }
@@ -1079,6 +1173,7 @@ pub fn close_session(state: &mut AppState, id: u64) {
             }
         }
     }
+    worktree
 }
 
 fn dispatch(session: &mut crate::state::ManagedSession, command: SessionCommand) {
@@ -1099,7 +1194,7 @@ fn dispatch(session: &mut crate::state::ManagedSession, command: SessionCommand)
 }
 
 /// The branch `cwd` is on, or `None` outside a repository.
-fn branch_of(cwd: &Path) -> Option<String> {
+pub(crate) fn branch_of(cwd: &Path) -> Option<String> {
     let repo = egant_vcs::Repo::discover(cwd).ok()?;
     repo.head_branch().ok().flatten()
 }

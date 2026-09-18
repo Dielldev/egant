@@ -972,6 +972,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
  "thiserror 2.0.20",
  "window-vibrancy 0.8.0",
 ]

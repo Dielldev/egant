@@ -729,7 +729,7 @@ export function AgentPicker() {
             <>
           {/* Agent — named segments, because which CLI runs the turn is the
             first thing being chosen and an icon alone doesn't say it. */}
-          <div className="flex shrink-0 items-center gap-1 rounded-xl bg-[var(--card)] p-1">
+          <div className="flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl bg-[var(--card)] p-1">
             {visibleAgents.map((id) => {
               const s = agents.find((a) => a.id === id);
               const entry = agentCatalog.find((c) => c.id === id);
@@ -746,7 +746,7 @@ export function AgentPicker() {
               return (
                 // A wrapper, not the button itself: the chat-UI switch is its
                 // own control and cannot be nested inside the tab's button.
-                <div key={id} className="group relative flex min-w-0 flex-1">
+                <div key={id} className="group relative flex shrink-0">
                   <button
                     type="button"
                     onClick={() => switchAgent(id)}
@@ -759,7 +759,7 @@ export function AgentPicker() {
                             ? `${name} — ${ok ? (live ? (s.email ?? "Signed in") : "Not signed in") : (s.installHint ?? "Not installed")}`
                             : name
                     }
-                    className={`flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 transition-colors duration-150 ${
+                    className={`flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 transition-colors duration-150 ${
                       active
                         ? "bg-[var(--selected)] text-[var(--ink)]"
                         : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
