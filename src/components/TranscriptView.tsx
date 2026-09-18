@@ -1,6 +1,6 @@
 import { Check, Copy, FolderOpen } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { permissionSummary, timeLabel, toolCategory, truncate } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission } from "../lib/types";
 import { useEgant } from "../store";
 import { Composer } from "./Composer";
@@ -8,7 +8,7 @@ import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
 import { RunPill } from "./RunPill";
 import { StatusLine } from "./StatusLine";
-import { groupEntries, ReadGroupCard, ToolCard } from "./ToolCards";
+import { CommandGroup, ToolActivityRow, ToolCard } from "./ToolCards";
 
 // ---------------------------------------------------------------------------
 // Chat outline — a port of zeron's MessageRail (`crates/ui/src/rail.rs`,
@@ -354,25 +354,70 @@ export function TranscriptView() {
         style={{ animationDelay: "90ms" }}
       >
         <div className="flex w-full max-w-[735px] flex-col gap-5">
-          {groupEntries(entries).map((item) =>
-            item.kind === "read-group" ? (
-              <ReadGroupCard key={item.index} entries={item.entries} />
-            ) : item.entry.kind === "user" ? (
-              <div
-                key={item.index}
-                ref={(el) => {
-                  if (el) promptRefs.current.set(item.index, el);
-                  else promptRefs.current.delete(item.index);
-                }}
-                data-prompt-index={item.index}
-                className="scroll-mt-[48px]"
-              >
-                <RenderEntry entry={item.entry} sessionId={active.id} />
-              </div>
-            ) : (
-              <RenderEntry key={item.index} entry={item.entry} sessionId={active.id} />
-            ),
-          )}
+          {/* One row per entry, in order — except consecutive shell runs,
+            which fold into a single `Ran N commands` dropdown. The model's
+            own words stay as Markdown text between the rows, so a turn reads
+            like "Now let's guard… / Edited commands.rs +7 -0 › /
+            Now register…" instead of every call collapsing into one giant
+            dropdown. */}
+          {(() => {
+            const nodes: ReactNode[] = [];
+            let i = 0;
+            while (i < entries.length) {
+              const entry = entries[i]!;
+              if (entry.kind === "tool" && toolCategory(entry.name) === "command") {
+                let j = i + 1;
+                while (
+                  j < entries.length &&
+                  entries[j]!.kind === "tool" &&
+                  toolCategory(
+                    (entries[j] as Extract<Entry, { kind: "tool" }>).name,
+                  ) === "command"
+                ) {
+                  j++;
+                }
+                nodes.push(
+                  <CommandGroup
+                    key={`cmd-${i}`}
+                    entries={entries.slice(i, j) as Extract<Entry, { kind: "tool" }>[]}
+                  />,
+                );
+                i = j;
+                continue;
+              }
+              if (entry.kind === "tool") {
+                nodes.push(<ToolActivityRow key={`${i}-${entry.id}`} entry={entry} />);
+              } else if (entry.kind === "user") {
+                nodes.push(
+                  <div
+                    key={i}
+                    ref={(el) => {
+                      if (el) promptRefs.current.set(i, el);
+                      else promptRefs.current.delete(i);
+                    }}
+                    data-prompt-index={i}
+                    className="scroll-mt-[48px]"
+                  >
+                    <RenderEntry entry={entry} sessionId={active.id} />
+                  </div>,
+                );
+              } else if (
+                entry.kind === "assistant" &&
+                !entry.streaming &&
+                entry.text.trim() === ""
+              ) {
+                // A settled but empty reply row carries no words — skip it so
+                // it never inserts a phantom gap between two dropdowns. A
+                // *streaming* empty row still renders: its trailing ▌ is the
+                // "still typing" cue.
+                nodes.push(<span key={i} className="hidden" />);
+              } else {
+                nodes.push(<RenderEntry key={i} entry={entry} sessionId={active.id} />);
+              }
+              i++;
+            }
+            return nodes;
+          })()}
           {pendingList.length > 0 && (
             <PermissionTable
               items={pendingList}
