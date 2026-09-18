@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { fitBelow } from "../lib/popover";
 import { formatContext } from "../lib/types";
@@ -186,6 +187,12 @@ export function AgentPicker() {
   // padding 440px of empty pane under seven rows. The menu always drops
   // downward — see `fitBelow` — so this is the room under the trigger.
   const [menuMaxHeight, setMenuMaxHeight] = useState(440);
+  // Viewport-anchored position for the portaled menu. The menu lives in
+  // `document.body` (not under the trigger) so the composer's own
+  // `backdrop-filter` stacking context can't trap it behind the launch
+  // screen's checkout chips below — that trap is what let "Current checkout"
+  // bleed straight through the agent tabs.
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 420 });
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -195,16 +202,32 @@ export function AgentPicker() {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      // The menu is portaled to `document.body`, so it lives outside the
+      // trigger's subtree — a click inside it must not count as outside.
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target))
+        setOpen(false);
     };
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
+    // The menu is viewport-anchored, so a resize would leave it floating
+    // where the trigger used to be — re-anchor instead of going stale.
+    const onResize = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(420, window.innerWidth - 16);
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      setMenuPos({ top: rect.bottom + 8, left, width });
+      setMenuMaxHeight(fitBelow(rootRef, Math.min(440, window.innerHeight * 0.5)));
+    };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onResize);
     };
   }, [open]);
 
@@ -256,6 +279,15 @@ export function AgentPicker() {
     if (!open) {
       setQuery("");
       setView("models");
+      // Viewport-anchored position for the portaled menu: below the trigger,
+      // clamped off the window's right edge. Measured here (not in render)
+      // so the menu opens exactly where the trigger is on this frame.
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (rect) {
+        const width = Math.min(420, window.innerWidth - 16);
+        const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+        setMenuPos({ top: rect.bottom + 8, left, width });
+      }
       // A live recheck, not the cached presence list: this menu is exactly
       // where a stale "connected" dot (credentials file present, token
       // actually expired) would send someone into a session that fails. It
@@ -626,21 +658,33 @@ export function AgentPicker() {
         />
       </button>
 
-      {open && (
-        <div
-          ref={menuRef}
-          role="dialog"
-          tabIndex={-1}
-          onKeyDown={onKeyDown}
-          onMouseUp={(e) => {
-            // Clicking a star, a tab or an effort row moves focus off whatever
-            // was holding the keys, so it's handed straight back — the input
-            // on the catalog screen, the menu itself on the effort one.
-            if (view === "effort") menuRef.current?.focus();
-            else if (e.target !== inputRef.current) inputRef.current?.focus();
-          }}
-          style={{ maxHeight: menuMaxHeight, transformOrigin: "top left" }}
-          className="menu menu-pop absolute top-full left-0 z-[80] mt-2 flex w-[420px] flex-col overflow-hidden rounded-2xl p-2 outline-none"
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="dialog"
+            tabIndex={-1}
+            onKeyDown={onKeyDown}
+            onMouseUp={(e) => {
+              // Clicking a star, a tab or an effort row moves focus off whatever
+              // was holding the keys, so it's handed straight back — the input
+              // on the catalog screen, the menu itself on the effort one.
+              if (view === "effort") menuRef.current?.focus();
+              else if (e.target !== inputRef.current) inputRef.current?.focus();
+            }}
+            // Portaled to `document.body` with viewport coordinates: the
+            // composer's `backdrop-filter` traps absolutely-positioned
+            // children inside its own stacking context, which pinned this
+            // menu behind the checkout chips below it and let their text
+            // bleed through the agent tabs. `fixed` + body portal escapes it.
+            style={{
+              maxHeight: menuMaxHeight,
+              transformOrigin: "top left",
+              top: menuPos.top,
+              left: menuPos.left,
+              width: menuPos.width,
+            }}
+            className="menu menu-pop fixed z-[100] flex flex-col overflow-hidden rounded-2xl p-2 outline-none"
         >
           {view === "effort" ? (
             <>
@@ -1117,8 +1161,9 @@ export function AgentPicker() {
           </div>
             </>
           )}
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

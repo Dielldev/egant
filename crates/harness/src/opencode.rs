@@ -530,8 +530,8 @@ fn is_permission_denial(output: &str) -> bool {
 /// `Read` with `file_path` — even where they mean the same thing to the
 /// user. Converging the well-known ones here, rather than teaching every
 /// tool card in the frontend each agent's dialect, means the read preview,
-/// the grouped "Read N files" view, and the per-file icon all just work, for
-/// any agent.
+/// the activity rows, and the per-file diff counts all just work, for any
+/// agent.
 fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
     match name {
         "read" => {
@@ -539,6 +539,46 @@ fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
             (
                 "Read".to_string(),
                 serde_json::json!({ "file_path": file_path }),
+            )
+        }
+        "edit" => {
+            let file_path = input.get("filePath").and_then(Value::as_str).unwrap_or("");
+            let old_string = input.get("oldString").and_then(Value::as_str).unwrap_or("");
+            let new_string = input.get("newString").and_then(Value::as_str).unwrap_or("");
+            (
+                "Edit".to_string(),
+                serde_json::json!({
+                    "file_path": file_path,
+                    "old_string": old_string,
+                    "new_string": new_string,
+                }),
+            )
+        }
+        "write" => {
+            let file_path = input.get("filePath").and_then(Value::as_str).unwrap_or("");
+            let content = input
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            (
+                "Write".to_string(),
+                serde_json::json!({ "file_path": file_path, "content": content }),
+            )
+        }
+        "apply_patch" | "patch" => {
+            let file_path = input
+                .get("filePath")
+                .or_else(|| input.get("file_path"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let diff = input.get("diff").and_then(Value::as_str).unwrap_or("");
+            (
+                "Edit".to_string(),
+                serde_json::json!({
+                    "file_path": file_path,
+                    "old_string": "",
+                    "new_string": diff,
+                }),
             )
         }
         _ => (name.to_string(), input),
@@ -776,6 +816,53 @@ mod tests {
             HarnessEvent::ToolResult { output, is_error, .. } => {
                 assert_eq!(output, "1: fn main() {}\n\n(End of file - total 1 lines)");
                 assert!(!is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_and_write_tools_normalize_to_claudes_shape() {
+        let mut t = translator();
+        let events = t.push_line(
+            r#"{"type":"tool_use","part":{"type":"tool","tool":"edit","callID":"c2","state":{"status":"completed","input":{"filePath":"/a/b.rs","oldString":"foo\n","newString":"bar\nbaz\n"},"output":"ok"}}}"#,
+        );
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            HarnessEvent::ToolUse { name, input, .. } => {
+                assert_eq!(name, "Edit");
+                assert_eq!(
+                    input.get("file_path").and_then(Value::as_str),
+                    Some("/a/b.rs")
+                );
+                assert_eq!(
+                    input.get("old_string").and_then(Value::as_str),
+                    Some("foo\n")
+                );
+                assert_eq!(
+                    input.get("new_string").and_then(Value::as_str),
+                    Some("bar\nbaz\n")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let mut t = translator();
+        let events = t.push_line(
+            r#"{"type":"tool_use","part":{"type":"tool","tool":"write","callID":"c3","state":{"status":"completed","input":{"filePath":"/a/c.rs","content":"fn main() {}\n"},"output":"ok"}}}"#,
+        );
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            HarnessEvent::ToolUse { name, input, .. } => {
+                assert_eq!(name, "Write");
+                assert_eq!(
+                    input.get("file_path").and_then(Value::as_str),
+                    Some("/a/c.rs")
+                );
+                assert_eq!(
+                    input.get("content").and_then(Value::as_str),
+                    Some("fn main() {}\n")
+                );
             }
             other => panic!("unexpected {other:?}"),
         }

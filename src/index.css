@@ -902,57 +902,57 @@ html[data-theme="light"] {
   color: var(--ink);
 }
 
-.code-pane .hljs-comment,
-.code-pane .hljs-quote {
+:is(.code-pane, .diff-hl) .hljs-comment,
+:is(.code-pane, .diff-hl) .hljs-quote {
   color: var(--code-comment);
   font-style: italic;
 }
-.code-pane .hljs-keyword,
-.code-pane .hljs-selector-tag,
-.code-pane .hljs-literal,
-.code-pane .hljs-section,
-.code-pane .hljs-doctag {
+:is(.code-pane, .diff-hl) .hljs-keyword,
+:is(.code-pane, .diff-hl) .hljs-selector-tag,
+:is(.code-pane, .diff-hl) .hljs-literal,
+:is(.code-pane, .diff-hl) .hljs-section,
+:is(.code-pane, .diff-hl) .hljs-doctag {
   color: var(--code-keyword);
 }
-.code-pane .hljs-string,
-.code-pane .hljs-regexp,
-.code-pane .hljs-addition {
+:is(.code-pane, .diff-hl) .hljs-string,
+:is(.code-pane, .diff-hl) .hljs-regexp,
+:is(.code-pane, .diff-hl) .hljs-addition {
   color: var(--code-string);
 }
-.code-pane .hljs-number,
-.code-pane .hljs-symbol,
-.code-pane .hljs-bullet {
+:is(.code-pane, .diff-hl) .hljs-number,
+:is(.code-pane, .diff-hl) .hljs-symbol,
+:is(.code-pane, .diff-hl) .hljs-bullet {
   color: var(--code-number);
 }
-.code-pane .hljs-title,
-.code-pane .hljs-title.function_,
-.code-pane .hljs-name {
+:is(.code-pane, .diff-hl) .hljs-title,
+:is(.code-pane, .diff-hl) .hljs-title.function_,
+:is(.code-pane, .diff-hl) .hljs-name {
   color: var(--code-function);
 }
-.code-pane .hljs-title.class_,
-.code-pane .hljs-type,
-.code-pane .hljs-built_in {
+:is(.code-pane, .diff-hl) .hljs-title.class_,
+:is(.code-pane, .diff-hl) .hljs-type,
+:is(.code-pane, .diff-hl) .hljs-built_in {
   color: var(--code-type);
 }
-.code-pane .hljs-attr,
-.code-pane .hljs-attribute,
-.code-pane .hljs-property,
-.code-pane .hljs-variable,
-.code-pane .hljs-template-variable {
+:is(.code-pane, .diff-hl) .hljs-attr,
+:is(.code-pane, .diff-hl) .hljs-attribute,
+:is(.code-pane, .diff-hl) .hljs-property,
+:is(.code-pane, .diff-hl) .hljs-variable,
+:is(.code-pane, .diff-hl) .hljs-template-variable {
   color: var(--code-attr);
 }
-.code-pane .hljs-meta,
-.code-pane .hljs-selector-class,
-.code-pane .hljs-selector-id {
+:is(.code-pane, .diff-hl) .hljs-meta,
+:is(.code-pane, .diff-hl) .hljs-selector-class,
+:is(.code-pane, .diff-hl) .hljs-selector-id {
   color: var(--code-meta);
 }
-.code-pane .hljs-deletion {
+:is(.code-pane, .diff-hl) .hljs-deletion {
   color: var(--diff-del-fg);
 }
-.code-pane .hljs-emphasis {
+:is(.code-pane, .diff-hl) .hljs-emphasis {
   font-style: italic;
 }
-.code-pane .hljs-strong {
+:is(.code-pane, .diff-hl) .hljs-strong {
   font-weight: 600;
 }
 
