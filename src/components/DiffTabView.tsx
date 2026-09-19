@@ -8,6 +8,7 @@ import { useEgant } from "../store";
 import type { DiffStyle } from "./DiffHunks";
 import { DiffHunks } from "./DiffHunks";
 import { isImage, languageFor, previewKind, PreviewPane } from "./FileView";
+import { FileIcon } from "./FileIcon";
 import { useEditorFontSize } from "./SettingsKit";
 
 export type { DiffStyle };
@@ -92,6 +93,8 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
       <div className="flex min-h-0 flex-1 flex-col">
         <DiffToolbar
           label={scopeLabel(tab)}
+          name={tab.name}
+          path={tab.path}
           style={style}
           onStyle={chooseStyle}
           onRefresh={() => refreshChanges()}
@@ -109,6 +112,8 @@ export function DiffTabView({ tab }: { tab: StageTab }) {
     >
       <DiffToolbar
         label={scopeLabel(tab)}
+        name={tab.name}
+        path={tab.path}
         style={style}
         onStyle={chooseStyle}
         onRefresh={() => refreshChanges()}
@@ -204,10 +209,12 @@ function emptyText(tab: StageTab, staged: boolean): string {
   }
 }
 
-/** The strip above a diff: which side of git it is on the left, and how to
+/** The strip above a diff: which file it is on the left, and how to
  * read it on the right. Mirrors the toolbar emdash puts over its diff editor. */
 function DiffToolbar({
   label,
+  name,
+  path,
   style,
   onStyle,
   onRefresh,
@@ -218,6 +225,9 @@ function DiffToolbar({
 }: {
   /** What this diff is of — the side of git, or the comparison it came from. */
   label: string;
+  /** The file under diff, shown with its language icon like the file reader. */
+  name?: string;
+  path?: string;
   style: DiffStyle;
   onStyle: (style: DiffStyle) => void;
   onRefresh: () => void;
@@ -229,8 +239,16 @@ function DiffToolbar({
 }) {
   return (
     <div className="flex h-[38px] shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-4">
-      <span className="min-w-0 truncate text-[11px] font-semibold tracking-[0.08em] text-[var(--faint)] uppercase">
-        {label}
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        {name && <FileIcon name={name} size={14} />}
+        {name && (
+          <span title={path ?? name} className="shrink-0 truncate text-[12px] font-medium text-[var(--ink)]">
+            {name}
+          </span>
+        )}
+        <span className="shrink-0 truncate text-[11px] font-semibold tracking-[0.08em] text-[var(--faint)] uppercase">
+          {label}
+        </span>
       </span>
       <div className="flex shrink-0 items-center gap-1.5">
         <button
