@@ -1,0 +1,31 @@
+# CodeRabbit configuration
+# https://docs.coderabbit.ai/reference/configuration
+
+language: en-US
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  auto_review:
+    enabled: true
+  path_filters:
+    # Lockfiles
+    - "!**/package-lock.json"
+    - "!**/Cargo.lock"
+    - "!**/yarn.lock"
+    - "!**/pnpm-lock.yaml"
+    # Dependencies
+    - "!**/node_modules/**"
+    # Build outputs
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/.next/**"
+    - "!**/target/**"
+    # Minified files
+    - "!**/*.min.js"
+    - "!**/*.min.css"
+    - "!**/*.min.js.map"
+    - "!**/*.min.css.map"
+
+chat:
+  auto_reply: true
