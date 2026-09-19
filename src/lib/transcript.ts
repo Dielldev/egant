@@ -643,7 +643,7 @@ export function stateLabel(state: TurnState, ended: boolean): string {
 export function toolSummary(input: unknown, name: string): string {
   if (input !== null && typeof input === "object") {
     const record = input as Record<string, unknown>;
-    for (const key of ["command", "file_path", "path", "pattern", "url", "prompt"]) {
+    for (const key of ["command", "file_path", "filePath", "path", "pattern", "url", "prompt"]) {
       const value = record[key];
       if (typeof value === "string") return value.split("\n")[0] ?? value;
     }
@@ -658,36 +658,113 @@ export function basename(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1]! : path;
 }
 
+/** Tool family, resolved case-insensitively so Claude (`Edit`), opencode
+ * (`edit`) and Codex (`exec`, file-change items) all land in the same bucket.
+ * Used by the activity rows to decide whether a call edits a file, creates
+ * one, reads one, runs a command, or is something else entirely. */
+export type ToolCategory = "edit" | "write" | "read" | "command" | "other";
+
+export function toolCategory(name: string): ToolCategory {
+  switch (name.toLowerCase()) {
+    case "edit":
+    case "multiedit":
+    case "apply_patch":
+    case "patch":
+      return "edit";
+    case "write":
+    case "create":
+      return "write";
+    case "read":
+    case "view":
+      return "read";
+    case "bash":
+    case "exec":
+    case "shell":
+    case "command":
+    case "terminal":
+      return "command";
+    default:
+      return "other";
+  }
+}
+
+function strField(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return "";
+}
+
+/** The file a tool call touches, across every harness dialect: Claude's
+ * `file_path`, opencode's `filePath`, Codex's `path`/`file`, and a bare
+ * `filePath` some tools use. Empty when the call touches no file. */
+export function toolFilePath(input: unknown): string {
+  if (input === null || typeof input !== "object") return "";
+  const record = input as Record<string, unknown>;
+  return strField(record, ["file_path", "filePath", "path", "file", "filename", "file_name"]);
+}
+
+/** The shell command a command tool runs (`command` everywhere). */
+export function toolCommand(input: unknown): string {
+  if (input === null || typeof input !== "object") return "";
+  const record = input as Record<string, unknown>;
+  const value = record["command"];
+  return typeof value === "string" ? value : "";
+}
+
+/** The new file content a Write/Create call carries (`content` on both
+ * harnesses, with `text`/`body` as fallbacks for future shapes). */
+export function toolWriteContent(input: unknown): string {
+  if (input === null || typeof input !== "object") return "";
+  const record = input as Record<string, unknown>;
+  return strField(record, ["content", "text", "body", "code", "newString", "new_string"]);
+}
+
 export interface EditOp {
   old_string: string;
   new_string: string;
 }
 
 /** `Edit` and `MultiEdit` inputs differ in shape (one op vs. an `edits`
- * array) but the card renders them identically — one diff per op. */
+ * array) but the card renders them identically — one diff per op.
+ * Case-insensitive on the tool name and tolerant of camelCase inputs so
+ * opencode's `edit` (`filePath`/`oldString`/`newString`) lands here too. */
 export function normalizeEdit(
   name: string,
   input: unknown,
 ): { filePath: string; edits: EditOp[] } {
   const record = (input ?? {}) as Record<string, unknown>;
-  const filePath = typeof record.file_path === "string" ? record.file_path : "";
+  const filePath = toolFilePath(record);
 
-  if (name === "MultiEdit" && Array.isArray(record.edits)) {
+  const getOld = (o: Record<string, unknown>): string =>
+    strField(o, ["old_string", "oldString", "old_text", "oldText"]);
+  const getNew = (o: Record<string, unknown>): string =>
+    strField(o, ["new_string", "newString", "new_text", "newText", "diff", "content"]);
+
+  if (name.toLowerCase() === "multiedit" && Array.isArray(record.edits)) {
     const edits = record.edits
       .filter((edit): edit is Record<string, unknown> => edit !== null && typeof edit === "object")
       .map((edit) => ({
-        old_string: typeof edit.old_string === "string" ? edit.old_string : "",
-        new_string: typeof edit.new_string === "string" ? edit.new_string : "",
+        old_string: getOld(edit),
+        new_string: getNew(edit),
       }));
     return { filePath, edits };
+  }
+
+  // An `apply_patch`-style call carries a single `diff` rather than an
+  // old/new pair — render it as a pure addition so it still gets +N counts.
+  const patch = strField(record, ["diff", "patch"]);
+  if (patch && !getOld(record) && !getNew(record)) {
+    return { filePath, edits: [{ old_string: "", new_string: patch }] };
   }
 
   return {
     filePath,
     edits: [
       {
-        old_string: typeof record.old_string === "string" ? record.old_string : "",
-        new_string: typeof record.new_string === "string" ? record.new_string : "",
+        old_string: getOld(record),
+        new_string: getNew(record),
       },
     ],
   };
@@ -713,7 +790,8 @@ export function permissionSummary(input: unknown): string {
     const record = input as Record<string, unknown>;
     const command = record["command"];
     if (typeof command === "string") return command;
-    const filePath = record["file_path"];
+    const filePath =
+      record["file_path"] ?? record["filePath"] ?? record["path"] ?? record["file"];
     if (typeof filePath === "string") return filePath;
   }
   try {
