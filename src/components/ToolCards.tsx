@@ -15,6 +15,7 @@ import {
 } from "../lib/transcript";
 import type { Entry } from "../lib/types";
 import { AddedLinesView, DiffView } from "./DiffView";
+import { FileIcon } from "./FileIcon";
 import { languageFor } from "./FileView";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
@@ -238,16 +239,21 @@ function CopyButton({ text, title }: { text: string; title?: string }) {
   );
 }
 
-/** Path header above a dropdown's code, like the screenshot: the full path on
- * the left, a copy button on the right. */
+/** Path header above a dropdown's code, like the screenshot: the file's type
+ * icon plus the full path on the left, a copy button on the right. */
 function BodyHeader({ path, copyText }: { path?: string; copyText?: string }) {
   if (!path && !copyText) return null;
+  const name = path ? (basename(path) || "file") : "";
+  const isDir = !!path && path.endsWith("/");
   return (
     <div className="flex items-center gap-2">
       {path ? (
-        <div title={path} className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--faint)]">
-          {path}
-        </div>
+        <>
+          <FileIcon name={name} isDir={isDir} size={12} />
+          <div title={path} className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--faint)]">
+            {path}
+          </div>
+        </>
       ) : (
         <span className="flex-1" />
       )}
@@ -743,6 +749,9 @@ export function ToolActivityRow({ entry }: { entry: ToolEntry }) {
   const filePath = toolFilePath(entry.input);
   const hasBody =
     entry.output != null || cat === "edit" || cat === "write" || isTodoTool(entry.name);
+  const fileName = filePath ? basename(filePath) || "file" : "";
+  const fileIsDir = filePath.endsWith("/");
+  const showFileIcon = filePath !== "" && cat !== "other";
 
   return (
     <div className="flex w-full flex-col">
@@ -765,6 +774,7 @@ export function ToolActivityRow({ entry }: { entry: ToolEntry }) {
             <ChevronRight size={12} strokeWidth={2} className="opacity-40" />
           )}
         </span>
+        {showFileIcon && <FileIcon name={fileName} isDir={fileIsDir} size={13} />}
         <span className="min-w-0 flex-1 truncate text-[var(--muted)]">{label.text}</span>
         {label.hasDiff && <DiffCounts added={label.added} removed={label.removed} />}
         {busy && !entry.isError && (
