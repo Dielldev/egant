@@ -28,7 +28,6 @@ import type { Entry } from "../lib/types";
 import { AddedLinesView, DiffView } from "./DiffView";
 import { FileIcon } from "./FileIcon";
 import { languageFor } from "./FileView";
-import { FileIcon } from "./FileIcon";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
