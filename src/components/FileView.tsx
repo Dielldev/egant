@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { api } from "../lib/api";
 import type { FileContent } from "../lib/types";
 import { useEgant, workspaceRoot } from "../store";
+import { FileIcon } from "./FileIcon";
 import { Markdown } from "./Markdown";
 import { useEditorFontSize } from "./SettingsKit";
 
@@ -218,8 +219,12 @@ export function FileView({ path, name }: { path: string; name: string }) {
       style={{ "--editor-font-size": `${editorFontSize}px` } as CSSProperties}
     >
       <div className="flex shrink-0 items-center gap-2 px-6 py-1.5 text-[12px] text-[var(--faint)]">
+        <span className="flex shrink-0 items-center">
+          <FileIcon name={name} size={14} />
+        </span>
         <span title={path} className="min-w-0 flex-1 truncate">
-          {relative}
+          <span className="font-medium text-[var(--ink)]">{name}</span>
+          {relative !== name && <span className="ml-2">{relative}</span>}
         </span>
         {content && !content.binary && (
           <span className="shrink-0">{sizeLabel(content.bytes)}</span>

@@ -1596,6 +1596,12 @@ function ChangesList({
             ) : (
               <ChevronDown size={12} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
             )}
+            <FileIcon
+              name={node.name}
+              isDir
+              open={!collapsed.has(node.path)}
+              size={15}
+            />
             <span className="min-w-0 truncate">{node.name}</span>
           </button>
           {!collapsed.has(node.path) && render(node.children, depth + 1)}
