@@ -1,6 +1,6 @@
 import { Check, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { permissionSummary, timeLabel, toolCategory, truncate } from "../lib/transcript";
+import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission } from "../lib/types";
 import { useEgant } from "../store";
 import { Composer } from "./Composer";
@@ -8,7 +8,7 @@ import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
 import { RunPill } from "./RunPill";
 import { StatusLine } from "./StatusLine";
-import { CommandGroup, ToolActivityRow, ToolCard } from "./ToolCards";
+import { ToolActivityGroup, ToolCard } from "./ToolCards";
 
 // ---------------------------------------------------------------------------
 // Chat outline — a port of zeron's MessageRail (`crates/ui/src/rail.rs`,
@@ -354,40 +354,32 @@ export function TranscriptView() {
         style={{ animationDelay: "90ms" }}
       >
         <div className="flex w-full max-w-[735px] flex-col gap-5">
-          {/* One row per entry, in order — except consecutive shell runs,
-            which fold into a single `Ran N commands` dropdown. The model's
-            own words stay as Markdown text between the rows, so a turn reads
-            like "Now let's guard… / Edited commands.rs +7 -0 › /
-            Now register…" instead of every call collapsing into one giant
-            dropdown. */}
+          {/* One row per entry, in order — except consecutive tool calls,
+            which fold into a single grouped activity block (`Ran 1 command
+            · read 5 files · searched 1 time`) with one row per call. The
+            model's own words stay as Markdown text between the blocks, so a
+            turn reads like "Now let's guard… / [activity] / Now register…"
+            instead of every call collapsing into one giant dropdown. */}
           {(() => {
             const nodes: ReactNode[] = [];
             let i = 0;
             while (i < entries.length) {
               const entry = entries[i]!;
-              if (entry.kind === "tool" && toolCategory(entry.name) === "command") {
+              if (entry.kind === "tool") {
                 let j = i + 1;
-                while (
-                  j < entries.length &&
-                  entries[j]!.kind === "tool" &&
-                  toolCategory(
-                    (entries[j] as Extract<Entry, { kind: "tool" }>).name,
-                  ) === "command"
-                ) {
+                while (j < entries.length && entries[j]!.kind === "tool") {
                   j++;
                 }
                 nodes.push(
-                  <CommandGroup
-                    key={`cmd-${i}`}
+                  <ToolActivityGroup
+                    key={`tools-${i}`}
                     entries={entries.slice(i, j) as Extract<Entry, { kind: "tool" }>[]}
                   />,
                 );
                 i = j;
                 continue;
               }
-              if (entry.kind === "tool") {
-                nodes.push(<ToolActivityRow key={`${i}-${entry.id}`} entry={entry} />);
-              } else if (entry.kind === "user") {
+              if (entry.kind === "user") {
                 nodes.push(
                   <div
                     key={i}
