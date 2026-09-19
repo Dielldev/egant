@@ -158,12 +158,18 @@ impl Repo {
             let Ok(commit) = reference.peel_to_commit() else {
                 continue;
             };
-            map.entry(commit.id()).or_default().push(CommitRef { kind, label });
+            map.entry(commit.id())
+                .or_default()
+                .push(CommitRef { kind, label });
         }
         for refs in map.values_mut() {
             // Branches before remotes before tags, alphabetical within each,
             // so a row's chips don't reshuffle between renders.
-            refs.sort_by(|a, b| order(a.kind).cmp(&order(b.kind)).then(a.label.cmp(&b.label)));
+            refs.sort_by(|a, b| {
+                order(a.kind)
+                    .cmp(&order(b.kind))
+                    .then(a.label.cmp(&b.label))
+            });
         }
         map
     }
@@ -233,7 +239,10 @@ mod tests {
             tip.refs.iter().any(|r| r.kind == RefKind::Branch),
             "the checked-out branch names its own tip"
         );
-        assert!(page.commits[1].refs.is_empty(), "nothing points at the middle");
+        assert!(
+            page.commits[1].refs.is_empty(),
+            "nothing points at the middle"
+        );
     }
 
     #[test]

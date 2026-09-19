@@ -80,14 +80,7 @@ async fn add_project(
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
     sessions::spawn_session(
-        &app,
-        &mut guard,
-        project_id,
-        requested,
-        model,
-        variant,
-        context,
-        worktree,
+        &app, &mut guard, project_id, requested, model, variant, context, worktree,
     )
     .map_err(|error| {
         log::error!("add_project spawn failed: {error}");
@@ -155,14 +148,7 @@ async fn create_session(
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
     sessions::spawn_session(
-        &app,
-        &mut guard,
-        project,
-        requested,
-        model,
-        variant,
-        context,
-        worktree,
+        &app, &mut guard, project, requested, model, variant, context, worktree,
     )
     .map_err(|error| {
         log::error!("create_session spawn failed: {error}");
@@ -255,9 +241,9 @@ fn resolve_scope(
             let Some(base) = base else {
                 return Err("nothing to compare this branch against".to_string());
             };
-            let tree = repo
-                .merge_base_tree(&base)
-                .map_err(|error| format!("could not find where this branch left {base}: {error}"))?;
+            let tree = repo.merge_base_tree(&base).map_err(|error| {
+                format!("could not find where this branch left {base}: {error}")
+            })?;
             Ok(Some(ScopeBase::Tree(tree)))
         }
         DiffScopeArg::Turn { session } => {
@@ -446,10 +432,7 @@ async fn close_session(
             // checkout went with the conversation, or it was never egant's.
             Released::Removed { .. } | Released::NotOurs => {}
             Released::Kept { why, path } => {
-                notice = Some(format!(
-                    "Kept the worktree at {} — {why}.",
-                    path.display()
-                ));
+                notice = Some(format!("Kept the worktree at {} — {why}.", path.display()));
                 kept = Some(dto);
             }
         }
@@ -518,7 +501,11 @@ fn send_message(
     text: String,
     images: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    let images: Vec<PathBuf> = images.unwrap_or_default().into_iter().map(PathBuf::from).collect();
+    let images: Vec<PathBuf> = images
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
     log::info!(
         "send_message session {id} ({} chars, {} image(s))",
         text.len(),
@@ -626,9 +613,7 @@ fn set_wallpaper(state: BackendState<'_>, path: Option<String>) -> Result<Settin
             return Err(format!("{path} is not an image this window can draw"));
         }
     }
-    guard
-        .settings
-        .set_wallpaper(path.map(PathBuf::from));
+    guard.settings.set_wallpaper(path.map(PathBuf::from));
     Ok(guard.settings.dto())
 }
 
@@ -1067,7 +1052,9 @@ fn blob_bytes(root: &str, path: &Path, source: &str) -> Result<Option<Vec<u8>>, 
         if !full.is_file() {
             return Ok(None);
         }
-        return Ok(Some(std::fs::read(full).map_err(|error| error.to_string())?));
+        return Ok(Some(
+            std::fs::read(full).map_err(|error| error.to_string())?,
+        ));
     }
 
     let repo = egant_vcs::Repo::discover(root).map_err(|error| error.to_string())?;
@@ -1414,7 +1401,11 @@ fn save_pasted_image(data: String, extension: String) -> Result<String, String> 
         .filter(|c| c.is_ascii_alphanumeric())
         .take(8)
         .collect();
-    let ext = if ext.is_empty() { "png".to_string() } else { ext };
+    let ext = if ext.is_empty() {
+        "png".to_string()
+    } else {
+        ext
+    };
     let path = dir.join(format!("pasted-image-{stamp}-{seq}.{ext}"));
     std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
     Ok(path.display().to_string())

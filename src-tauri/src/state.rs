@@ -26,7 +26,7 @@ pub struct SessionMeta {
     /// `egant-vcs` rather than a `git` subprocess so opening a session never
     /// waits on a process spawn.
     pub branch: Option<String>,
-    pub     started_unix_ms: u64,
+    pub started_unix_ms: u64,
     /// Which agent runs this session. Fixed at creation: switching mid-stream
     /// would orphan the backend's own session on the other CLI.
     pub agent: AgentId,
@@ -277,7 +277,9 @@ impl AppState {
     /// project's path rather than the in-memory project id (ids are
     /// reassigned every launch).
     pub(crate) fn persist_session(&self, id: u64) {
-        let Some(session) = self.sessions.get(&id) else { return };
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
         let Some(project) = self.project(session.meta.project_id) else {
             return;
         };
@@ -426,17 +428,25 @@ fn machine_name() -> String {
 }
 
 fn run(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program).args(args).output().ok()?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
     let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!name.is_empty()).then_some(name)
 }
 
 /// `{agent: [modelId, ...]}` — the shape the picker looks up by agent id
 /// without needing to know `AgentId` is a Rust enum underneath.
-fn bad_models_dto(bad_models: &std::collections::HashSet<(AgentId, String)>) -> HashMap<String, Vec<String>> {
+fn bad_models_dto(
+    bad_models: &std::collections::HashSet<(AgentId, String)>,
+) -> HashMap<String, Vec<String>> {
     let mut by_agent: HashMap<String, Vec<String>> = HashMap::new();
     for (agent, model) in bad_models {
-        by_agent.entry(agent.as_str().to_string()).or_default().push(model.clone());
+        by_agent
+            .entry(agent.as_str().to_string())
+            .or_default()
+            .push(model.clone());
     }
     by_agent
 }
@@ -455,20 +465,27 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
         // one `AgentId` has no variant for; everything downstream (the
         // sidebar glyph, the header's label) keys off this string, so it is
         // the one place the two registries have to agree.
-        kind: if meta.cli_agent.is_some() { "cli" } else { "chat" },
+        kind: if meta.cli_agent.is_some() {
+            "cli"
+        } else {
+            "chat"
+        },
         agent: meta
             .cli_agent
             .clone()
             .unwrap_or_else(|| meta.agent.as_str().to_string()),
         model_override: meta.model.clone(),
         context: meta.context,
-        worktree: meta.worktree.as_ref().map(|worktree| crate::dto::WorktreeDto {
-            path: worktree.path.display().to_string(),
-            branch: worktree.branch.clone(),
-            name: worktree.name.clone(),
-            base: worktree.base.clone(),
-            repo_root: worktree.repo_root.display().to_string(),
-        }),
+        worktree: meta
+            .worktree
+            .as_ref()
+            .map(|worktree| crate::dto::WorktreeDto {
+                path: worktree.path.display().to_string(),
+                branch: worktree.branch.clone(),
+                name: worktree.name.clone(),
+                base: worktree.base.clone(),
+                repo_root: worktree.repo_root.display().to_string(),
+            }),
         ended: meta.ended,
         busy: session.transcript.is_busy(),
         model: session.transcript.model.clone(),
@@ -512,7 +529,7 @@ mod tests {
                 allowed_patterns: Vec::new(),
                 last_user_text: None,
                 last_user_images: Vec::new(),
-turn_baseline: None,
+                turn_baseline: None,
             },
         );
         AppState {
@@ -578,7 +595,7 @@ turn_baseline: None,
                 allowed_patterns: Vec::new(),
                 last_user_text: None,
                 last_user_images: Vec::new(),
-turn_baseline: None,
+                turn_baseline: None,
             },
         );
         state.order.push(2);

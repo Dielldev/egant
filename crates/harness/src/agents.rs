@@ -189,7 +189,11 @@ const DESCRIPTORS: &[AgentDescriptor] = &[
         name: "Pi",
         cli: "pi",
         env_override: "PI_EXECUTABLE",
-        extra_paths: &["~/.local/bin/pi", "/opt/homebrew/bin/pi", "/usr/local/bin/pi"],
+        extra_paths: &[
+            "~/.local/bin/pi",
+            "/opt/homebrew/bin/pi",
+            "/usr/local/bin/pi",
+        ],
         install_hint: "Install the pi CLI to enable",
     },
 ];
@@ -407,11 +411,7 @@ pub fn resolve_executable(desc: &AgentDescriptor) -> Option<PathBuf> {
 /// [`resolve_executable`] for callers that hold the pieces rather than a
 /// descriptor — the install catalog, whose entries cover CLIs with no
 /// harness behind them.
-pub fn resolve_cli(
-    cli: &str,
-    env_override: Option<&str>,
-    extra_paths: &[&str],
-) -> Option<PathBuf> {
+pub fn resolve_cli(cli: &str, env_override: Option<&str>, extra_paths: &[&str]) -> Option<PathBuf> {
     let exe = exe_name(cli);
     if let Some(path) = env_override
         .and_then(std::env::var_os)

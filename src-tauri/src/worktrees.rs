@@ -413,7 +413,10 @@ mod tests {
 
         assert_eq!(release(&worktree, false), Released::NotOurs);
         assert!(worktree.path.is_dir(), "a borrowed checkout was removed");
-        assert!(is_live(&worktree), "git stopped listing a borrowed worktree");
+        assert!(
+            is_live(&worktree),
+            "git stopped listing a borrowed worktree"
+        );
     }
 
     #[test]

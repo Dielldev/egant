@@ -66,7 +66,10 @@ pub fn load_projects() -> Vec<PathBuf> {
     let file: ProjectsFile = match serde_json::from_str(&text) {
         Ok(file) => file,
         Err(error) => {
-            log::warn!("ignoring unreadable projects at {}: {error}", path.display());
+            log::warn!(
+                "ignoring unreadable projects at {}: {error}",
+                path.display()
+            );
             return Vec::new();
         }
     };
@@ -145,7 +148,9 @@ fn session_path(id: u64) -> Option<PathBuf> {
 /// if it is, losing the last few in-flight words is a fair trade against
 /// disk I/O on every token).
 pub fn save_session(meta: &PersistedMeta, transcript: &Transcript) {
-    let Some(path) = session_path(meta.id) else { return };
+    let Some(path) = session_path(meta.id) else {
+        return;
+    };
     let record = PersistedSession {
         meta: meta.clone(),
         transcript: transcript.clone(),
@@ -225,7 +230,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
 
         let tmp = path.with_extension("json.tmp");
-        assert!(!tmp.exists(), "the swap file should not survive a successful write");
+        assert!(
+            !tmp.exists(),
+            "the swap file should not survive a successful write"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

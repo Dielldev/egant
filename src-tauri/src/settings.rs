@@ -24,8 +24,7 @@ const DIM_STEP: f32 = 0.1;
 /// Extensions the stage can draw as a wallpaper. Mirrors what web browsers
 /// decode, which is what renders the wallpaper in the Tauri GUI.
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tif", "tiff", "avif", "heic",
-    "heif",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tif", "tiff", "avif", "heic", "heif",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

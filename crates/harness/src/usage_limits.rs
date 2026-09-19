@@ -111,7 +111,12 @@ fn access_token_from_file() -> Option<String> {
 #[cfg(target_os = "macos")]
 fn access_token_from_keychain() -> Option<String> {
     let output = std::process::Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

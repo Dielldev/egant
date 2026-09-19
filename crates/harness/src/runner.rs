@@ -193,7 +193,11 @@ async fn run_turn<T: TurnTranslator>(
 ) -> bool {
     let request = translator.build(&text, &images);
     let program = request.program.display().to_string();
-    log::info!("turn start program={program} cwd={} ({} chars)", request.cwd.display(), text.len());
+    log::info!(
+        "turn start program={program} cwd={} ({} chars)",
+        request.cwd.display(),
+        text.len()
+    );
     let mut child = match Command::new(&request.program)
         .args(&request.args)
         .current_dir(&request.cwd)

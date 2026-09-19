@@ -83,9 +83,10 @@ impl OpencodeRun {
             options.session.is_some(),
         );
         let program = resolve_program(&options.program)?;
-        let project_name = options.project_name.clone().unwrap_or_else(|| {
-            crate::project_display_name(&options.cwd)
-        });
+        let project_name = options
+            .project_name
+            .clone()
+            .unwrap_or_else(|| crate::project_display_name(&options.cwd));
         let auto = std::sync::Arc::new(std::sync::Mutex::new(OpencodeAuto {
             always: options.auto_approve,
             once: false,
@@ -142,9 +143,8 @@ impl OpencodeRun {
 fn resolve_program(program: &Path) -> Result<PathBuf> {
     if program.as_os_str() == "opencode" {
         let desc = AgentId::Opencode.descriptor();
-        crate::agents::resolve_executable(desc).with_context(|| {
-            format!("opencode is not installed: {}", desc.install_hint)
-        })
+        crate::agents::resolve_executable(desc)
+            .with_context(|| format!("opencode is not installed: {}", desc.install_hint))
     } else {
         Ok(program.to_path_buf())
     }
@@ -169,7 +169,11 @@ impl Harness for OpencodeRun {
     }
 
     async fn send(&mut self, text: String, images: Vec<PathBuf>) -> Result<()> {
-        log::debug!("opencode send ({} chars, {} image(s))", text.len(), images.len());
+        log::debug!(
+            "opencode send ({} chars, {} image(s))",
+            text.len(),
+            images.len()
+        );
         self.runner.send(text, images);
         Ok(())
     }
@@ -344,14 +348,10 @@ impl TurnTranslator for OpencodeTranslator {
             Some("step_finish") => {
                 if let Some(part) = value.get("part") {
                     if let Some(tokens) = part.get("tokens") {
-                        self.turn.input_tokens += tokens
-                            .get("input")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
-                        self.turn.output_tokens += tokens
-                            .get("output")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
+                        self.turn.input_tokens +=
+                            tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
+                        self.turn.output_tokens +=
+                            tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
                     }
                     self.turn.cost_usd += part.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
                 }
@@ -494,10 +494,7 @@ impl OpencodeTranslator {
             // card under every request. Keep it neutral; the permission table
             // below is the actual UI for this.
             let (display_output, display_is_error) = if is_denial {
-                (
-                    "Waiting for approval — nothing ran yet.".to_string(),
-                    false,
-                )
+                ("Waiting for approval — nothing ran yet.".to_string(), false)
             } else if output.is_empty() && !error_text.is_empty() {
                 (error_text.clone(), is_error)
             } else {
@@ -576,10 +573,7 @@ fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
         }
         "write" => {
             let file_path = input.get("filePath").and_then(Value::as_str).unwrap_or("");
-            let content = input
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let content = input.get("content").and_then(Value::as_str).unwrap_or("");
             (
                 "Write".to_string(),
                 serde_json::json!({ "file_path": file_path, "content": content }),
@@ -729,7 +723,10 @@ mod tests {
         // Real vision input via `-f`, not a `@path` mention baked into the
         // prompt text.
         let mut t = translator();
-        let images = vec![PathBuf::from("/tmp/pasted-1.png"), PathBuf::from("/tmp/pasted-2.png")];
+        let images = vec![
+            PathBuf::from("/tmp/pasted-1.png"),
+            PathBuf::from("/tmp/pasted-2.png"),
+        ];
         let req = t.build("look at this", &images);
         let flags: Vec<&String> = req
             .args
@@ -784,13 +781,8 @@ mod tests {
     #[test]
     fn text_and_tool_lines_translate() {
         let mut t = translator();
-        let events = t.push_line(
-            r#"{"type":"text","part":{"type":"text","text":"hello"}}"#,
-        );
-        assert!(matches!(
-            events[0],
-            HarnessEvent::AssistantMessage { .. }
-        ));
+        let events = t.push_line(r#"{"type":"text","part":{"type":"text","text":"hello"}}"#);
+        assert!(matches!(events[0], HarnessEvent::AssistantMessage { .. }));
 
         let events = t.push_line(
             r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"ls"},"output":"a"}}}"#,
@@ -798,7 +790,9 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], HarnessEvent::ToolUse { .. }));
         match &events[1] {
-            HarnessEvent::ToolResult { output, is_error, .. } => {
+            HarnessEvent::ToolResult {
+                output, is_error, ..
+            } => {
                 assert_eq!(output, "a");
                 assert!(!is_error);
             }
@@ -833,7 +827,9 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         match &events[1] {
-            HarnessEvent::ToolResult { output, is_error, .. } => {
+            HarnessEvent::ToolResult {
+                output, is_error, ..
+            } => {
                 assert_eq!(output, "1: fn main() {}\n\n(End of file - total 1 lines)");
                 assert!(!is_error);
             }
@@ -920,9 +916,8 @@ mod tests {
     fn error_line_fails_the_turn_once() {
         let mut t = translator();
         t.build("hi", &[]);
-        let events = t.push_line(
-            r#"{"type":"error","error":{"name":"X","data":{"message":"boom"}}}"#,
-        );
+        let events =
+            t.push_line(r#"{"type":"error","error":{"name":"X","data":{"message":"boom"}}}"#);
         assert!(matches!(events[0], HarnessEvent::Error { .. }));
         // The message already surfaced: the settled turn carries no duplicate.
         match &t.end_turn(false, Some(0))[0] {
@@ -965,7 +960,9 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], HarnessEvent::ToolUse { .. }));
         match &events[1] {
-            HarnessEvent::ToolResult { output, is_error, .. } => {
+            HarnessEvent::ToolResult {
+                output, is_error, ..
+            } => {
                 // Neutral, not red: nothing ran yet, the approval table below
                 // is the UI for this — the CLI's "rejected" wording must never
                 // read as the user already having said no.
@@ -994,7 +991,11 @@ mod tests {
         let repeat = t.push_line(
             r#"{"type":"tool_use","part":{"type":"tool","tool":"read","callID":"c9","state":{"status":"error","input":{"filePath":"/tmp/meme-cam/app.py"},"error":"The user rejected permission to use this specific tool call."}}}"#,
         );
-        assert!(repeat.iter().all(|e| !matches!(e, HarnessEvent::PermissionRequest { .. })));
+        assert!(
+            repeat
+                .iter()
+                .all(|e| !matches!(e, HarnessEvent::PermissionRequest { .. }))
+        );
     }
 
     // Runs the real runner thread against a fake CLI: no network, no auth,
@@ -1006,8 +1007,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         fn sandbox(name: &str) -> PathBuf {
-            let dir = std::env::temp_dir()
-                .join(format!("egant-opencode-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("egant-opencode-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             dir
@@ -1101,7 +1102,10 @@ mod tests {
                 h.interrupt().await.unwrap();
                 let mut saw_end = false;
                 while let Ok(event) = rx.recv().await {
-                    if let HarnessEvent::TurnEnded { result, is_error, .. } = event {
+                    if let HarnessEvent::TurnEnded {
+                        result, is_error, ..
+                    } = event
+                    {
                         assert!(is_error);
                         assert_eq!(result.as_deref(), Some("Interrupted."));
                         saw_end = true;
@@ -1128,7 +1132,11 @@ mod tests {
             // one invocation's args into several lines.
             let script = fake_cli(
                 &dir,
-                &format!("printf '%s\\0' \"$*\" >> {}\n{}", log.display(), turn_events()),
+                &format!(
+                    "printf '%s\\0' \"$*\" >> {}\n{}",
+                    log.display(),
+                    turn_events()
+                ),
             );
             futures_lite::future::block_on(async {
                 let mut h = OpencodeRun::spawn(OpencodeOptions {

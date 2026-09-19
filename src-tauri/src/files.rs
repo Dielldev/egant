@@ -48,9 +48,7 @@ pub fn list_dir(path: String) -> Result<Vec<FileEntryDto>, String> {
             let is_dir = entry
                 .file_type()
                 .ok()
-                .map(|kind| {
-                    kind.is_dir() || (kind.is_symlink() && entry.path().is_dir())
-                })
+                .map(|kind| kind.is_dir() || (kind.is_symlink() && entry.path().is_dir()))
                 .unwrap_or(false);
             Some(FileEntryDto {
                 path: entry.path().display().to_string(),
@@ -101,7 +99,11 @@ pub fn read_file(path: String) -> Result<FileContentDto, String> {
     }
 
     let truncated = bytes.len() > READ_LIMIT;
-    let slice = if truncated { &bytes[..READ_LIMIT] } else { &bytes[..] };
+    let slice = if truncated {
+        &bytes[..READ_LIMIT]
+    } else {
+        &bytes[..]
+    };
     // Lossy rather than strict: a stray invalid byte in an otherwise readable
     // file should not cost the user the whole view of it.
     let mut text = String::from_utf8_lossy(slice).into_owned();

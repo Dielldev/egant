@@ -429,8 +429,8 @@ impl CliLaunch {
 /// string, so it names the agent rather than saying "not found".
 pub fn launch(id: &str) -> Result<CliLaunch, String> {
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
-    let program = locate(entry)
-        .ok_or_else(|| format!("{} isn't installed on this machine.", entry.name))?;
+    let program =
+        locate(entry).ok_or_else(|| format!("{} isn't installed on this machine.", entry.name))?;
     Ok(CliLaunch {
         id: entry.id,
         name: entry.name,
@@ -495,7 +495,11 @@ fn status_of(entry: &'static CatalogEntry) -> CatalogStatus {
         supports: entry.supports,
         chat_ui: entry.chat_ui,
         recommended: entry.recommended,
-        install_options: entry.install_options.iter().map(|o| option_dto(entry, o)).collect(),
+        install_options: entry
+            .install_options
+            .iter()
+            .map(|o| option_dto(entry, o))
+            .collect(),
         installed: executable.is_some(),
         executable: executable.map(|p| p.display().to_string()),
         launch_command: launch_command(entry),
@@ -549,7 +553,10 @@ fn preferred(entry: &CatalogEntry) -> Option<&'static InstallOption> {
         .or_else(|| entry.install_options.first())
 }
 
-fn option_for(entry: &CatalogEntry, method: Option<&str>) -> Result<&'static InstallOption, String> {
+fn option_for(
+    entry: &CatalogEntry,
+    method: Option<&str>,
+) -> Result<&'static InstallOption, String> {
     match method {
         Some(name) => {
             let method = InstallMethod::from_str(name)
@@ -574,7 +581,10 @@ fn option_for(entry: &CatalogEntry, method: Option<&str>) -> Result<&'static Ins
 /// after a successful install — it ships as `agy`.
 fn locate(entry: &CatalogEntry) -> Option<PathBuf> {
     entry.binaries.iter().find_map(|binary| {
-        let common: Vec<String> = HOME_BINS.iter().map(|dir| format!("{dir}/{binary}")).collect();
+        let common: Vec<String> = HOME_BINS
+            .iter()
+            .map(|dir| format!("{dir}/{binary}"))
+            .collect();
         let mut paths: Vec<&str> = entry.extra_paths.to_vec();
         paths.extend(common.iter().map(String::as_str));
         crate::agents::resolve_cli(binary, entry.env_override, &paths)
@@ -683,8 +693,11 @@ fn local_version(program: &PathBuf) -> Option<String> {
 }
 
 fn latest_npm_version(package: &str) -> Option<String> {
-    let (success, output) =
-        run_in_login_shell(&format!("npm view {package} version"), Duration::from_secs(30)).ok()?;
+    let (success, output) = run_in_login_shell(
+        &format!("npm view {package} version"),
+        Duration::from_secs(30),
+    )
+    .ok()?;
     success.then(|| first_version(&output)).flatten()
 }
 
@@ -762,7 +775,10 @@ fn run_bounded(
         Some(status) => Ok((status.success(), tail(&output))),
         None => Ok((
             false,
-            tail(&format!("{output}\n\nTimed out after {}s.", deadline.as_secs())),
+            tail(&format!(
+                "{output}\n\nTimed out after {}s.",
+                deadline.as_secs()
+            )),
         )),
     }
 }
@@ -874,7 +890,11 @@ mod tests {
     #[test]
     fn each_entry_recommends_at_most_one_source() {
         for entry in CATALOG {
-            let count = entry.install_options.iter().filter(|o| o.recommended).count();
+            let count = entry
+                .install_options
+                .iter()
+                .filter(|o| o.recommended)
+                .count();
             assert!(count <= 1, "{} recommends {count} sources", entry.id);
             if !entry.install_options.is_empty() {
                 assert_eq!(count, 1, "{} recommends none of its sources", entry.id);
@@ -922,7 +942,10 @@ mod tests {
     fn an_unknown_install_method_is_refused() {
         let codex = entry("codex").unwrap();
         assert!(option_for(codex, Some("apt")).is_err());
-        assert!(option_for(codex, Some("pip")).is_err(), "codex has no pip source");
+        assert!(
+            option_for(codex, Some("pip")).is_err(),
+            "codex has no pip source"
+        );
         assert_eq!(
             option_for(codex, Some("brew")).unwrap().command,
             "brew install codex"
@@ -940,7 +963,10 @@ mod tests {
     /// install, so the ones that differ are pinned here.
     #[test]
     fn entries_probe_the_installed_binary_not_the_product_name() {
-        assert_eq!(entry("antigravity").unwrap().binaries, &["agy", "antigravity"]);
+        assert_eq!(
+            entry("antigravity").unwrap().binaries,
+            &["agy", "antigravity"]
+        );
         assert_eq!(entry("cursor").unwrap().binaries, &["cursor-agent"]);
         for entry in CATALOG {
             assert!(!entry.binaries.is_empty(), "{} probes nothing", entry.id);
@@ -949,7 +975,10 @@ mod tests {
 
     #[test]
     fn versions_parse_out_of_cli_banners() {
-        assert_eq!(first_version("1.2.4 (Claude Code)").as_deref(), Some("1.2.4"));
+        assert_eq!(
+            first_version("1.2.4 (Claude Code)").as_deref(),
+            Some("1.2.4")
+        );
         assert_eq!(first_version("codex-cli 0.48.0").as_deref(), Some("0.48.0"));
         assert_eq!(first_version("v2.0.1\n").as_deref(), Some("2.0.1"));
         assert_eq!(first_version("no version here"), None);

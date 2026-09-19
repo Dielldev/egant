@@ -30,7 +30,7 @@ pub use catalog::{CatalogStatus, InstallOutcome, UpdateInfo};
 pub use claude::{ClaudeCode, ClaudeOptions};
 pub use codex::{CodexExec, CodexOptions};
 pub use models::{AgentModel, is_known_model, list_models};
-pub use opencode::{OpencodeRun, OpencodeOptions};
+pub use opencode::{OpencodeOptions, OpencodeRun};
 pub use transcript::{
     PendingPermission, SessionUsage, ToolCall, Transcript, TranscriptEntry, TurnState,
 };

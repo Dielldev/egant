@@ -287,11 +287,13 @@ impl From<&HarnessEvent> for EventDto {
                 cwd: cwd.as_ref().map(|path| path.display().to_string()),
                 tools: tools.clone(),
             },
-            HarnessEvent::AssistantDelta { text } => EventDto::AssistantDelta { text: text.clone() },
+            HarnessEvent::AssistantDelta { text } => {
+                EventDto::AssistantDelta { text: text.clone() }
+            }
             HarnessEvent::ThinkingDelta { text } => EventDto::ThinkingDelta { text: text.clone() },
-            HarnessEvent::AssistantMessage { text } => EventDto::AssistantMessage {
-                text: text.clone(),
-            },
+            HarnessEvent::AssistantMessage { text } => {
+                EventDto::AssistantMessage { text: text.clone() }
+            }
             HarnessEvent::ToolUse { id, name, input } => EventDto::ToolUse {
                 id: id.clone(),
                 name: name.clone(),

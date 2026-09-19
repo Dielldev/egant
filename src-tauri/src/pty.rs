@@ -164,13 +164,10 @@ fn open(
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
 
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|error| {
-            log::error!("pty spawn failed cwd={cwd}: {error}");
-            error.to_string()
-        })?;
+    let child = pair.slave.spawn_command(command).map_err(|error| {
+        log::error!("pty spawn failed cwd={cwd}: {error}");
+        error.to_string()
+    })?;
     // The slave has to go once the child holds it, or the master never sees
     // EOF and the reader thread below would hang forever on a dead shell.
     drop(pair.slave);

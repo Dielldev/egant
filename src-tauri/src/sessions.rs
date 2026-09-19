@@ -157,8 +157,16 @@ pub fn spawn_session(
         ended: false,
     };
 
-    let harness: Box<dyn Harness> =
-        match start_harness(agent, &cwd, &project_name, model, variant, context, None, egant_harness::PermissionMode::Auto) {
+    let harness: Box<dyn Harness> = match start_harness(
+        agent,
+        &cwd,
+        &project_name,
+        model,
+        variant,
+        context,
+        None,
+        egant_harness::PermissionMode::Auto,
+    ) {
         Ok(harness) => harness,
         Err(error) => {
             log::error!(
@@ -180,13 +188,16 @@ pub fn spawn_session(
             state.sessions.insert(
                 id,
                 crate::state::ManagedSession {
-                    meta: SessionMeta { ended: true, ..meta },
+                    meta: SessionMeta {
+                        ended: true,
+                        ..meta
+                    },
                     transcript,
                     commands: None,
                     allowed_patterns: Vec::new(),
                     last_user_text: None,
                     last_user_images: Vec::new(),
-turn_baseline: None,
+                    turn_baseline: None,
                 },
             );
             state.order.push(id);
@@ -213,7 +224,7 @@ turn_baseline: None,
             allowed_patterns: Vec::new(),
             last_user_text: None,
             last_user_images: Vec::new(),
-turn_baseline: None,
+            turn_baseline: None,
         },
     );
     state.order.push(id);
@@ -321,14 +332,18 @@ pub fn spawn_cli_session(
             allowed_patterns: Vec::new(),
             last_user_text: None,
             last_user_images: Vec::new(),
-turn_baseline: None,
+            turn_baseline: None,
         },
     );
     state.order.push(id);
     state.active_session = Some(id);
     state.active_project = Some(project_id);
     state.persist_session(id);
-    log::info!("spawned cli session {id} agent={} cwd={}", launch.id, cwd.display());
+    log::info!(
+        "spawned cli session {id} agent={} cwd={}",
+        launch.id,
+        cwd.display()
+    );
     Ok(id)
 }
 
@@ -359,9 +374,7 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 } => harness.respond_permission(&request_id, decision).await,
                 SessionCommand::ApproveNextTurn => harness.approve_next_turn().await,
                 SessionCommand::ApproveAlways => harness.approve_always().await,
-                SessionCommand::SetPermissionMode(mode) => {
-                    harness.set_permission_mode(mode).await
-                }
+                SessionCommand::SetPermissionMode(mode) => harness.set_permission_mode(mode).await,
                 SessionCommand::Shutdown => harness.shutdown().await,
             };
             if let Err(error) = result {
@@ -386,7 +399,11 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
             // A mismatch against the session's folder is exactly the "wrong
             // project" bug surfacing — log it so it is diagnosable instead of
             // a model confidently naming the wrong folder.
-            if let HarnessEvent::Ready { cwd: Some(reported), .. } = &event {
+            if let HarnessEvent::Ready {
+                cwd: Some(reported),
+                ..
+            } = &event
+            {
                 let app_state = listener_app.state::<Mutex<AppState>>();
                 if let Ok(guard) = app_state.lock() {
                     if let Some(session) = guard.sessions.get(&id) {
@@ -506,7 +523,9 @@ fn log_harness_event(id: u64, event: &HarnessEvent) {
             log::info!(
                 "session {id} ready model={} cwd={}",
                 model.as_deref().unwrap_or("-"),
-                cwd.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                cwd.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
             );
         }
         HarnessEvent::TurnEnded {
@@ -537,7 +556,11 @@ fn log_harness_event(id: u64, event: &HarnessEvent) {
         HarnessEvent::ToolUse { name, .. } => {
             log::debug!("session {id} tool use: {name}");
         }
-        HarnessEvent::ToolResult { id: tool_id, is_error, .. } => {
+        HarnessEvent::ToolResult {
+            id: tool_id,
+            is_error,
+            ..
+        } => {
             log::debug!("session {id} tool result {tool_id} error={is_error}");
         }
         HarnessEvent::AssistantMessage { text } => {
@@ -584,7 +607,11 @@ fn revive(app: &AppHandle, state: &mut AppState, id: u64) -> Result<(), String> 
     let cwd = session.meta.cwd.clone();
     let context = session.meta.context;
     let saved_mode = session.meta.permission_mode;
-    log::info!("reviving session {id} agent={} resume={}", agent.as_str(), resume_id);
+    log::info!(
+        "reviving session {id} agent={} resume={}",
+        agent.as_str(),
+        resume_id
+    );
     // Revival must run where the session always ran — and say so. The project
     // row is the source of the display name; the session's own `cwd` is the
     // source of the directory, so a session whose folder vanished revives in
@@ -592,9 +619,7 @@ fn revive(app: &AppHandle, state: &mut AppState, id: u64) -> Result<(), String> 
     let project_name = state
         .project(session.meta.project_id)
         .map(|p| p.name.clone())
-        .unwrap_or_else(|| {
-            egant_harness::project_display_name(&cwd)
-        });
+        .unwrap_or_else(|| egant_harness::project_display_name(&cwd));
     let cwd = if cwd.is_dir() {
         crate::project::canonicalize_path(&cwd)
     } else if let Some(project) = state.project(session.meta.project_id) {
@@ -618,7 +643,17 @@ fn revive(app: &AppHandle, state: &mut AppState, id: u64) -> Result<(), String> 
         None => session.meta.model.clone(),
     };
 
-    let harness = start_harness(agent, &cwd, &project_name, model, None, context, Some(resume_id), saved_mode).map_err(|error| {
+    let harness = start_harness(
+        agent,
+        &cwd,
+        &project_name,
+        model,
+        None,
+        context,
+        Some(resume_id),
+        saved_mode,
+    )
+    .map_err(|error| {
         log::error!("revive session {id} failed: {error}");
         error
     })?;
@@ -721,9 +756,7 @@ pub fn send_text(
         if !session.meta.cwd.is_dir() {
             // The project may still exist under its canonical path (symlink
             // swing, rename back) — re-resolve through it before failing.
-            let fallback = state
-                .project(session.meta.project_id)
-                .map(|p| p.fs_path());
+            let fallback = state.project(session.meta.project_id).map(|p| p.fs_path());
             let recovered = fallback.filter(|p| p.is_dir());
             if let Some(path) = recovered {
                 if let Some(session) = state.sessions.get_mut(&id) {
@@ -773,8 +806,7 @@ pub fn send_text(
         if session.meta.ended {
             return Ok(None);
         }
-        if session.transcript.entries.is_empty() && session.meta.title.starts_with("New session")
-        {
+        if session.transcript.entries.is_empty() && session.meta.title.starts_with("New session") {
             let title = derive_title(&text);
             session.meta.title = title.clone();
             new_title = Some(title);
@@ -994,12 +1026,19 @@ pub fn answer_permission_legacy(
     let request_id = state
         .sessions
         .get(&id)
-        .and_then(|s| s.transcript.pending_permissions.first().map(|p| p.request_id.clone()))
+        .and_then(|s| {
+            s.transcript
+                .pending_permissions
+                .first()
+                .map(|p| p.request_id.clone())
+        })
         .or_else(|| {
-            state
-                .sessions
-                .get(&id)
-                .and_then(|s| s.transcript.pending_permission.clone().map(|p| p.request_id))
+            state.sessions.get(&id).and_then(|s| {
+                s.transcript
+                    .pending_permission
+                    .clone()
+                    .map(|p| p.request_id)
+            })
         });
     let Some(request_id) = request_id else {
         return Ok(None);
@@ -1019,7 +1058,10 @@ pub fn answer_permission_legacy(
 /// Remembers an "Allow always" answer for the rest of the run: the request's
 /// specific + always patterns, so a later read of the same file (or anything
 /// under the same directory) is approved without asking.
-fn remember_patterns(session: &mut crate::state::ManagedSession, pending: &egant_harness::PendingPermission) {
+fn remember_patterns(
+    session: &mut crate::state::ManagedSession,
+    pending: &egant_harness::PendingPermission,
+) {
     for pattern in pending
         .patterns
         .iter()
@@ -1155,9 +1197,7 @@ pub fn close_session(state: &mut AppState, id: u64) -> Option<SessionWorktree> {
     if state.active_session == Some(id) {
         state.active_session = match active_index {
             None => state.order.first().copied(),
-            Some(active) if position < active => {
-                state.order.get(active.saturating_sub(1)).copied()
-            }
+            Some(active) if position < active => state.order.get(active.saturating_sub(1)).copied(),
             _ => state
                 .order
                 .get(position.min(state.order.len().saturating_sub(1)))
@@ -1239,7 +1279,11 @@ fn start_harness(
     // The agent must run in a real folder: spawning in a deleted directory
     // leaves the process somewhere the model cannot name truthfully.
     if !cwd.is_dir() {
-        log::error!("start harness agent={} failed: {} is not a folder", agent.as_str(), cwd.display());
+        log::error!(
+            "start harness agent={} failed: {} is not a folder",
+            agent.as_str(),
+            cwd.display()
+        );
         return Err(format!("{} is not a folder", cwd.display()));
     }
     log::info!(
@@ -1408,13 +1452,14 @@ mod tests {
         assert!(looks_like_a_bad_model_error(
             "The 'gpt-5.4' model is NOT SUPPORTED when using Codex with a ChatGPT account."
         ));
-        assert!(looks_like_a_bad_model_error("Model metadata for `gpt-5.4-mini` not found."));
+        assert!(looks_like_a_bad_model_error(
+            "Model metadata for `gpt-5.4-mini` not found."
+        ));
     }
 
     #[test]
     fn a_refused_wide_window_is_recognized_but_is_not_a_bad_model() {
-        const REFUSAL: &str =
-            "API Error: 400 This authentication style is incompatible with the long context beta header.";
+        const REFUSAL: &str = "API Error: 400 This authentication style is incompatible with the long context beta header.";
         assert!(looks_like_a_long_context_rejection(REFUSAL));
         // It says nothing about the model itself, so it must not grey the
         // model out in the picker.
@@ -1426,7 +1471,9 @@ mod tests {
     fn unrelated_failures_are_not_mistaken_for_a_bad_model() {
         assert!(!looks_like_a_bad_model_error("request timed out"));
         assert!(!looks_like_a_bad_model_error("the turn was interrupted"));
-        assert!(!looks_like_a_bad_model_error("rate limit exceeded, try again later"));
+        assert!(!looks_like_a_bad_model_error(
+            "rate limit exceeded, try again later"
+        ));
     }
 
     #[test]
@@ -1481,7 +1528,10 @@ mod tests {
         let title = derive_title(text);
         assert!(title.chars().count() <= 49, "{title}");
         assert!(title.ends_with('…'));
-        assert!(!title.ends_with(" …"), "should trim before the ellipsis: {title}");
+        assert!(
+            !title.ends_with(" …"),
+            "should trim before the ellipsis: {title}"
+        );
     }
 
     #[test]
@@ -1508,7 +1558,11 @@ mod tests {
             "Bash",
             &["git status *".to_string()],
         ));
-        assert!(matches_allowlist(&["whatever".to_string()], "Read", &["Read".to_string()]));
+        assert!(matches_allowlist(
+            &["whatever".to_string()],
+            "Read",
+            &["Read".to_string()]
+        ));
         assert!(!matches_allowlist(&["x".to_string()], "Read", &[]));
     }
 

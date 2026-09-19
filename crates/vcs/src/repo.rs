@@ -248,14 +248,16 @@ impl Repo {
     pub fn commit_changes(&self, sha: &str) -> Result<Vec<FileChange>, VcsError> {
         let commit = self.inner.find_commit(Oid::from_str(sha)?)?;
         let tree = commit.tree()?;
-        let parent = commit.parent(0).ok().map(|parent| parent.tree()).transpose()?;
+        let parent = commit
+            .parent(0)
+            .ok()
+            .map(|parent| parent.tree())
+            .transpose()?;
         let mut options = DiffOptions::new();
         options.context_lines(0);
-        let diff = self.inner.diff_tree_to_tree(
-            parent.as_ref(),
-            Some(&tree),
-            Some(&mut options),
-        )?;
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent.as_ref(), Some(&tree), Some(&mut options))?;
         changes_from_diff(&diff)
     }
 
@@ -279,14 +281,16 @@ impl Repo {
     pub fn commit_diff(&self, sha: &str, path: &Path) -> Result<Vec<DiffHunk>, VcsError> {
         let commit = self.inner.find_commit(Oid::from_str(sha)?)?;
         let tree = commit.tree()?;
-        let parent = commit.parent(0).ok().map(|parent| parent.tree()).transpose()?;
+        let parent = commit
+            .parent(0)
+            .ok()
+            .map(|parent| parent.tree())
+            .transpose()?;
         let mut options = DiffOptions::new();
         options.pathspec(path).context_lines(3);
-        let diff = self.inner.diff_tree_to_tree(
-            parent.as_ref(),
-            Some(&tree),
-            Some(&mut options),
-        )?;
+        let diff =
+            self.inner
+                .diff_tree_to_tree(parent.as_ref(), Some(&tree), Some(&mut options))?;
         hunks_from_diff(&diff)
     }
 
@@ -336,7 +340,13 @@ impl Repo {
         let out = crate::remote::run(&self.root, &["stash", "create"])?;
         let printed = out.stdout.trim();
         if printed.is_empty() {
-            return Ok(self.inner.head()?.peel_to_commit()?.tree()?.id().to_string());
+            return Ok(self
+                .inner
+                .head()?
+                .peel_to_commit()?
+                .tree()?
+                .id()
+                .to_string());
         }
         let commit = self.inner.find_commit(Oid::from_str(printed)?)?;
         Ok(commit.tree()?.id().to_string())
@@ -849,13 +859,24 @@ mod tests {
         // Something committed on the branch, and something not yet.
         fs::write(dir.path().join("wip.txt"), "three\n").unwrap();
 
-        let base = repo.merge_base_tree("main").or_else(|_| repo.merge_base_tree("master"));
+        let base = repo
+            .merge_base_tree("main")
+            .or_else(|_| repo.merge_base_tree("master"));
         let changes = repo.changes_since(&base.expect("a merge base")).unwrap();
 
         let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
-        assert!(paths.contains(&PathBuf::from("added.txt")), "the commit is missing");
-        assert!(paths.contains(&PathBuf::from("wip.txt")), "the working tree is missing");
-        assert!(!paths.contains(&PathBuf::from("base.txt")), "the base is not a change");
+        assert!(
+            paths.contains(&PathBuf::from("added.txt")),
+            "the commit is missing"
+        );
+        assert!(
+            paths.contains(&PathBuf::from("wip.txt")),
+            "the working tree is missing"
+        );
+        assert!(
+            !paths.contains(&PathBuf::from("base.txt")),
+            "the base is not a change"
+        );
     }
 
     #[test]
@@ -870,7 +891,10 @@ mod tests {
 
         let changes = repo.changes_since(&baseline).unwrap();
         let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
-        assert!(paths.contains(&PathBuf::from("agent.txt")), "the turn's own work is missing");
+        assert!(
+            paths.contains(&PathBuf::from("agent.txt")),
+            "the turn's own work is missing"
+        );
         assert!(
             !paths.contains(&PathBuf::from("base.txt")),
             "an edit that predates the turn is not the turn's"
@@ -917,7 +941,11 @@ mod tests {
         assert!(dir.path().join("main.txt").exists());
         let repo = Repo::discover(dir.path()).unwrap();
         let head = repo.history(None, 0, 1).unwrap();
-        assert_eq!(head.commits[0].parents.len(), 2, "a merge joins two parents");
+        assert_eq!(
+            head.commits[0].parents.len(),
+            2,
+            "a merge joins two parents"
+        );
     }
 
     #[test]
@@ -937,7 +965,11 @@ mod tests {
         assert_eq!(index.as_deref(), Some(&b"staged\n"[..]));
 
         // A path git has never seen is absent, not an error.
-        assert!(repo.blob(Path::new("nope.txt"), BlobSource::Head).unwrap().is_none());
+        assert!(
+            repo.blob(Path::new("nope.txt"), BlobSource::Head)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -984,7 +1016,10 @@ mod tests {
         repo.discard(&[PathBuf::from("kept.txt"), PathBuf::from("new.txt")])
             .unwrap();
 
-        assert_eq!(fs::read_to_string(dir.path().join("kept.txt")).unwrap(), "original\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("kept.txt")).unwrap(),
+            "original\n"
+        );
         assert!(!dir.path().join("new.txt").exists());
         assert!(repo.snapshot().unwrap().is_clean());
     }
@@ -1003,7 +1038,10 @@ mod tests {
         repo.discard(&[PathBuf::from("a.txt")]).unwrap();
 
         // Back to what was staged, not back to what was committed.
-        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "staged\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "staged\n"
+        );
         let snapshot = repo.snapshot().unwrap();
         assert_eq!(snapshot.staged().count(), 1);
         assert_eq!(snapshot.unstaged().count(), 0);

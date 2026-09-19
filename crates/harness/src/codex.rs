@@ -91,9 +91,10 @@ impl CodexExec {
         );
         let program = resolve_program(&options.program)?;
         let mode = Arc::new(Mutex::new(options.permission_mode));
-        let project_name = options.project_name.clone().unwrap_or_else(|| {
-            crate::project_display_name(&options.cwd)
-        });
+        let project_name = options
+            .project_name
+            .clone()
+            .unwrap_or_else(|| crate::project_display_name(&options.cwd));
         let translator = CodexTranslator {
             program,
             cwd: options.cwd,
@@ -144,7 +145,11 @@ impl Harness for CodexExec {
     }
 
     async fn send(&mut self, text: String, images: Vec<PathBuf>) -> Result<()> {
-        log::debug!("codex send ({} chars, {} image(s))", text.len(), images.len());
+        log::debug!(
+            "codex send ({} chars, {} image(s))",
+            text.len(),
+            images.len()
+        );
         self.runner.send(text, images);
         Ok(())
     }
@@ -347,8 +352,10 @@ impl TurnTranslator for CodexTranslator {
             },
             Some("turn.completed") => {
                 if let Some(usage) = value.get("usage") {
-                    self.turn.input_tokens +=
-                        usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    self.turn.input_tokens += usage
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                     self.turn.output_tokens += usage
                         .get("output_tokens")
                         .and_then(Value::as_u64)
@@ -526,7 +533,9 @@ fn tool_failed(item: &Value) -> bool {
             .and_then(Value::as_u64)
             .is_some_and(|code| code != 0);
     }
-    item.get("is_error").and_then(Value::as_bool).unwrap_or(false)
+    item.get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -556,7 +565,11 @@ mod tests {
         // edit fails with a permission error reported as assistant prose.
         let mut t = translator();
         let req = t.build("hi", &[]);
-        let at = req.args.iter().position(|a| a == "--sandbox").expect("--sandbox present");
+        let at = req
+            .args
+            .iter()
+            .position(|a| a == "--sandbox")
+            .expect("--sandbox present");
         assert_eq!(req.args[at + 1], "workspace-write");
     }
 
@@ -625,7 +638,10 @@ mod tests {
         // Real vision input via `--image`, not a `@path` mention baked into
         // the prompt text — the CLI reads the file itself either way.
         let mut t = translator();
-        let images = vec![PathBuf::from("/tmp/pasted-1.png"), PathBuf::from("/tmp/pasted-2.png")];
+        let images = vec![
+            PathBuf::from("/tmp/pasted-1.png"),
+            PathBuf::from("/tmp/pasted-2.png"),
+        ];
         let req = t.build("look at this", &images);
         let flags: Vec<&String> = req
             .args
@@ -667,14 +683,12 @@ mod tests {
     #[test]
     fn thread_start_arms_ready_once() {
         let mut t = translator();
-        assert!(t
-            .push_line(r#"{"type":"thread.started","thread_id":"thr_9"}"#)
-            .is_empty());
+        assert!(
+            t.push_line(r#"{"type":"thread.started","thread_id":"thr_9"}"#)
+                .is_empty()
+        );
         assert_eq!(t.thread.as_deref(), Some("thr_9"));
-        assert!(matches!(
-            t.take_ready(),
-            Some(HarnessEvent::Ready { .. })
-        ));
+        assert!(matches!(t.take_ready(), Some(HarnessEvent::Ready { .. })));
         assert!(t.take_ready().is_none());
     }
 
@@ -684,10 +698,7 @@ mod tests {
         let events = t.push_line(
             r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hi"}}"#,
         );
-        assert!(matches!(
-            events[0],
-            HarnessEvent::AssistantMessage { .. }
-        ));
+        assert!(matches!(events[0], HarnessEvent::AssistantMessage { .. }));
 
         let events = t.push_line(
             r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls","aggregated_output":"a","exit_code":0,"status":"completed"}}"#,
@@ -698,13 +709,14 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         match &events[1] {
-            HarnessEvent::ToolResult { output, is_error, .. } => {
+            HarnessEvent::ToolResult {
+                output, is_error, ..
+            } => {
                 assert_eq!(output, "a");
                 assert!(!is_error);
             }
             other => panic!("unexpected {other:?}"),
         }
-
     }
 
     /// `codex exec` prints `turn.completed` and then spends another second or
@@ -715,8 +727,8 @@ mod tests {
     fn turn_completed_settles_before_the_process_exits() {
         let mut t = translator();
         t.build("hi", &[]);
-        let events =
-            t.push_line(r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#);
+        let events = t
+            .push_line(r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#);
         assert_eq!(events.len(), 2);
         match &events[0] {
             HarnessEvent::ContextUpdate { context_tokens, .. } => assert_eq!(*context_tokens, 10),
@@ -742,7 +754,11 @@ mod tests {
             HarnessEvent::TurnEnded {
                 result, is_error, ..
             } => {
-                assert!(result.as_deref().is_some_and(|text| text.contains("status 3")));
+                assert!(
+                    result
+                        .as_deref()
+                        .is_some_and(|text| text.contains("status 3"))
+                );
                 assert!(is_error);
             }
             other => panic!("unexpected {other:?}"),
@@ -765,9 +781,7 @@ mod tests {
     fn failed_turn_surfaces_once() {
         let mut t = translator();
         t.build("hi", &[]);
-        let events = t.push_line(
-            r#"{"type":"turn.failed","error":{"message":"bad model"}}"#,
-        );
+        let events = t.push_line(r#"{"type":"turn.failed","error":{"message":"bad model"}}"#);
         assert!(matches!(events[0], HarnessEvent::Error { .. }));
         match &t.end_turn(false, Some(0))[0] {
             HarnessEvent::TurnEnded {
@@ -790,8 +804,7 @@ mod tests {
 
         #[test]
         fn turn_settles_and_thread_persists() {
-            let dir = std::env::temp_dir()
-                .join(format!("egant-codex-live-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("egant-codex-live-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let script = dir.join("fake-codex");

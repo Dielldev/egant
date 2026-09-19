@@ -107,9 +107,9 @@ impl Default for ClaudeOptions {
 
 impl ClaudeOptions {
     fn project_name_resolved(&self) -> String {
-        self.project_name.clone().unwrap_or_else(|| {
-            crate::project_display_name(&self.cwd)
-        })
+        self.project_name
+            .clone()
+            .unwrap_or_else(|| crate::project_display_name(&self.cwd))
     }
 
     fn to_args(&self) -> Vec<String> {
@@ -230,7 +230,10 @@ impl ClaudeCode {
         // Populated before the first byte is read: `resume` when continuing,
         // otherwise the id just minted for this conversation.
         let session_id = Arc::new(Mutex::new(
-            options.resume.clone().or_else(|| options.session_id.clone()),
+            options
+                .resume
+                .clone()
+                .or_else(|| options.session_id.clone()),
         ));
 
         let pump = EventPump {
@@ -290,7 +293,11 @@ impl Harness for ClaudeCode {
     }
 
     async fn send(&mut self, text: String, images: Vec<PathBuf>) -> Result<()> {
-        log::debug!("claude send ({} chars, {} image(s))", text.len(), images.len());
+        log::debug!(
+            "claude send ({} chars, {} image(s))",
+            text.len(),
+            images.len()
+        );
         // Grounded every turn, not just via the system prompt: sessions
         // created before grounding existed, and resumes that reuse a recorded
         // prompt, still answer with the directory this process runs in.
@@ -381,8 +388,7 @@ impl Harness for ClaudeCode {
 /// API takes anywhere an image belongs — same shape whether it arrived as a
 /// clipboard paste or a picked attachment.
 fn image_content_block(path: &std::path::Path) -> Result<HostContentBlock> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
     Ok(HostContentBlock::Image {
         source: ImageSource::Base64 {
@@ -608,8 +614,7 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
             ControlRequest::CanUseTool {
                 tool_name, input, ..
             } => {
-                let (patterns, always_patterns) =
-                    crate::permission_patterns(&tool_name, &input);
+                let (patterns, always_patterns) = crate::permission_patterns(&tool_name, &input);
                 vec![HarnessEvent::PermissionRequest {
                     request_id: envelope.request_id,
                     tool_name,
@@ -817,7 +822,9 @@ mod tests {
         )
         .unwrap();
         match &translate(message, &Mutex::new(None))[0] {
-            HarnessEvent::TurnEnded { usage, cost_usd, .. } => {
+            HarnessEvent::TurnEnded {
+                usage, cost_usd, ..
+            } => {
                 assert_eq!(usage.input_tokens, 2);
                 assert_eq!(usage.output_tokens, 10);
                 assert_eq!(usage.cache_creation_tokens, 25_192);
@@ -888,7 +895,11 @@ mod tests {
         )
         .unwrap();
         let events = translate(message, &Mutex::new(None));
-        assert!(events.iter().all(|e| !matches!(e, HarnessEvent::ContextUpdate { .. })));
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, HarnessEvent::ContextUpdate { .. }))
+        );
     }
 
     #[test]

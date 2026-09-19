@@ -175,7 +175,16 @@ pub async fn pr_list(root: String) -> Result<Vec<PullRequestDto>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let stdout = gh(
             Path::new(&root),
-            &["pr", "list", "--state", "open", "--limit", "30", "--json", LIST_FIELDS],
+            &[
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "30",
+                "--json",
+                LIST_FIELDS,
+            ],
         )?;
         let parsed: Value = serde_json::from_str(&stdout).map_err(|error| error.to_string())?;
         Ok(parsed
@@ -203,7 +212,10 @@ pub async fn pr_detail(root: String, number: u64) -> Result<PrDetailDto, String>
             body: text(&parsed, "body"),
             mergeable: text(&parsed, "mergeable"),
             review_decision: text(&parsed, "reviewDecision"),
-            checks: array(&parsed, "statusCheckRollup").iter().map(check).collect(),
+            checks: array(&parsed, "statusCheckRollup")
+                .iter()
+                .map(check)
+                .collect(),
             commits: array(&parsed, "commits")
                 .iter()
                 .map(|commit| PrCommitDto {
@@ -213,7 +225,11 @@ pub async fn pr_detail(root: String, number: u64) -> Result<PrDetailDto, String>
                         .first()
                         .map(|author| {
                             let login = text(author, "login");
-                            if login.is_empty() { text(author, "name") } else { login }
+                            if login.is_empty() {
+                                text(author, "name")
+                            } else {
+                                login
+                            }
                         })
                         .unwrap_or_default(),
                 })
@@ -324,7 +340,11 @@ pub fn open_url(url: String) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 fn text(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 fn number_at(value: &Value, key: &str) -> u64 {
@@ -344,7 +364,10 @@ fn pull_request(value: &Value) -> PullRequestDto {
         number: number_at(value, "number"),
         title: text(value, "title"),
         state: text(value, "state"),
-        draft: value.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
+        draft: value
+            .get("isDraft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         head: text(value, "headRefName"),
         base: text(value, "baseRefName"),
         url: text(value, "url"),
@@ -366,7 +389,11 @@ fn check(value: &Value) -> CheckDto {
     let name = if is_check_run {
         let workflow = text(value, "workflowName");
         let name = text(value, "name");
-        if workflow.is_empty() { name } else { format!("{workflow} / {name}") }
+        if workflow.is_empty() {
+            name
+        } else {
+            format!("{workflow} / {name}")
+        }
     } else {
         text(value, "context")
     };

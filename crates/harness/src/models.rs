@@ -77,7 +77,11 @@ fn catalog_cache() -> &'static Mutex<HashMap<AgentId, (Instant, Vec<AgentModel>)
 /// place for ten minutes.
 pub fn list_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
     if let Some(models) = cached_models(agent) {
-        log::debug!("models {} cache hit ({} models)", agent.as_str(), models.len());
+        log::debug!(
+            "models {} cache hit ({} models)",
+            agent.as_str(),
+            models.len()
+        );
         return Ok(models);
     }
     log::info!("models {} discovery start", agent.as_str());
@@ -85,7 +89,11 @@ pub fn list_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
         log::warn!("models {} discovery failed: {error}", agent.as_str());
         error
     })?;
-    log::info!("models {} discovery found {} models", agent.as_str(), models.len());
+    log::info!(
+        "models {} discovery found {} models",
+        agent.as_str(),
+        models.len()
+    );
     if let Ok(mut cache) = catalog_cache().lock() {
         cache.insert(agent, (Instant::now(), models.clone()));
     }
@@ -233,7 +241,10 @@ fn codex_variants() -> Vec<String> {
 /// it can actually run instead of guessing from a fixed list.
 fn codex_models() -> Vec<AgentModel> {
     const MODELS: &[(&str, &str)] = &[
-        ("gpt-6-astra", "Our most capable model for complex, demanding work"),
+        (
+            "gpt-6-astra",
+            "Our most capable model for complex, demanding work",
+        ),
         ("gpt-5.6-sol", "Frontier reasoning flagship"),
         ("gpt-5.6-terra", "Deep multi-step agentic work"),
         ("gpt-5.6-luna", "Fast frontier model"),
@@ -295,7 +306,10 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
         .spawn()
         .map_err(|error| error.to_string())?;
     let stdin = child.stdin.take().ok_or("codex app-server has no stdin")?;
-    let stdout = child.stdout.take().ok_or("codex app-server has no stdout")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("codex app-server has no stdout")?;
     let child = KillOnDrop(child);
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -310,22 +324,24 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
     let deadline = Instant::now() + DISCOVERY_TIMEOUT;
     let mut stdin = stdin;
     let mut next_id: i64 = 0;
-    let mut send = |method: &str, params: serde_json::Value, wants_reply: bool| -> Result<i64, String> {
-        let mut line = serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        // A notification has no id at all — it isn't just an id nobody reads,
-        // it must be absent from the wire, and it doesn't consume one either,
-        // so replies to actual requests stay compactly numbered (1, 2, 3…).
-        let id = if wants_reply {
-            next_id += 1;
-            line["id"] = serde_json::json!(next_id);
-            next_id
-        } else {
-            0
+    let mut send =
+        |method: &str, params: serde_json::Value, wants_reply: bool| -> Result<i64, String> {
+            let mut line =
+                serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params });
+            // A notification has no id at all — it isn't just an id nobody reads,
+            // it must be absent from the wire, and it doesn't consume one either,
+            // so replies to actual requests stay compactly numbered (1, 2, 3…).
+            let id = if wants_reply {
+                next_id += 1;
+                line["id"] = serde_json::json!(next_id);
+                next_id
+            } else {
+                0
+            };
+            writeln!(stdin, "{line}").map_err(|error| error.to_string())?;
+            stdin.flush().map_err(|error| error.to_string())?;
+            Ok(id)
         };
-        writeln!(stdin, "{line}").map_err(|error| error.to_string())?;
-        stdin.flush().map_err(|error| error.to_string())?;
-        Ok(id)
-    };
     let recv = |want_id: i64| -> Result<serde_json::Value, String> {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -351,7 +367,10 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
                     .unwrap_or("codex app-server rejected the request");
                 return Err(message.to_string());
             }
-            return Ok(msg.get("result").cloned().unwrap_or(serde_json::Value::Null));
+            return Ok(msg
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null));
         }
     };
 
@@ -569,10 +588,30 @@ fn claude_models() -> Vec<AgentModel> {
             "Most intelligent model for building agents",
             1_000_000,
         ),
-        ("claude-fable-5", "Fable 5", "Previous generation Fable", 1_000_000),
-        ("claude-opus-5", "Opus 5", "Powerful model for complex work", 1_000_000),
-        ("claude-opus-4-8", "Opus 4.8", "Previous generation Opus", 1_000_000),
-        ("claude-opus-4-7", "Opus 4.7", "Older generation Opus", 1_000_000),
+        (
+            "claude-fable-5",
+            "Fable 5",
+            "Previous generation Fable",
+            1_000_000,
+        ),
+        (
+            "claude-opus-5",
+            "Opus 5",
+            "Powerful model for complex work",
+            1_000_000,
+        ),
+        (
+            "claude-opus-4-8",
+            "Opus 4.8",
+            "Previous generation Opus",
+            1_000_000,
+        ),
+        (
+            "claude-opus-4-7",
+            "Opus 4.7",
+            "Older generation Opus",
+            1_000_000,
+        ),
         (
             "claude-sonnet-5",
             "Sonnet 5",
@@ -595,7 +634,11 @@ fn claude_models() -> Vec<AgentModel> {
             provider_name: provider_name("anthropic"),
             description: desc.to_string(),
             context: 200_000,
-            max_context: if wide_context_denied(id) { 200_000 } else { *max_context },
+            max_context: if wide_context_denied(id) {
+                200_000
+            } else {
+                *max_context
+            },
             variants: claude_variants(),
             default_variant: String::new(),
             cli_default: false,
@@ -658,8 +701,8 @@ const MODELS_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn opencode_models() -> Result<Vec<AgentModel>, String> {
     let desc = AgentId::Opencode.descriptor();
-    let program = crate::agents::resolve_executable(desc)
-        .ok_or_else(|| desc.install_hint.to_string())?;
+    let program =
+        crate::agents::resolve_executable(desc).ok_or_else(|| desc.install_hint.to_string())?;
     let output = run_with_timeout(&program, &["models", "--verbose"], MODELS_TIMEOUT)
         .ok_or_else(|| "listing opencode models timed out".to_string())?;
     if !output.status.success() {
@@ -681,7 +724,10 @@ fn opencode_models() -> Result<Vec<AgentModel>, String> {
     }
     let models = parse_verbose(&output.stdout);
     if models.is_empty() {
-        return Err("opencode advertised no models (`opencode auth login` to configure a provider)".to_string());
+        return Err(
+            "opencode advertised no models (`opencode auth login` to configure a provider)"
+                .to_string(),
+        );
     }
     Ok(models)
 }
@@ -692,11 +738,7 @@ struct CommandOutput {
     stderr: Vec<u8>,
 }
 
-fn run_with_timeout(
-    program: &PathBuf,
-    args: &[&str],
-    timeout: Duration,
-) -> Option<CommandOutput> {
+fn run_with_timeout(program: &PathBuf, args: &[&str], timeout: Duration) -> Option<CommandOutput> {
     use std::io::Read;
 
     let mut child = std::process::Command::new(program)
@@ -740,10 +782,7 @@ fn run_with_timeout(
 
 /// A header line names `provider/model`; anything else is JSON detail.
 fn is_header(line: &str) -> bool {
-    !line.is_empty()
-        && !line.starts_with('{')
-        && !line.contains(' ')
-        && line.contains('/')
+    !line.is_empty() && !line.starts_with('{') && !line.contains(' ') && line.contains('/')
 }
 
 fn parse_verbose(out: &[u8]) -> Vec<AgentModel> {
@@ -890,7 +929,10 @@ mod tests {
         // Codex and opencode learn their catalogs from the CLI, so a
         // compiled-in list cannot prove an id wrong.
         assert!(is_known_model(AgentId::Codex, "gpt-5.6-terra"));
-        assert!(is_known_model(AgentId::Codex, "some-model-shipped-tomorrow"));
+        assert!(is_known_model(
+            AgentId::Codex,
+            "some-model-shipped-tomorrow"
+        ));
         assert!(is_known_model(AgentId::Opencode, "anything/at-all"));
     }
 
@@ -958,12 +1000,21 @@ mod tests {
             // `initialized` is a notification and consumes no id): page one
             // has gpt-5.6-terra and a cursor, page two has gpt-5.5 flagged
             // default with no cursor, ending pagination.
+            // The fake answers each request only after reading it, then holds
+            // the pipe open until killed: dumping every reply up front and
+            // exiting lets the client's later stdin writes race the dead
+            // pipe (flaky "Broken pipe (os error 32)").
             std::fs::write(
                 &script,
                 r#"#!/bin/sh
+read -r _ # initialize
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+read -r _ # initialized notification
+read -r _ # model/list (page one)
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"data":[{"model":"gpt-5.6-terra","displayName":"GPT-5.6-Terra","supportedReasoningEfforts":[{"reasoningEffort":"high"}]}],"nextCursor":"page2"}}'
+read -r _ # model/list (page two)
 printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","isDefault":true}]}}'
+sleep 30
 "#,
             )
             .unwrap();
@@ -1001,13 +1052,16 @@ printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"data":[{"model":"gpt-5.5","dis
         #[test]
         #[ignore = "hits the real, installed codex CLI — run by hand with -- --ignored"]
         fn discovery_against_the_real_installed_cli() {
-            let Some(program) = crate::agents::resolve_executable(
-                crate::agents::AgentId::Codex.descriptor(),
-            ) else {
+            let Some(program) =
+                crate::agents::resolve_executable(crate::agents::AgentId::Codex.descriptor())
+            else {
                 panic!("codex is not installed on this machine");
             };
             let models = discover_codex_models(&program).expect("real discovery succeeds");
-            assert!(!models.is_empty(), "the signed-in account has no visible models");
+            assert!(
+                !models.is_empty(),
+                "the signed-in account has no visible models"
+            );
             for model in &models {
                 eprintln!("{}: {} ({:?})", model.id, model.name, model.variants);
             }

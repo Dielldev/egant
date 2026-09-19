@@ -124,7 +124,11 @@ pub struct ConflictBlock {
 fn git_dir(root: &Path) -> Result<PathBuf, VcsError> {
     let out = run(root, &["rev-parse", "--git-dir"])?;
     let raw = PathBuf::from(out.stdout.trim());
-    Ok(if raw.is_absolute() { raw } else { root.join(raw) })
+    Ok(if raw.is_absolute() {
+        raw
+    } else {
+        root.join(raw)
+    })
 }
 
 fn active_operation(root: &Path) -> Option<OperationKind> {
@@ -156,7 +160,10 @@ pub fn detect(root: &Path) -> Result<ConflictState, VcsError> {
             // A rename shows as `old -> new` in short status; conflicted
             // paths never carry an arrow, but split defensively rather than
             // hand the resolver a path that doesn't exist.
-            let path = raw.rsplit_once(" -> ").map_or(raw, |(_, new)| new).to_owned();
+            let path = raw
+                .rsplit_once(" -> ")
+                .map_or(raw, |(_, new)| new)
+                .to_owned();
             Some(UnmergedFile {
                 path: PathBuf::from(path),
                 kind,
@@ -280,7 +287,11 @@ fn side_exists(root: &Path, path: &Path, side: Side) -> bool {
         Side::Theirs => "3",
         Side::Both => return true,
     };
-    run(root, &["cat-file", "-e", &format!(":{stage}:{}", path_arg(path))]).is_ok()
+    run(
+        root,
+        &["cat-file", "-e", &format!(":{stage}:{}", path_arg(path))],
+    )
+    .is_ok()
 }
 
 /// Resolves a delete conflict (no markers to edit): keep the side's file via
@@ -296,7 +307,11 @@ fn resolve_by_checkout(root: &Path, path: &Path, side: Side) -> Result<(), VcsEr
         });
     };
     if side_exists(root, path, side) {
-        let flag = if side == Side::Ours { "--ours" } else { "--theirs" };
+        let flag = if side == Side::Ours {
+            "--ours"
+        } else {
+            "--theirs"
+        };
         run(root, &["checkout", flag, "--", &path_arg(path)])?;
         stage(root, path)?;
     } else {
@@ -405,10 +420,7 @@ pub fn abort(root: &Path) -> Result<GitOutput, VcsError> {
 pub fn ensure_clear(root: &Path) -> Result<(), VcsError> {
     let state = detect(root)?;
     if state.is_active() {
-        let what = state
-            .operation
-            .map(OperationKind::label)
-            .unwrap_or("merge");
+        let what = state.operation.map(OperationKind::label).unwrap_or("merge");
         return Err(VcsError::GitFailed {
             status: -1,
             stderr: format!(
@@ -532,7 +544,10 @@ mod tests {
         let (_dir, root) = conflicted_repo();
         resolve_file(&root, Path::new("a.txt"), Side::Ours).unwrap();
 
-        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "main change\n");
+        assert_eq!(
+            fs::read_to_string(root.join("a.txt")).unwrap(),
+            "main change\n"
+        );
         let state = detect(&root).unwrap();
         assert!(
             state.files.is_empty(),
@@ -569,7 +584,10 @@ mod tests {
         let state = detect(&root).unwrap();
         assert_eq!(state.operation, None);
         assert!(state.files.is_empty());
-        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "main change\n");
+        assert_eq!(
+            fs::read_to_string(root.join("a.txt")).unwrap(),
+            "main change\n"
+        );
     }
 
     #[test]
