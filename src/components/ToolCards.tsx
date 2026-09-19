@@ -1,4 +1,15 @@
-import { Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
+import {
+  AlignJustify,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Pencil,
+  Plus,
+  Search,
+  TerminalSquare,
+  Wrench,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { diffLines } from "diff";
 import hljs from "highlight.js/lib/common";
@@ -16,6 +27,7 @@ import {
 import type { Entry } from "../lib/types";
 import { AddedLinesView, DiffView } from "./DiffView";
 import { languageFor } from "./FileView";
+import { FileIcon } from "./FileIcon";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -496,16 +508,40 @@ function commandSnippet(entry: ToolEntry): string {
   return truncate(raw.trim().split("\n")[0] ?? "", 40);
 }
 
+/** One run's expandable content: the `$` pill plus its output — shared by the
+ * legacy `CommandRow` header and the grouped activity rows, so a Run row
+ * drops down exactly the way a command card always has. */
+function CommandBody({ entry }: { entry: ToolEntry }) {
+  const command = toolCommand(entry.input);
+  const output = entry.output == null ? null : truncate(entry.output, 4000);
+  const empty = output != null && output.trim() === "";
+  return (
+    <>
+      {command ? <BashPill command={truncate(command, 2000)} /> : null}
+      {output == null ? null : empty && !entry.isError ? (
+        <div className="font-mono text-[12px] leading-6 text-[var(--faint)]">
+          ({capitalize(entry.name)} completed with no output)
+        </div>
+      ) : (
+        <div
+          className={`font-mono text-[12px] leading-6 whitespace-pre-wrap ${
+            entry.isError ? "text-[var(--danger)]" : "text-[var(--muted)]"
+          }`}
+        >
+          {output}
+        </div>
+      )}
+    </>
+  );
+}
+
 /** One run inside a command group: `Ran npx tsc… ∨`, the `$` pill, then the
  * output as plain text — or `(Bash completed with no output)` when it ran
  * silent. */
 function CommandRow({ entry }: { entry: ToolEntry }) {
   const [expanded, setExpanded] = useState(true);
-  const command = toolCommand(entry.input);
   const snippet = commandSnippet(entry);
-  const output = entry.output == null ? null : truncate(entry.output, 4000);
   const busy = entry.output == null && !entry.isError;
-  const empty = output != null && output.trim() === "";
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5">
       <button
@@ -535,26 +571,7 @@ function CommandRow({ entry }: { entry: ToolEntry }) {
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--danger)]" />
         )}
       </button>
-      {expanded && (
-        <>
-          {command ? (
-            <BashPill command={truncate(command, 2000)} />
-          ) : null}
-          {output == null ? null : empty && !entry.isError ? (
-            <div className="font-mono text-[12px] leading-6 text-[var(--faint)]">
-              ({capitalize(entry.name)} completed with no output)
-            </div>
-          ) : (
-            <div
-              className={`font-mono text-[12px] leading-6 whitespace-pre-wrap ${
-                entry.isError ? "text-[var(--danger)]" : "text-[var(--muted)]"
-              }`}
-            >
-              {output}
-            </div>
-          )}
-        </>
-      )}
+      {expanded && <CommandBody entry={entry} />}
     </div>
   );
 }
@@ -811,4 +828,476 @@ export function ActivityCard({ entries }: { entries: ToolEntry[] }) {
  * so existing callers rendering one tool entry keep working. */
 export function ToolCard({ entry }: { entry: ToolEntry }) {
   return <ActivityCard entries={[entry]} />;
+}
+
+// ---------------------------------------------------------------------------
+// Grouped streaming activity — the screenshot layout: one collapsible
+// `Ran 1 command · read 5 files · searched 1 time` header, then one row per
+// tool call joined by a vertical guide. Reads render as `Read [file-pill]`
+// where the pill is the file-type icon plus basename on a fill; Search rows
+// render `Search <pattern> in <path>`; Run rows render `Run <command>`.
+// Clicking a row drops down just that row (accordion — opening one closes
+// the others) onto the same body the single rows have always shown, and a
+// Run row drops onto the normal `$` pill plus output.
+// ---------------------------------------------------------------------------
+
+/** Search-family tools read as "searched N times" in the group header and as
+ * `Search` rows — matched case-insensitively so Claude (`Grep`), opencode
+ * (`grep`) and future `*_search` tools all land here. */
+function isSearchTool(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (lower.includes("search")) return true;
+  return ["grep", "glob", "rg", "find", "grep_search", "textsearch"].includes(lower);
+}
+
+/** `pattern in path` for a search call, or whichever half it gave — the
+ * `TextDelta|ToolCall|ToolResult in /home/.../crates` line in the reference. */
+function searchDetail(input: unknown): string {
+  if (input === null || typeof input !== "object") return "";
+  const record = input as Record<string, unknown>;
+  const pick = (keys: string[]): string => {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim() !== "") return value.trim().split("\n")[0]!;
+    }
+    return "";
+  };
+  const pattern = pick(["pattern", "query", "text", "term", "keyword"]);
+  const where = pick(["path", "file_path", "filePath", "directory", "dir", "folder"]);
+  if (pattern && where) return `${truncate(pattern, 120)} in ${truncate(where, 160)}`;
+  return truncate(pattern || where, 200);
+}
+
+/** `Ran 1 command · read 5 files · searched 1 time` — fixed verb order, not
+ * list order, so a group that opens with five reads still leads with its one
+ * run, exactly like the reference. Edits/writes/others join the same way
+ * when a turn carries them. */
+function groupHeaderText(entries: ToolEntry[]): string {
+  const count = (fn: (e: ToolEntry) => boolean) => entries.filter(fn).length;
+  const commands = count((e) => toolCategory(e.name) === "command");
+  const reads = count((e) => toolCategory(e.name) === "read");
+  const searches = count((e) => isSearchTool(e.name));
+  const edits = count((e) => toolCategory(e.name) === "edit");
+  const writes = count((e) => toolCategory(e.name) === "write");
+  const others = entries.length - commands - reads - searches - edits - writes;
+  const parts: string[] = [];
+  if (commands > 0) parts.push(`Ran ${commands} command${commands === 1 ? "" : "s"}`);
+  if (reads > 0) parts.push(`read ${reads} file${reads === 1 ? "" : "s"}`);
+  if (searches > 0) parts.push(`searched ${searches} time${searches === 1 ? "" : "s"}`);
+  if (edits > 0) parts.push(`edited ${edits} file${edits === 1 ? "" : "s"}`);
+  if (writes > 0) parts.push(`created ${writes} file${writes === 1 ? "" : "s"}`);
+  if (others > 0) parts.push(`ran ${others} other tool${others === 1 ? "" : "s"}`);
+  if (parts.length === 0) parts.push(`${entries.length} tool calls`);
+  return parts.join(" · ");
+}
+
+type GroupRowKind = "read" | "command" | "search" | "edit" | "write" | "other";
+
+function groupRowKind(entry: ToolEntry): GroupRowKind {
+  if (isSearchTool(entry.name)) return "search";
+  const cat = toolCategory(entry.name);
+  if (cat === "read" || cat === "command" || cat === "edit" || cat === "write") return cat;
+  return "other";
+}
+
+function GroupRowIcon({ kind }: { kind: GroupRowKind }) {
+  const cls = "shrink-0 text-[var(--faint)]";
+  switch (kind) {
+    case "read":
+      // The reference's boxed list mark: three lines in a rounded square.
+      return (
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border border-[var(--border)] text-[var(--faint)]">
+          <AlignJustify size={10} strokeWidth={2} />
+        </span>
+      );
+    case "command":
+      return (
+        <span className={cls}>
+          <TerminalSquare size={14} strokeWidth={2} />
+        </span>
+      );
+    case "search":
+      return (
+        <span className={cls}>
+          <Search size={14} strokeWidth={2} />
+        </span>
+      );
+    case "edit":
+      return (
+        <span className={cls}>
+          <Pencil size={14} strokeWidth={2} />
+        </span>
+      );
+    case "write":
+      return (
+        <span className={cls}>
+          <Plus size={14} strokeWidth={2} />
+        </span>
+      );
+    default:
+      return (
+        <span className={cls}>
+          <Wrench size={14} strokeWidth={2} />
+        </span>
+      );
+  }
+}
+
+function GroupRowVerb({ kind, entry }: { kind: GroupRowKind; entry: ToolEntry }) {
+  switch (kind) {
+    case "read":
+      return <span className="shrink-0 text-[13px] text-[var(--muted)]">Read</span>;
+    case "command":
+      return <span className="shrink-0 text-[13px] text-[var(--muted)]">Run</span>;
+    case "search":
+      return <span className="shrink-0 text-[13px] text-[var(--muted)]">Search</span>;
+    case "edit":
+      return <span className="shrink-0 text-[13px] text-[var(--muted)]">Edit</span>;
+    case "write":
+      return <span className="shrink-0 text-[13px] text-[var(--muted)]">Write</span>;
+    default:
+      return (
+        <span className="shrink-0 text-[13px] text-[var(--muted)]">{capitalize(entry.name)}</span>
+      );
+  }
+}
+
+/** The file pill: file-type icon plus basename on a fill, full path on hover
+ * — the `[🦀 composer.rs]` chip in the reference. */
+function FilePill({ path }: { path: string }) {
+  const base = basename(path) || "file";
+  return (
+    <span
+      title={path}
+      className="flex min-w-0 items-center gap-1.5 rounded-md bg-[var(--bubble)] px-2 py-0.5"
+    >
+      <FileIcon name={base} size={13} />
+      <span className="truncate text-[12px] text-[var(--ink)]">{base}</span>
+    </span>
+  );
+}
+
+/** One row inside the group: icon + verb + pill/detail, expanding onto the
+ * same body the ungrouped rows show. No row-level chevron — like the
+ * reference, the row itself is the affordance (hover tint + pointer). */
+function GroupToolRow({
+  entry,
+  open,
+  onToggle,
+}: {
+  entry: ToolEntry;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const kind = groupRowKind(entry);
+  const cat = toolCategory(entry.name);
+  const filePath = toolFilePath(entry.input);
+  const hasBody =
+    entry.output != null || cat === "edit" || cat === "write" || isTodoTool(entry.name);
+  const busy = entry.output == null && !entry.isError;
+  const detail = (() => {
+    switch (kind) {
+      case "read":
+      case "edit":
+      case "write":
+        if (filePath) return <FilePill path={filePath} />;
+        return (
+          <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--muted)]">
+            {truncate(toolSummary(entry.input, entry.name), 120)}
+          </span>
+        );
+      case "command": {
+        const command = toolCommand(entry.input);
+        return (
+          <span
+            title={command || undefined}
+            className="min-w-0 flex-1 truncate text-[13px] text-[var(--muted)]"
+          >
+            {command ? truncate(command, 160) : "a command"}
+          </span>
+        );
+      }
+      case "search": {
+        const text = searchDetail(entry.input) || toolSummary(entry.input, entry.name);
+        return (
+          <span
+            title={text || undefined}
+            className="min-w-0 flex-1 truncate text-[13px] text-[var(--muted)]"
+          >
+            {text}
+          </span>
+        );
+      }
+      default: {
+        const text = toolSummary(entry.input, entry.name);
+        return (
+          <span
+            title={text || undefined}
+            className="min-w-0 flex-1 truncate text-[13px] text-[var(--muted)]"
+          >
+            {text}
+          </span>
+        );
+      }
+    }
+  })();
+
+  return (
+    <div className="flex w-full flex-col">
+      <button
+        type="button"
+        onClick={() => hasBody && onToggle()}
+        title={
+          filePath || searchDetail(entry.input) || toolSummary(entry.input, entry.name) || undefined
+        }
+        className={`flex w-full items-center gap-2 rounded-md px-1 py-[3px] text-left ${
+          hasBody ? "cursor-pointer hover:bg-[var(--hover)]" : "cursor-default"
+        }`}
+      >
+        <GroupRowIcon kind={kind} />
+        <GroupRowVerb kind={kind} entry={entry} />
+        {detail}
+        {busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
+        {entry.isError && (
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--danger)]" />
+        )}
+      </button>
+      {open && hasBody && (
+        <div className="row-in mt-1 mb-1 ml-[22px] flex flex-col gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--card)] px-2.5 py-2">
+          {cat === "edit" && !entry.isError ? (
+            <EditBody entry={entry} />
+          ) : cat === "write" && !entry.isError ? (
+            <WriteBody entry={entry} />
+          ) : cat === "read" ? (
+            entry.output != null ? (
+              <ReadBody entry={entry} />
+            ) : null
+          ) : cat === "command" ? (
+            <CommandBody entry={entry} />
+          ) : isTodoTool(entry.name) ? (
+            <TodoBody entry={entry} />
+          ) : (
+            <GenericBody entry={entry} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Consecutive same-kind calls inside a group — `read`, `command`, `search`,
+ * `edit`, `write`, `todo`, `other`. Todo tools get their own bucket so a run
+ * of Todowrites never merges with surrounding Greps. */
+type SubGroupKey = GroupRowKind | "todo";
+
+function subGroupKey(entry: ToolEntry): SubGroupKey {
+  if (isTodoTool(entry.name)) return "todo";
+  return groupRowKind(entry);
+}
+
+/** Split a group's entries into runs of the same sub-group key, preserving
+ * order — `[read, read, edit, read]` becomes `[[read, read], [edit], [read]]`
+ * so only truly consecutive repeats collapse. */
+function partitionRuns(entries: ToolEntry[]): ToolEntry[][] {
+  const runs: ToolEntry[][] = [];
+  for (const entry of entries) {
+    const last = runs[runs.length - 1];
+    if (last && last.length > 0 && subGroupKey(last[last.length - 1]!) === subGroupKey(entry)) {
+      last.push(entry);
+    } else {
+      runs.push([entry]);
+    }
+  }
+  return runs;
+}
+
+/** `Read 5 files`, `Edited ToolCards.tsx ×4`, `Ran 3 commands` — the header
+ * for one repeated run. A single-file run names the file (the "some files are
+ * repeated" case) so `Edited ToolCards.tsx ×4` reads as one thing; a
+ * multi-file run counts files, and counts edits too when they outnumber files. */
+function subGroupLabel(subEntries: ToolEntry[]): string {
+  const n = subEntries.length;
+  const first = subEntries[0]!;
+  const key = subGroupKey(first);
+  if (key === "read" || key === "edit" || key === "write") {
+    const files = distinctPaths(subEntries);
+    if (files.size === 1) {
+      const base = basename([...files][0]!) || "file";
+      if (key === "read") return `Read ${base} ×${n}`;
+      if (key === "edit") return `Edited ${base} ×${n}`;
+      return `Created ${base} ×${n}`;
+    }
+    if (key === "read") return `Read ${n} files`;
+    if (key === "edit") {
+      if (files.size > 1) return `Edited ${files.size} files · ${n} times`;
+      return `Edited ${n} files`;
+    }
+    return `Created ${n} files`;
+  }
+  if (key === "command") return `Ran ${n} commands`;
+  if (key === "search") return `Searched ${n} times`;
+  if (key === "todo") {
+    const names = new Set(subEntries.map((e) => e.name.toLowerCase()));
+    if (names.size === 1) {
+      const raw = first.name.toLowerCase();
+      return `${raw.charAt(0).toUpperCase() + raw.slice(1)} ×${n}`;
+    }
+    return `Todos ×${n}`;
+  }
+  const names = new Set(subEntries.map((e) => e.name.toLowerCase()));
+  if (names.size === 1) return `${capitalize(first.name)} ×${n}`;
+  return `${n} tools`;
+}
+
+/** One repeated run inside a group: its own collapsible header plus its own
+ * vertical guide, so five reads read as one `Read 5 files` tree rather than
+ * five loose rows. Shares the group's accordion — opening a row here closes
+ * the open row elsewhere in the same group. */
+function RepeatSubGroup({
+  entries,
+  startIndex,
+  openId,
+  onToggle,
+}: {
+  entries: ToolEntry[];
+  startIndex: number;
+  openId: string | null;
+  onToggle: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const label = useMemo(() => subGroupLabel(entries), [entries]);
+  const key = subGroupKey(entries[0]!);
+  const iconKind: GroupRowKind = key === "todo" ? "other" : key;
+  const busy = entries.some((entry) => entry.output == null && !entry.isError);
+  const failed = entries.some((entry) => entry.isError);
+
+  return (
+    <div className="flex w-full flex-col">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex cursor-pointer items-center gap-1.5 rounded-md px-1 py-[3px] text-left text-[13px]"
+      >
+        <span className="shrink-0 text-[var(--faint)]">
+          {expanded ? (
+            <ChevronDown size={12} strokeWidth={2} />
+          ) : (
+            <ChevronRight size={12} strokeWidth={2} />
+          )}
+        </span>
+        <GroupRowIcon kind={iconKind} />
+        <span className="min-w-0 flex-1 truncate text-[var(--muted)]">{label}</span>
+        {busy && !failed && (
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />
+        )}
+        {failed && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--danger)]" />}
+      </button>
+      {expanded && (
+        <div className="relative mt-0.5 ml-[13px] flex flex-col border-l border-[var(--border)] pl-4">
+          {entries.map((entry, i) => (
+            <GroupToolRow
+              key={entry.id || `${entry.name}-${startIndex + i}`}
+              entry={entry}
+              open={openId === entry.id}
+              onToggle={() => onToggle(entry.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Consecutive tool calls as one collapsible activity block. A lone tool
+ * renders as just its row (no outer header); two or more gain the summary
+ * header plus the vertical guide joining the rows. Inside, consecutive
+ * same-kind runs (five reads, three edits, two commands…) fold once more
+ * into their own `Read 5 files` / `Edited x ×3` sub-trees, so repeats read
+ * as one tree-ish branch. A group that is already a single run stays flat —
+ * the outer header already says what a sub-header would. Only one row drops
+ * down at a time — clicking a second row closes the first. */
+export function ToolActivityGroup({ entries }: { entries: ToolEntry[] }) {
+  const [groupOpen, setGroupOpen] = useState(true);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const header = useMemo(() => groupHeaderText(entries), [entries]);
+  const runs = useMemo(() => partitionRuns(entries), [entries]);
+  const busy = entries.some((entry) => entry.output == null && !entry.isError);
+  const failed = entries.some((entry) => entry.isError);
+  const toggle = (id: string) => setOpenId((cur) => (cur === id ? null : id));
+
+  if (entries.length === 1) {
+    const only = entries[0]!;
+    return (
+      <GroupToolRow
+        entry={only}
+        open={openId === only.id}
+        onToggle={() => toggle(only.id)}
+      />
+    );
+  }
+
+  const flat = runs.length === 1;
+
+  return (
+    <div className="flex w-full flex-col">
+      <button
+        type="button"
+        onClick={() => setGroupOpen((v) => !v)}
+        className="flex cursor-pointer items-center gap-1.5 py-0.5 text-left text-[13px]"
+      >
+        <span className="shrink-0 text-[var(--faint)]">
+          {groupOpen ? (
+            <ChevronDown size={12} strokeWidth={2} />
+          ) : (
+            <ChevronRight size={12} strokeWidth={2} />
+          )}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[var(--muted)]">{header}</span>
+        {busy && !failed && (
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />
+        )}
+        {failed && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--danger)]" />}
+      </button>
+      {groupOpen && (
+        <div className="relative mt-0.5 ml-[7px] flex flex-col border-l border-[var(--border)] pl-4">
+          {flat
+            ? entries.map((entry, index) => (
+                <GroupToolRow
+                  key={entry.id || `${entry.name}-${index}`}
+                  entry={entry}
+                  open={openId === entry.id}
+                  onToggle={() => toggle(entry.id)}
+                />
+              ))
+            : (() => {
+                let offset = 0;
+                return runs.map((run, ri) => {
+                  const start = offset;
+                  offset += run.length;
+                  if (run.length === 1) {
+                    const entry = run[0]!;
+                    return (
+                      <GroupToolRow
+                        key={entry.id || `${entry.name}-${start}`}
+                        entry={entry}
+                        open={openId === entry.id}
+                        onToggle={() => toggle(entry.id)}
+                      />
+                    );
+                  }
+                  return (
+                    <RepeatSubGroup
+                      key={`run-${ri}-${start}`}
+                      entries={run}
+                      startIndex={start}
+                      openId={openId}
+                      onToggle={toggle}
+                    />
+                  );
+                });
+              })()}
+        </div>
+      )}
+    </div>
+  );
 }
