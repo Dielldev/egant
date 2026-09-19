@@ -261,6 +261,10 @@ pub enum EventDto {
         cost_usd: f64,
         usage: TurnUsageDto,
     },
+    ContextUpdate {
+        context_tokens: u64,
+        context_window: u64,
+    },
     Error {
         message: String,
     },
@@ -327,6 +331,13 @@ impl From<&HarnessEvent> for EventDto {
                 duration_ms: *duration_ms,
                 cost_usd: *cost_usd,
                 usage: TurnUsageDto::from(usage),
+            },
+            HarnessEvent::ContextUpdate {
+                context_tokens,
+                context_window,
+            } => EventDto::ContextUpdate {
+                context_tokens: *context_tokens,
+                context_window: *context_window,
             },
             HarnessEvent::Error { message } => EventDto::Error {
                 message: message.clone(),

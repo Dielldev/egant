@@ -389,20 +389,32 @@ impl TurnTranslator for OpencodeTranslator {
         } else {
             (None, false)
         };
-        vec![HarnessEvent::TurnEnded {
+        // This wire accounts for prompt and reply only; it says nothing
+        // about cache splits or the window, which stay at zero rather
+        // than being invented here.
+        let usage = crate::TurnUsage {
+            input_tokens: turn.input_tokens,
+            output_tokens: turn.output_tokens,
+            ..Default::default()
+        };
+        let mut events = Vec::new();
+        // The turn total *is* the occupancy here — one accounting point per
+        // turn, not a sum across loop iterations — so it doubles as the
+        // context reading the meter shows.
+        if usage.is_reported() {
+            events.push(HarnessEvent::ContextUpdate {
+                context_tokens: usage.total_tokens(),
+                context_window: usage.context_window,
+            });
+        }
+        events.push(HarnessEvent::TurnEnded {
             result,
             is_error,
             duration_ms,
             cost_usd: turn.cost_usd,
-            // This wire accounts for prompt and reply only; it says nothing
-            // about cache splits or the window, which stay at zero rather
-            // than being invented here.
-            usage: crate::TurnUsage {
-                input_tokens: turn.input_tokens,
-                output_tokens: turn.output_tokens,
-                ..Default::default()
-            },
-        }]
+            usage,
+        });
+        events
     }
 
     fn take_ready(&mut self) -> Option<HarnessEvent> {
@@ -883,7 +895,13 @@ mod tests {
         t.push_line(
             r#"{"type":"step_finish","part":{"tokens":{"input":10,"output":4},"cost":0.02}}"#,
         );
-        match &t.end_turn(false, Some(0))[0] {
+        let events = t.end_turn(false, Some(0));
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            HarnessEvent::ContextUpdate { context_tokens, .. } => assert_eq!(*context_tokens, 14),
+            other => panic!("unexpected {other:?}"),
+        }
+        match &events[1] {
             HarnessEvent::TurnEnded {
                 cost_usd,
                 usage,
@@ -1016,6 +1034,7 @@ mod tests {
                 let kind = match &event {
                     HarnessEvent::Ready { .. } => "ready",
                     HarnessEvent::AssistantMessage { .. } => "msg",
+                    HarnessEvent::ContextUpdate { .. } => "ctx",
                     HarnessEvent::TurnEnded { .. } => "end",
                     HarnessEvent::Exited { .. } => "exited",
                     _ => "other",
@@ -1047,13 +1066,13 @@ mod tests {
 
                 h.send("hi".into(), vec![]).await.unwrap();
                 let kinds = until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
-                assert_eq!(kinds, ["ready", "msg", "end"]);
+                assert_eq!(kinds, ["ready", "msg", "ctx", "end"]);
                 assert_eq!(h.session_id().as_deref(), Some("ses_1"));
 
                 // A second turn reuses the session: no second Ready.
                 h.send("again".into(), vec![]).await.unwrap();
                 let kinds = until(&rx, |e| matches!(e, HarnessEvent::TurnEnded { .. })).await;
-                assert_eq!(kinds, ["msg", "end"]);
+                assert_eq!(kinds, ["msg", "ctx", "end"]);
 
                 h.shutdown().await.unwrap();
                 let kinds = until(&rx, |e| matches!(e, HarnessEvent::Exited { .. })).await;

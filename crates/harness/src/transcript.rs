@@ -137,10 +137,15 @@ impl SessionUsage {
 
     /// Folds one turn's accounting in.
     ///
+    /// Only the spend accumulates here. `context_tokens` is owned by
+    /// [`HarnessEvent::ContextUpdate`]: a turn's `usage` sums every API call
+    /// in a multi-step turn, so deriving occupancy from it reads as several
+    /// windows' worth after a single prompt. The window itself still updates
+    /// here — it arrives once per turn, on the only message that carries it.
+    ///
     /// A turn the backend did not account for — interrupted before it
     /// settled, or run on a wire that reports no tokens — leaves every number
-    /// untouched. Recording it would both inflate `turns` and, worse, reset
-    /// `context_tokens` to zero, blanking a meter that was reading correctly.
+    /// untouched. Recording it would inflate `turns` for nothing.
     pub fn record(&mut self, turn: crate::TurnUsage) {
         if !turn.is_reported() {
             return;
@@ -154,11 +159,19 @@ impl SessionUsage {
             .cache_read_tokens
             .saturating_add(turn.cache_read_tokens);
         self.turns = self.turns.saturating_add(1);
-        self.context_tokens = turn.total_tokens();
         // Keep the last window we were told about: a turn that omits it says
         // nothing about the model having changed.
         if turn.context_window > 0 {
             self.context_window = turn.context_window;
+        }
+    }
+
+    /// Folds in a live occupancy reading. Replaces, never accumulates: the
+    /// window holds one conversation, so the newest reading supersedes.
+    pub fn record_context(&mut self, context_tokens: u64, context_window: u64) {
+        self.context_tokens = context_tokens;
+        if context_window > 0 {
+            self.context_window = context_window;
         }
     }
 }
@@ -320,6 +333,13 @@ impl Transcript {
                         });
                     }
                 }
+            }
+
+            HarnessEvent::ContextUpdate {
+                context_tokens,
+                context_window,
+            } => {
+                self.usage.record_context(context_tokens, context_window);
             }
 
             HarnessEvent::Error { message } => {
@@ -534,11 +554,20 @@ mod tests {
         }
     }
 
+    fn ctx(tokens: u64, window: u64) -> HarnessEvent {
+        HarnessEvent::ContextUpdate {
+            context_tokens: tokens,
+            context_window: window,
+        }
+    }
+
     #[test]
-    fn tokens_accumulate_but_context_occupancy_replaces() {
+    fn tokens_accumulate_while_context_occupancy_replaces() {
         let mut transcript = Transcript::new();
         transcript.apply(turn(2, 10, 25_000, 200_000));
+        transcript.apply(ctx(25_012, 200_000));
         transcript.apply(turn(3, 20, 40_000, 200_000));
+        transcript.apply(ctx(40_023, 200_000));
 
         // Spend is cumulative across the session.
         assert_eq!(transcript.usage.input_tokens, 5);
@@ -548,26 +577,30 @@ mod tests {
         assert_eq!(transcript.usage.total_tokens(), 65_035);
 
         // Occupancy is not: the window holds one conversation, so the newest
-        // turn's reading replaces the previous one rather than summing.
+        // reading replaces the previous one rather than summing.
         assert_eq!(transcript.usage.context_tokens, 40_023);
         assert_eq!(transcript.usage.context_window, 200_000);
     }
 
     #[test]
-    fn cache_tokens_count_towards_the_context_reading() {
-        // The bug this exists to prevent: a turn whose prompt was almost
-        // entirely cache reads used to read as twelve tokens of context.
+    fn a_summed_turn_total_never_becomes_the_context_reading() {
+        // The regression this exists to prevent: a turn's `usage` sums every
+        // API call in a multi-step turn, so one prompt with a few tool steps
+        // settled the meter at several windows' worth of tokens.
         let mut transcript = Transcript::new();
-        transcript.apply(turn(2, 10, 25_192, 0));
+        transcript.apply(ctx(25_204, 200_000));
+        transcript.apply(turn(2, 10, 1_400_000, 200_000));
         assert_eq!(transcript.usage.context_tokens, 25_204);
+        assert_eq!(transcript.usage.turns, 1);
     }
 
     #[test]
     fn an_unaccounted_turn_leaves_the_numbers_alone() {
         let mut transcript = Transcript::new();
+        transcript.apply(ctx(25_012, 200_000));
         transcript.apply(turn(2, 10, 25_000, 200_000));
         // An interrupted turn, or a wire that reports no tokens: recording it
-        // would both inflate the turn count and blank a correct meter.
+        // would inflate the turn count for nothing.
         transcript.apply(turn(0, 0, 0, 0));
         assert_eq!(transcript.usage.turns, 1);
         assert_eq!(transcript.usage.context_tokens, 25_012);

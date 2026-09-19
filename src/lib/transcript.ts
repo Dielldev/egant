@@ -49,13 +49,14 @@ export function emptyUsage(): SessionUsage {
 
 /** Folds one turn's accounting into a session's running totals — a mechanical
  * port of `SessionUsage::record`, so the live fold and a re-fetched snapshot
- * never disagree. */
+ * never disagree. Spend accumulates; the context reading is owned by
+ * `context_update` events and left alone here, because a turn's totals sum
+ * every API call in a multi-step turn. */
 export function recordUsage(session: SessionUsage, turn: TurnUsage): SessionUsage {
   const turnTotal =
     turn.inputTokens + turn.outputTokens + turn.cacheCreationTokens + turn.cacheReadTokens;
   // A turn the backend never accounted for — interrupted before it settled,
-  // or run on a wire that reports no tokens — must not inflate the turn count
-  // or blank a meter that was reading correctly.
+  // or run on a wire that reports no tokens — must not inflate the turn count.
   if (turnTotal <= 0) return session;
   return {
     inputTokens: session.inputTokens + turn.inputTokens,
@@ -64,8 +65,8 @@ export function recordUsage(session: SessionUsage, turn: TurnUsage): SessionUsag
     cacheReadTokens: session.cacheReadTokens + turn.cacheReadTokens,
     totalTokens: session.totalTokens + turnTotal,
     turns: session.turns + 1,
-    // Replaced, not added: see `SessionUsage`.
-    contextTokens: turnTotal,
+    // Replaced by `context_update`, not added: see `SessionUsage`.
+    contextTokens: session.contextTokens,
     contextWindow: turn.contextWindow > 0 ? turn.contextWindow : session.contextWindow,
   };
 }
@@ -285,6 +286,12 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
         ...s,
         entries: [...s.entries, { kind: "notice", text: event.message, isError: true }],
       };
+
+    case "context_update": {
+      const usage = { ...s.usage, contextTokens: event.context_tokens };
+      if (event.context_window > 0) usage.contextWindow = event.context_window;
+      return { ...s, usage };
+    }
 
     case "exited": {
       settleStreaming(s.entries);

@@ -23,8 +23,11 @@ import { useNow } from "./useNow";
  * quota to poll, so that section simply isn't there for them; nothing
  * stands in for it.
  *
- * Silent until there is at least one number to show: a ring reading 0%
- * before anything has happened is noise, not information. */
+ * The trigger is deliberately just a ring, no number and no color: the
+ * number kept changing meaning (context share one moment, a quota window
+ * the next), so it now lives inside the popover next to the label that
+ * explains it. Silent until there is at least one number to show: a ring
+ * reading 0% before anything has happened is noise, not information. */
 export function UsageMeter({
   usage,
   costUsd,
@@ -70,7 +73,7 @@ export function UsageMeter({
     };
   }, [open]);
 
-  const hasContext = usage.totalTokens > 0;
+  const hasContext = usage.totalTokens > 0 || usage.contextTokens > 0;
   const hasLimits = hasUsageData(claudeUsage);
   if (!hasContext && !hasLimits) return null;
 
@@ -87,12 +90,9 @@ export function UsageMeter({
   // The ring shows context occupancy whenever there is one — it's what
   // decides whether there's room for another message. Before a session's
   // first turn has settled, the account-wide quota (already fetched) takes
-  // the ring over instead of showing nothing.
+  // the ring over instead of showing nothing. The trigger itself stays
+  // monochrome: exact figures live in the popover, next to their labels.
   const ringPercent = contextPercent ?? limitsWorst ?? 0;
-  const ringCritical =
-    contextPercent != null
-      ? contextFractionValue >= 0.9
-      : isUsageCritical(limitsWorst ?? 0);
   const radius = 5;
   const circumference = 2 * Math.PI * radius;
 
@@ -121,11 +121,7 @@ export function UsageMeter({
           }
           setOpen((o) => !o);
         }}
-        className={`flex cursor-pointer items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] hover:bg-[var(--hover)] ${
-          ringCritical
-            ? "text-[var(--danger)]"
-            : "text-[var(--faint)] hover:text-[var(--ink)]"
-        }`}
+        className="flex cursor-pointer items-center rounded-full px-1 py-0.5 text-[11px] text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
       >
         <svg width="13" height="13" viewBox="0 0 13 13" className="shrink-0">
           <circle
@@ -150,7 +146,6 @@ export function UsageMeter({
             transform="rotate(-90 6.5 6.5)"
           />
         </svg>
-        {ringPercent}%
       </button>
       {open &&
         anchor &&

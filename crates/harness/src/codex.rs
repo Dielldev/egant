@@ -236,7 +236,25 @@ impl CodexTranslator {
     fn settle(&mut self, result: Option<String>, is_error: bool) -> Vec<HarnessEvent> {
         let turn = std::mem::take(&mut self.turn);
         self.settled = true;
-        vec![HarnessEvent::TurnEnded {
+        // This wire accounts for prompt and reply only; it says nothing
+        // about cache splits or the window, which stay at zero rather
+        // than being invented here.
+        let usage = crate::TurnUsage {
+            input_tokens: turn.input_tokens,
+            output_tokens: turn.output_tokens,
+            ..Default::default()
+        };
+        let mut events = Vec::new();
+        // The turn total *is* the occupancy here — one accounting point per
+        // turn, not a sum across loop iterations — so it doubles as the
+        // context reading the meter shows.
+        if usage.is_reported() {
+            events.push(HarnessEvent::ContextUpdate {
+                context_tokens: usage.total_tokens(),
+                context_window: usage.context_window,
+            });
+        }
+        events.push(HarnessEvent::TurnEnded {
             result,
             is_error,
             duration_ms: turn
@@ -245,15 +263,9 @@ impl CodexTranslator {
                 .unwrap_or(0),
             // `exec` reports usage, not cost.
             cost_usd: 0.0,
-            // This wire accounts for prompt and reply only; it says nothing
-            // about cache splits or the window, which stay at zero rather
-            // than being invented here.
-            usage: crate::TurnUsage {
-                input_tokens: turn.input_tokens,
-                output_tokens: turn.output_tokens,
-                ..Default::default()
-            },
-        }]
+            usage,
+        });
+        events
     }
 }
 
@@ -705,8 +717,12 @@ mod tests {
         t.build("hi", &[]);
         let events =
             t.push_line(r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         match &events[0] {
+            HarnessEvent::ContextUpdate { context_tokens, .. } => assert_eq!(*context_tokens, 10),
+            other => panic!("unexpected {other:?}"),
+        }
+        match &events[1] {
             HarnessEvent::TurnEnded {
                 usage, is_error, ..
             } => {
@@ -806,6 +822,7 @@ mod tests {
                     let kind = match &event {
                         HarnessEvent::Ready { .. } => "ready",
                         HarnessEvent::AssistantMessage { .. } => "msg",
+                        HarnessEvent::ContextUpdate { .. } => "ctx",
                         HarnessEvent::TurnEnded { .. } => "end",
                         _ => "other",
                     };
@@ -814,7 +831,7 @@ mod tests {
                         break;
                     }
                 }
-                assert_eq!(kinds, ["ready", "msg", "end"]);
+                assert_eq!(kinds, ["ready", "msg", "ctx", "end"]);
                 assert_eq!(h.session_id().as_deref(), Some("thr_1"));
                 h.shutdown().await.unwrap();
             });
