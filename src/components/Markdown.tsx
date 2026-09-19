@@ -79,9 +79,12 @@ const components: Components = {
     const isBlock = node?.position ? node.position.start.line !== node.position.end.line : false;
 
     if (!isBlock) {
+      // Inline code: transparent fill, theme-colored text. Nord gets cyan
+      // #88c0d0 text, dracula purple, cobalt yellow… via --code-chip-bg
+      // (the palette's most colorful solid, reused here as the text color).
       return (
         <code
-          className="rounded-[4px] bg-[var(--card)] px-1 py-px font-mono text-[0.85em] text-[var(--ink)]"
+          className="rounded-[4px] border border-[var(--border)] bg-transparent px-1 py-px font-mono text-[0.85em] font-medium text-[var(--code-chip-bg)]"
           {...rest}
         >
           {children}
