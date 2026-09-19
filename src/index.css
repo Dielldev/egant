@@ -34,6 +34,11 @@
   --toggle-on: #e0e0e0;
   --card: rgba(255, 255, 255, 0.025);
   --cursor: #ffffff;
+  /* Inline `code` chips: solid 쏙 theme secondary, not a transparent wash.
+   * Each palette overrides these with its own most colorful solid (nord's
+   * cyan, dracula's purple, …) plus a contrasting dark text color. */
+  --code-chip-bg: #8e7cf6;
+  --code-chip-fg: #0d0d0d;
 
   /* Derived, not hand-tuned per palette: a barely-there wash of the palette's
    * own --sidebar/--stage color, mixed down toward transparent. This is what
@@ -62,6 +67,8 @@ html[data-palette="zeron-light"] {
   --bubble: rgba(0, 0, 0, 0.06);
   --toggle-on: #17171c;
   --card: rgba(0, 0, 0, 0.02);
+  --code-chip-bg: #8e7cf6;
+  --code-chip-fg: #17171c;
 }
 
 html[data-palette="sand"] {
@@ -76,6 +83,8 @@ html[data-palette="sand"] {
   --bubble: rgba(90, 70, 40, 0.09);
   --toggle-on: #221c12;
   --card: rgba(90, 70, 40, 0.04);
+  --code-chip-bg: #b3803f;
+  --code-chip-fg: #221c12;
 }
 
 html[data-palette="midnight"] {
@@ -89,6 +98,8 @@ html[data-palette="midnight"] {
   --selected: rgba(140, 170, 255, 0.1);
   --bubble: rgba(140, 170, 255, 0.12);
   --card: rgba(140, 170, 255, 0.04);
+  --code-chip-bg: #8ca0ff;
+  --code-chip-fg: #02040a;
 }
 
 /* Editor-inspired dark palettes (Appearance > Dark theme). Each one reads its
@@ -106,6 +117,8 @@ html[data-palette="dark-plus"] {
   --selected: rgba(0, 122, 204, 0.16);
   --bubble: rgba(255, 255, 255, 0.08);
   --card: rgba(255, 255, 255, 0.03);
+  --code-chip-bg: #007acc;
+  --code-chip-fg: #ffffff;
 }
 
 html[data-palette="catppuccin-mocha"] {
@@ -119,6 +132,8 @@ html[data-palette="catppuccin-mocha"] {
   --selected: rgba(203, 166, 247, 0.14);
   --bubble: rgba(203, 166, 247, 0.1);
   --card: rgba(203, 166, 247, 0.04);
+  --code-chip-bg: #cba6f7;
+  --code-chip-fg: #1e1e2e;
 }
 
 html[data-palette="tokyo-night"] {
@@ -132,6 +147,8 @@ html[data-palette="tokyo-night"] {
   --selected: rgba(122, 162, 247, 0.12);
   --bubble: rgba(122, 162, 247, 0.09);
   --card: rgba(122, 162, 247, 0.03);
+  --code-chip-bg: #7aa2f7;
+  --code-chip-fg: #1a1b26;
 }
 
 html[data-palette="dracula"] {
@@ -145,6 +162,8 @@ html[data-palette="dracula"] {
   --selected: rgba(189, 147, 249, 0.14);
   --bubble: rgba(189, 147, 249, 0.1);
   --card: rgba(189, 147, 249, 0.03);
+  --code-chip-bg: #bd93f9;
+  --code-chip-fg: #282a36;
 }
 
 html[data-palette="github-dark"] {
@@ -158,6 +177,8 @@ html[data-palette="github-dark"] {
   --selected: rgba(88, 166, 255, 0.14);
   --bubble: rgba(88, 166, 255, 0.1);
   --card: rgba(88, 166, 255, 0.03);
+  --code-chip-bg: #58a6ff;
+  --code-chip-fg: #0d1117;
 }
 
 html[data-palette="ayu-dark"] {
@@ -171,6 +192,8 @@ html[data-palette="ayu-dark"] {
   --selected: rgba(255, 180, 84, 0.14);
   --bubble: rgba(255, 180, 84, 0.1);
   --card: rgba(255, 180, 84, 0.03);
+  --code-chip-bg: #ffb454;
+  --code-chip-fg: #0a0e14;
 }
 
 html[data-palette="ayu-mirage"] {
@@ -184,6 +207,8 @@ html[data-palette="ayu-mirage"] {
   --selected: rgba(255, 204, 102, 0.14);
   --bubble: rgba(255, 204, 102, 0.1);
   --card: rgba(255, 204, 102, 0.03);
+  --code-chip-bg: #ffcc66;
+  --code-chip-fg: #1f2430;
 }
 
 html[data-palette="gruvbox-dark"] {
@@ -197,6 +222,8 @@ html[data-palette="gruvbox-dark"] {
   --selected: rgba(250, 189, 47, 0.14);
   --bubble: rgba(250, 189, 47, 0.1);
   --card: rgba(250, 189, 47, 0.03);
+  --code-chip-bg: #fabd2f;
+  --code-chip-fg: #282828;
 }
 
 html[data-palette="rose-pine-moon"] {
@@ -210,6 +237,8 @@ html[data-palette="rose-pine-moon"] {
   --selected: rgba(156, 207, 216, 0.14);
   --bubble: rgba(234, 154, 151, 0.1);
   --card: rgba(156, 207, 216, 0.03);
+  --code-chip-bg: #ea9a97;
+  --code-chip-fg: #232136;
 }
 
 html[data-palette="nord"] {
@@ -223,6 +252,8 @@ html[data-palette="nord"] {
   --selected: rgba(136, 192, 208, 0.14);
   --bubble: rgba(136, 192, 208, 0.1);
   --card: rgba(136, 192, 208, 0.03);
+  --code-chip-bg: #88c0d0;
+  --code-chip-fg: #2e3440;
 }
 
 html[data-palette="one-dark-pro"] {
@@ -236,6 +267,8 @@ html[data-palette="one-dark-pro"] {
   --selected: rgba(97, 175, 239, 0.14);
   --bubble: rgba(97, 175, 239, 0.1);
   --card: rgba(97, 175, 239, 0.03);
+  --code-chip-bg: #61afef;
+  --code-chip-fg: #282c34;
 }
 
 html[data-palette="atom-one-dark"] {
@@ -249,6 +282,8 @@ html[data-palette="atom-one-dark"] {
   --selected: rgba(82, 139, 255, 0.14);
   --bubble: rgba(82, 139, 255, 0.1);
   --card: rgba(82, 139, 255, 0.03);
+  --code-chip-bg: #528bff;
+  --code-chip-fg: #21252b;
 }
 
 html[data-palette="night-owl"] {
@@ -262,6 +297,8 @@ html[data-palette="night-owl"] {
   --selected: rgba(130, 170, 255, 0.14);
   --bubble: rgba(130, 170, 255, 0.1);
   --card: rgba(130, 170, 255, 0.03);
+  --code-chip-bg: #82aaff;
+  --code-chip-fg: #011627;
 }
 
 html[data-palette="winter-is-coming-dark-blue"] {
@@ -275,6 +312,8 @@ html[data-palette="winter-is-coming-dark-blue"] {
   --selected: rgba(106, 159, 181, 0.14);
   --bubble: rgba(106, 159, 181, 0.1);
   --card: rgba(106, 159, 181, 0.03);
+  --code-chip-bg: #6a9fb5;
+  --code-chip-fg: #0e1c36;
 }
 
 html[data-palette="palenight"] {
@@ -288,6 +327,8 @@ html[data-palette="palenight"] {
   --selected: rgba(199, 146, 234, 0.14);
   --bubble: rgba(199, 146, 234, 0.1);
   --card: rgba(199, 146, 234, 0.03);
+  --code-chip-bg: #c792ea;
+  --code-chip-fg: #292d3e;
 }
 
 html[data-palette="synthwave-84"] {
@@ -301,6 +342,8 @@ html[data-palette="synthwave-84"] {
   --selected: rgba(255, 126, 219, 0.16);
   --bubble: rgba(255, 126, 219, 0.12);
   --card: rgba(255, 126, 219, 0.04);
+  --code-chip-bg: #ff7edb;
+  --code-chip-fg: #262335;
 }
 
 html[data-palette="shades-of-purple"] {
@@ -314,6 +357,8 @@ html[data-palette="shades-of-purple"] {
   --selected: rgba(250, 208, 0, 0.14);
   --bubble: rgba(157, 140, 255, 0.1);
   --card: rgba(157, 140, 255, 0.03);
+  --code-chip-bg: #fad000;
+  --code-chip-fg: #2d2b55;
 }
 
 html[data-palette="cobalt2"] {
@@ -327,6 +372,8 @@ html[data-palette="cobalt2"] {
   --selected: rgba(255, 198, 0, 0.14);
   --bubble: rgba(255, 198, 0, 0.1);
   --card: rgba(255, 198, 0, 0.03);
+  --code-chip-bg: #ffc600;
+  --code-chip-fg: #193549;
 }
 
 html[data-palette="andromeda"] {
@@ -340,6 +387,8 @@ html[data-palette="andromeda"] {
   --selected: rgba(199, 77, 237, 0.14);
   --bubble: rgba(199, 77, 237, 0.1);
   --card: rgba(199, 77, 237, 0.03);
+  --code-chip-bg: #c74ded;
+  --code-chip-fg: #23262e;
 }
 
 /* The sidebar: frosted glass in every Glass mode, including No Glass —
