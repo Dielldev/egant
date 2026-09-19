@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, FilePen, FilePlus2, FileSearch, Terminal } from "lucide-react";
+import { ChevronDown, ChevronRight, FileSearch, Terminal } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { basename, normalizeEdit, stripLineNumbers, toolSummary, truncate } from "../lib/transcript";
 import type { Entry } from "../lib/types";
@@ -6,6 +6,35 @@ import { AddedLinesView, DiffView } from "./DiffView";
 import { FileIcon } from "./FileIcon";
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;
+
+/** The file a tool call refers to, if any — `Read`/`Write`/`Edit` carry
+ * `file_path`, other tools may carry `path`. Empty when the call isn't about
+ * a file at all (a shell command, a web fetch). */
+function toolFile(input: unknown): string {
+  if (input !== null && typeof input === "object") {
+    const record = input as Record<string, unknown>;
+    for (const key of ["file_path", "path", "file", "filename"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim() !== "") return value;
+    }
+  }
+  return "";
+}
+
+/** A trailing slash is the one honest directory signal tool inputs carry —
+ * everything else renders as a file so `iconFor` can pick the type icon. */
+function isDirPath(filePath: string): boolean {
+  return filePath.endsWith("/");
+}
+
+/** The icon on the left of a tool card: the file's own type icon (Rust's
+ * mark for `.rs`, and so on, folder glyph for directories) when the call is
+ * about a file, else the generic terminal glyph for commands and the rest. */
+function ToolIcon({ filePath, fallback }: { filePath: string; fallback?: ReactNode }) {
+  if (!filePath) return <>{fallback ?? <Terminal size={12} strokeWidth={2} />}</>;
+  const name = basename(filePath) || "file";
+  return <FileIcon name={name} isDir={isDirPath(filePath)} size={12} />;
+}
 
 /** The collapsible chrome every tool card shares: an icon, a title line with
  * an optional subtitle, a busy/error status dot, and a chevron that toggles
@@ -60,10 +89,11 @@ function ToolCardShell({
  * argument, and the raw truncated output. Still used for Bash, Grep, Glob,
  * WebFetch, TodoWrite, and anything an error short-circuits into. */
 function GenericToolCard({ entry }: { entry: ToolEntry }) {
+  const filePath = toolFile(entry.input);
   return (
     <ToolCardShell
-      icon={<Terminal size={12} strokeWidth={2} />}
-      title={entry.name}
+      icon={<ToolIcon filePath={filePath} />}
+      title={filePath ? `${entry.name} ${basename(filePath)}` : entry.name}
       subtitle={toolSummary(entry.input, entry.name)}
       busy={entry.output == null}
       error={entry.isError}
@@ -89,7 +119,7 @@ function ReadToolCard({ entry }: { entry: ToolEntry }) {
 
   return (
     <ToolCardShell
-      icon={<FileSearch size={12} strokeWidth={2} />}
+      icon={<ToolIcon filePath={filePath} fallback={<FileSearch size={12} strokeWidth={2} />} />}
       title={`Read ${basename(filePath) || "file"}`}
       subtitle={filePath}
       busy={entry.output == null}
@@ -123,7 +153,7 @@ function WriteToolCard({ entry }: { entry: ToolEntry }) {
 
   return (
     <ToolCardShell
-      icon={<FilePlus2 size={12} strokeWidth={2} />}
+      icon={<ToolIcon filePath={filePath} />}
       title={`Write ${basename(filePath) || "file"}`}
       subtitle={filePath}
       busy={entry.output == null}
@@ -144,7 +174,7 @@ function EditToolCard({ entry }: { entry: ToolEntry }) {
 
   return (
     <ToolCardShell
-      icon={<FilePen size={12} strokeWidth={2} />}
+      icon={<ToolIcon filePath={filePath} />}
       title={`Edit ${basename(filePath) || "file"}`}
       subtitle={edits.length > 1 ? `${edits.length} edits` : filePath}
       busy={entry.output == null}
