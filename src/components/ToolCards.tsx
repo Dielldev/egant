@@ -995,12 +995,23 @@ function GroupToolRow({
   const hasBody =
     entry.output != null || cat === "edit" || cat === "write" || isTodoTool(entry.name);
   const busy = entry.output == null && !entry.isError;
+  // Line counts for the pill: computed from the input snippets, so they show
+  // even while the call is still streaming.
+  const stat = useMemo(() => entryStat(entry), [entry]);
+  const showCounts =
+    (cat === "edit" || cat === "write") && (stat.added > 0 || stat.removed > 0);
   const detail = (() => {
     switch (kind) {
       case "read":
       case "edit":
       case "write":
-        if (filePath) return <FilePill path={filePath} />;
+        if (filePath)
+          return (
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              <FilePill path={filePath} />
+              {showCounts && <DiffCounts added={stat.added} removed={stat.removed} />}
+            </span>
+          );
         return (
           <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--muted)]">
             {truncate(toolSummary(entry.input, entry.name), 120)}
