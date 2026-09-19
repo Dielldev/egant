@@ -511,6 +511,28 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
                 }];
             }
             let mut events = Vec::new();
+            // The live occupancy reading. Each assistant message carries the
+            // prompt footprint of one API call; the turn-end `usage` sums
+            // every call in a multi-step turn, so only this per-step number
+            // is an honest "in context" figure. Subagent steps are skipped:
+            // their transcript is not what fills the main window. Duplicates
+            // from split stream events just rewrite the same value.
+            if turn.parent_tool_use_id.is_none() {
+                if let Some(usage) = &turn.message.usage {
+                    let tokens = usage.input_tokens
+                        + usage.output_tokens
+                        + usage.cache_creation_input_tokens
+                        + usage.cache_read_input_tokens;
+                    if tokens > 0 {
+                        events.push(HarnessEvent::ContextUpdate {
+                            context_tokens: tokens,
+                            // The window only arrives on the result message;
+                            // `record` keeps the last one it was told.
+                            context_window: 0,
+                        });
+                    }
+                }
+            }
             for block in turn.message.content.blocks() {
                 match block {
                     ContentBlock::ToolUse { id, name, input } => {
@@ -806,6 +828,67 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_assistant_step_reports_its_own_prompt_footprint_as_context() {
+        // One step of a multi-step turn: the usage here is that single API
+        // call's prompt, which is what actually sits in the window — unlike
+        // the result message, which sums every call in the turn.
+        let message = serde_json::from_str(
+            r#"{"type":"assistant","session_id":"s1",
+                "message":{"id":"msg_1","role":"assistant",
+                 "content":[{"type":"text","text":"hi"}],
+                 "usage":{"input_tokens":10,"cache_creation_input_tokens":200,
+                          "cache_read_input_tokens":25000,"output_tokens":5}}}"#,
+        )
+        .unwrap();
+        let events = translate(message, &Mutex::new(None));
+        match &events[0] {
+            HarnessEvent::ContextUpdate {
+                context_tokens,
+                context_window,
+            } => {
+                assert_eq!(*context_tokens, 25_215);
+                assert_eq!(*context_window, 0);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(events[1], HarnessEvent::AssistantMessage { .. }));
+    }
+
+    #[test]
+    fn a_tool_only_step_still_moves_the_context_reading() {
+        // Tool-loop steps often carry no text at all — the reading must not
+        // depend on there being something to show in the transcript.
+        let message = serde_json::from_str(
+            r#"{"type":"assistant","session_id":"s1",
+                "message":{"role":"assistant",
+                 "content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}],
+                 "usage":{"input_tokens":10,"output_tokens":5,
+                          "cache_read_input_tokens":30000}}}"#,
+        )
+        .unwrap();
+        let events = translate(message, &Mutex::new(None));
+        match &events[0] {
+            HarnessEvent::ContextUpdate { context_tokens, .. } => {
+                assert_eq!(*context_tokens, 30_015);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subagent_steps_never_touch_the_main_window_reading() {
+        let message = serde_json::from_str(
+            r#"{"type":"assistant","session_id":"s1","parent_tool_use_id":"t9",
+                "message":{"role":"assistant",
+                 "content":[{"type":"text","text":"sub"}],
+                 "usage":{"input_tokens":5000,"output_tokens":100}}}"#,
+        )
+        .unwrap();
+        let events = translate(message, &Mutex::new(None));
+        assert!(events.iter().all(|e| !matches!(e, HarnessEvent::ContextUpdate { .. })));
     }
 
     #[test]

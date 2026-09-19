@@ -168,6 +168,10 @@ export type HarnessEvent =
       cost_usd: number;
       usage: TurnUsage;
     }
+  /** A live context-window reading. Replaces the previous one; the meter's
+   * `contextTokens`/`contextWindow` come from here, never from a turn's
+   * summed spend. */
+  | { type: "context_update"; context_tokens: number; context_window: number }
   | { type: "error"; message: string }
   | { type: "exited"; code: number | null };
 

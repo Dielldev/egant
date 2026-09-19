@@ -134,6 +134,17 @@ pub enum HarnessEvent {
         cost_usd: f64,
         usage: TurnUsage,
     },
+    /// A live reading of how full the context window is right now, in
+    /// tokens, with the window it is measured against (or `0` while the
+    /// backend hasn't named one). Replaces the previous reading; never
+    /// accumulates. Claude emits one per main-thread assistant step, because
+    /// the turn-end `usage` sums every API call in a multi-step turn and
+    /// would read as several windows' worth after a single prompt. Wires
+    /// that only account per turn emit one alongside `TurnEnded` instead.
+    ContextUpdate {
+        context_tokens: u64,
+        context_window: u64,
+    },
     /// The backend reported a problem that did not kill the process.
     Error { message: String },
     /// The process is gone. No further events will arrive.
