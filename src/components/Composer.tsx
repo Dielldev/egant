@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, pickAttachments } from "../lib/api";
 import { log } from "../lib/logger";
+import { modShortcut } from "../lib/platform";
 import { formatContext } from "../lib/types";
 import { prettyClaudeModelId } from "../lib/transcript";
 import { selectNextAgent, useEgant, usesChatUi } from "../store";
@@ -390,7 +391,7 @@ export function Composer({
       {busy ? (
         <button
           type="button"
-          title="Stop the turn · ⌘⎋"
+          title={`Stop the turn · ${modShortcut("⎋")}`}
           onClick={() => {
             if (sessionId != null) void interrupt(sessionId);
           }}

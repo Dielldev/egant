@@ -1,4 +1,5 @@
 import { elapsedLabel, statusVerb } from "../lib/transcript";
+import { modShortcut } from "../lib/platform";
 import type { TurnState } from "../lib/types";
 import { LogoLoader } from "./Logo";
 import { useNow } from "./useNow";
@@ -48,7 +49,7 @@ export function StatusLine({
         {label}…
       </span>
       <span className="tabular-nums text-[var(--faint)]">{elapsedLabel(elapsed)}</span>
-      <span className="truncate text-[var(--faint)]">· ⌘⎋ to interrupt</span>
+      <span className="truncate text-[var(--faint)]">· {modShortcut("⎋")} to interrupt</span>
     </div>
   );
 }

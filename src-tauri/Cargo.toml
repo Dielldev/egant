@@ -13,6 +13,9 @@ tauri-build.workspace = true
 [dependencies]
 egant-harness.workspace = true
 egant-vcs.workspace = true
+# `macos-private-api` is required whenever `macOSPrivateApi` is set in
+# tauri.conf.json (tauri-build matches the feature name in this file on every
+# OS). On Linux/Windows the feature is a compile-time no-op.
 tauri = { workspace = true, features = ["macos-private-api"] }
 tauri-plugin-dialog.workspace = true
 

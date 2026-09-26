@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { shouldOpenUpward } from "../lib/popover";
+import { modShortcut } from "../lib/platform";
 import type { SessionInfo, WorktreeInfo } from "../lib/types";
 import { agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
@@ -223,7 +224,7 @@ export function Sidebar() {
           <button
             ref={filterBtnRef}
             type="button"
-            title="Filter conversations · ⌘K"
+            title={`Filter conversations · ${modShortcut("K")}`}
             onClick={toggleFilter}
             className={`cursor-pointer rounded-md p-1 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
               filterOpen ? "text-[var(--ink)]" : "text-[var(--faint)]"
@@ -445,7 +446,7 @@ export function Sidebar() {
       <div className="w-full shrink-0 px-2 py-2">
         <button
           type="button"
-          title="Open settings · ⌘,"
+          title={`Open settings · ${modShortcut(",")}`}
           onClick={() => openSettings()}
           className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-[var(--hover)]"
         >

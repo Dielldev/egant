@@ -1,0 +1,16 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "egant",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 880,
+        "minHeight": 560,
+        "transparent": false,
+        "decorations": true
+      }
+    ]
+  }
+}

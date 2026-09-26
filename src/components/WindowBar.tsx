@@ -1,4 +1,5 @@
 import { ChevronLeft, ChevronRight, PanelLeft, Plus } from "lucide-react";
+import { modShortcut, windowBarPadClass } from "../lib/platform";
 import { useEgant } from "../store";
 
 /** The row that shares the title bar with the traffic lights: sidebar toggle,
@@ -22,9 +23,9 @@ export function WindowBar() {
   return (
     <div
       data-tauri-drag-region
-      // The 76px inset clears the traffic lights, which macOS draws over the
-      // window rather than in a bar of its own.
-      className="flex h-[38px] w-full shrink-0 items-center gap-0.5 pr-2 pl-[76px]"
+      // macOS overlay traffic lights sit over the window; elsewhere the OS
+      // owns the chrome, so only a small inset is needed for the drag row.
+      className={`flex h-[38px] w-full shrink-0 items-center gap-0.5 pr-2 ${windowBarPadClass()}`}
     >
       {/* Frosted pill so the controls stay readable over bright wallpaper —
         same dark glass as the composer. The pill itself stays a drag region;
@@ -35,7 +36,7 @@ export function WindowBar() {
         style={{ borderRadius: "999px" }}
       >
       <Button
-        label="Toggle sidebar · ⌘B"
+        label={`Toggle sidebar · ${modShortcut("B")}`}
         onClick={() => void toggleSidebar()}
         active={open}
       >
@@ -55,7 +56,10 @@ export function WindowBar() {
       >
         <ChevronRight size={15} strokeWidth={2} />
       </Button>
-      <Button label="New conversation · ⌘N" onClick={() => void createSession()}>
+      <Button
+        label={`New conversation · ${modShortcut("N")}`}
+        onClick={() => void createSession()}
+      >
         <Plus size={15} strokeWidth={2} />
       </Button>
       </div>

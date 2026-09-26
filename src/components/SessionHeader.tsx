@@ -1,4 +1,5 @@
 import { PanelRight, PanelRightClose } from "lucide-react";
+import { modShortcut } from "../lib/platform";
 import { useEgant } from "../store";
 import { log } from "../lib/logger";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
@@ -104,7 +105,11 @@ function PanelButton() {
   return (
     <button
       type="button"
-      title={panelOpen ? "Hide files and terminals · ⌘J" : "Files and terminals · ⌘J"}
+      title={
+        panelOpen
+          ? `Hide files and terminals · ${modShortcut("J")}`
+          : `Files and terminals · ${modShortcut("J")}`
+      }
       onClick={() => togglePanel()}
       className={`cursor-pointer rounded-md p-1.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
         panelOpen ? "text-[var(--ink)]" : "text-[var(--muted)]"

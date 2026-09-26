@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { modShortcut } from "../lib/platform";
 import type { DiffHunk, DiffScope, GitChange, RepoStatus } from "../lib/types";
 import type { DiffScopeKind } from "../store";
 import {
@@ -1936,7 +1937,11 @@ function CommitBox({
         type="button"
         disabled={!message.trim() || busy || working}
         onClick={() => void commit()}
-        title={canPush ? `Commit and push to ${remote}/${branch} · ⌘⏎` : "Commit · ⌘⏎"}
+        title={
+          canPush
+            ? `Commit and push to ${remote}/${branch} · ${modShortcut("⏎")}`
+            : `Commit · ${modShortcut("⏎")}`
+        }
         className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-full bg-[#f2f2f5] px-3 py-1.5 text-[13px] text-[#0c0c0e] hover:opacity-85 disabled:cursor-default disabled:opacity-40"
       >
         {working && <Loader2 size={13} strokeWidth={2} className="animate-spin" />}

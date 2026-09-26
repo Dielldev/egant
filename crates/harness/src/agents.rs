@@ -384,16 +384,96 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-#[cfg(target_os = "macos")]
 fn applescript_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Open `program args…` in a real terminal so interactive CLIs (opencode's
+/// provider picker) can draw. Tries xdg-terminal-exec, `$TERMINAL`, then a
+/// short list of common emulators. Falls back to a copy-paste hint when
+/// nothing launches.
+#[cfg(target_os = "linux")]
+fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
+    let mut command_line = shell_quote(&program.display().to_string());
+    for arg in args {
+        command_line.push(' ');
+        command_line.push_str(&shell_quote(arg));
+    }
+    // Keep the window open after the CLI exits so login errors stay readable.
+    command_line.push_str("; exec \"${SHELL:-bash}\"");
+
+    let copy_hint = format!(
+        "Run `{} {}` in a terminal to sign in — egant couldn't open a terminal automatically.",
+        program.display(),
+        args.join(" ")
+    );
+
+    let try_sh_c = |bin: &str, prefix: &[&str]| -> bool {
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(prefix);
+        cmd.args(["sh", "-c", &command_line]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    };
+
+    if which_bin("xdg-terminal-exec").is_some() && try_sh_c("xdg-terminal-exec", &["--"]) {
+        return Ok(());
+    }
+
+    if let Ok(term) = std::env::var("TERMINAL") {
+        let term = term.trim();
+        if !term.is_empty() {
+            // Common conventions: `-e`, `--`, or the command as argv directly.
+            if try_sh_c(term, &["-e"]) || try_sh_c(term, &["--"]) || try_sh_c(term, &[]) {
+                return Ok(());
+            }
+        }
+    }
+
+    // (binary, args before `sh -c …`)
+    const CANDIDATES: &[(&str, &[&str])] = &[
+        ("gnome-terminal", &["--"]),
+        ("kgx", &["--"]),
+        ("konsole", &["-e"]),
+        ("xfce4-terminal", &["-e"]),
+        ("mate-terminal", &["-e"]),
+        ("tilix", &["-e"]),
+        ("alacritty", &["-e"]),
+        ("kitty", &[]),
+        ("wezterm", &["start", "--"]),
+        ("foot", &[]),
+        ("xterm", &["-e"]),
+    ];
+    for &(bin, prefix) in CANDIDATES {
+        if which_bin(bin).is_some() && try_sh_c(bin, prefix) {
+            return Ok(());
+        }
+    }
+
+    Err(copy_hint)
+}
+
+#[cfg(target_os = "linux")]
+fn which_bin(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
     Err(format!(
         "Run `{} {}` in a terminal to sign in — egant can't open one automatically on this OS yet.",
