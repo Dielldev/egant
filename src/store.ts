@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, pickProjectFolder, pickWallpaperImage } from "./lib/api";
 import { log, preview } from "./lib/logger";
+import { isLinux } from "./lib/platform";
 import {
   applyEvent,
   emptyTranscript,
@@ -305,6 +306,14 @@ export function applyAppearance(appearance: AppearanceState): void {
   root.dataset.theme = theme;
   root.dataset.palette = palette;
   root.dataset.glass = appearance.glass === "opaque" ? "opaque" : appearance.glass === "clear" ? "clear" : "frosted";
+  // Linux has no native vibrancy; `tauri.linux.conf.json` uses an opaque
+  // window. Tag the document so CSS can swap transparent washes for solid
+  // fills + in-window blur without touching the macOS frosted path.
+  if (isLinux()) {
+    root.dataset.platform = "linux";
+  } else {
+    delete root.dataset.platform;
+  }
   const toggleOn =
     appearance.accent === "default"
       ? theme === "light"

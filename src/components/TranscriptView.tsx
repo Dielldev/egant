@@ -1,5 +1,6 @@
 import { Check, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { modShortcut } from "../lib/platform";
 import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission } from "../lib/types";
 import { useEgant } from "../store";
@@ -339,7 +340,11 @@ export function TranscriptView() {
     );
   }
 
-  if (!active) return <Centered title="No conversation open" detail="Press ⌘N to start one" />;
+  if (!active) {
+    return (
+      <Centered title="No conversation open" detail={`Press ${modShortcut("N")} to start one`} />
+    );
+  }
 
   return (
     <div className="relative @container flex size-full flex-col">

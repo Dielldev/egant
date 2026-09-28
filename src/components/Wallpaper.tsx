@@ -1,3 +1,4 @@
+import { isLinux } from "../lib/platform";
 import { useEgant } from "../store";
 
 /** What sits behind the stage, in the two states the window has.
@@ -9,7 +10,9 @@ import { useEgant } from "../store";
  * the desktop reads through as frosted glass with just enough of the theme's
  * color to still feel like that theme. Appearance > Glass > Opaque clears
  * that native blur, so this falls back to a flat, fully solid `--stage` fill
- * instead. The user's dim setting veils the launch screen only. */
+ * instead. On Linux there is no native vibrancy, so conversation grounds stay
+ * solid stage fills (CSS glass still blurs in-window wallpaper). The user's
+ * dim setting veils the launch screen only. */
 export function Wallpaper({
   launch,
   exiting,
@@ -26,14 +29,16 @@ export function Wallpaper({
 
   // Conversation state: a barely-there theme tint over the native blur by
   // default, nearly nothing in Clear, or a flat opaque fill once glass is
-  // turned off.
+  // turned off. Linux has no desktop blur behind the window — never leave a
+  // fully transparent ground there.
   if (!launch) {
+    const linux = isLinux();
     return (
       <div
         className="absolute inset-0"
         style={{
           background:
-            glass === "opaque"
+            glass === "opaque" || linux
               ? "var(--stage)"
               : glass === "clear"
                 ? "transparent"

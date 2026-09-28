@@ -35,7 +35,7 @@ Egant is a Tauri (Rust + React) desktop app that runs coding agents — starting
 
 On launch you get a centered composer over the wallpaper. Type to pick a folder and start a session — the transcript takes over on the first message.
 
-Shortcuts: `⌘N` new session · `⌘K` filter · `⌘L` focus composer · `⌘B` sidebar · `⌘J` panel · `⌘⎋` interrupt · `⏎` send / `⇧⏎` newline.
+Shortcuts: `⌘N` / `Ctrl+N` new session · `⌘K` / `Ctrl+K` filter · `⌘L` / `Ctrl+L` focus composer · `⌘B` / `Ctrl+B` sidebar · `⌘J` / `Ctrl+J` panel · `⌘⎋` / `Ctrl+Esc` interrupt · `⏎` send / `⇧⏎` newline.
 
 ## Quickstart
 
@@ -45,14 +45,66 @@ Shortcuts: `⌘N` new session · `⌘K` filter · `⌘L` focus composer · `⌘B
 |------|-------|
 | Rust 1.85+ | workspace is edition 2024 |
 | Node 20+ + npm | frontend dev server + builds |
-| macOS + Command Line Tools | no full Xcode needed |
+| macOS **or** Linux | see platform deps below |
 | `claude` on `PATH` + `claude login` | agent driver |
 | `gh` (optional) | only for Pull Requests section |
+
+#### macOS
+
+Command Line Tools only (`xcode-select --install`) — no full Xcode needed.
+
+#### Linux (Fedora)
+
+Tauri needs WebKitGTK 4.1 and friends. `dbus-devel` + `pkgconf-pkg-config` are required so `libdbus-sys` can find `dbus-1.pc`:
+
+```bash
+sudo dnf group install c-development
+sudo dnf install \
+  webkit2gtk4.1-devel \
+  openssl-devel \
+  curl-devel \
+  wget \
+  file \
+  libappindicator-gtk3-devel \
+  librsvg2-devel \
+  libxdo-devel \
+  gtk3-devel \
+  dbus-devel \
+  pkgconf-pkg-config
+```
+
+Check: `pkg-config --exists dbus-1 webkit2gtk-4.1 && echo ok`.
+
+If `cc` on your `PATH` is Zig's clang wrapper (`~/.local/bin/cc` → `zig-cc`), `aws-lc-sys` (via rustls) fails with `UnknownOperatingSystem`. Prefer the system compiler for this project:
+
+```bash
+export CC=/usr/bin/gcc CXX=/usr/bin/g++
+```
+
+#### Linux (Ubuntu / Debian)
+
+```bash
+sudo apt update
+sudo apt install \
+  libwebkit2gtk-4.1-dev \
+  build-essential \
+  curl \
+  wget \
+  file \
+  libxdo-dev \
+  libssl-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libdbus-1-dev \
+  pkg-config
+```
 
 ### Run
 
 ```bash
 npm install          # once: frontend deps
+# If ~/.local/bin/cc is zig-cc, point at system GCC first:
+#   export CC=/usr/bin/gcc CXX=/usr/bin/g++
 npm run tauri dev    # Vite dev server (:1420) + desktop window
 ```
 
@@ -78,11 +130,13 @@ takes the next free port (`1422`, …) the same way.
 ### Build / test
 
 ```bash
-npm run tauri build   # release bundle (.app / .dmg)
+npm run tauri build   # release bundle (.app / .dmg on macOS; platform package on Linux)
 npm run build         # type-check + production frontend build
 
 cargo test -p egant -p egant-harness -p egant-vcs  # Rust tests, no window needed
 ```
+
+Window chrome: macOS uses an overlay title bar (`tauri.macos.conf.json` — transparent + `Overlay`). Linux uses normal decorations and an opaque window (`tauri.linux.conf.json`) with CSS glass; native vibrancy stays macOS-only.
 
 ## How it works
 
@@ -121,7 +175,7 @@ See `src/components/icons/LICENSE.md` for icon rebuild notes.
 
 ## Settings & data
 
-- Wallpaper + dim: `~/Library/Application Support/egant/settings.json`
+- Wallpaper + dim: `~/Library/Application Support/egant/settings.json` on macOS; `~/.config/egant/settings.json` (or `$XDG_CONFIG_HOME/egant`) on Linux.
 - Webview gets the wallpaper as a data URL only — no filesystem access.
 - Planned: worktree per session at `~/.egant/worktrees/<slug>` on `egant/<slug>` branch (`WorktreeStore` written, not yet wired — sessions currently start in project root).
 
@@ -130,7 +184,8 @@ See `src/components/icons/LICENSE.md` for icon rebuild notes.
 - **"Could not start the agent"** → `claude` not on `PATH`.
 - **"Failed to authenticate: OAuth session expired"** → run `claude login`.
 - **Blank window in `tauri dev`** → Vite must be on the port Tauri points at (`1420` by default, or `$VITE_PORT` with `strictPort` in `vite.config.ts`). Kill whatever holds the port, or move the session to a free one (see above).
-- **Opaque / black hole in UI** → window is `transparent: true`, `body` must stay transparent, use alpha colors only.
+- **Opaque / black hole in UI** → on macOS the window is `transparent: true` and `body` must stay transparent (alpha colors only). On Linux the window is opaque (`tauri.linux.conf.json`) with a CSS glass fallback — if the UI looks empty, confirm `html[data-platform="linux"]` is set.
+- **`Package dbus-1 was not found` / missing `dbus-1.pc`** → install `dbus-devel` and `pkgconf-pkg-config` (Fedora) or `libdbus-1-dev` + `pkg-config` (Ubuntu).
 
 ## Roadmap
 

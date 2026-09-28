@@ -554,6 +554,32 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Linux: opaque window (see tauri.linux.conf.json) — no native vibrancy, so
+ * transparent body/tints read as empty. Use solid stage ground + stronger
+ * glass fills; CSS backdrop-filter still blurs in-window wallpaper. macOS
+ * never sets data-platform=linux, so frosted glass stays identical there. */
+html[data-platform="linux"] body {
+  background: var(--stage);
+}
+html[data-platform="linux"]:not([data-glass="opaque"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 72%, transparent);
+}
+html[data-platform="linux"]:not([data-glass="opaque"]) .stage-glass {
+  background: color-mix(in srgb, var(--stage) 88%, transparent);
+}
+html[data-platform="linux"][data-glass="clear"] .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 55%, transparent);
+}
+html[data-platform="linux"][data-glass="clear"] .stage-glass {
+  background: color-mix(in srgb, var(--stage) 70%, transparent);
+}
+html[data-platform="linux"]:not([data-glass="opaque"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 78%, transparent);
+}
+html[data-platform="linux"][data-glass="clear"] .composer {
+  background: color-mix(in srgb, var(--sidebar) 62%, transparent);
+}
+
 /* Matches the Ghostty config: a white caret in text inputs, and the same
  * selection colors as the terminal when text is highlighted. */
 textarea,

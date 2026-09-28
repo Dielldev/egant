@@ -27,6 +27,7 @@ import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
+import { modShortcut, windowBarPadClass } from "../lib/platform";
 import { shouldOpenUpward } from "../lib/popover";
 import type { AgentStatus } from "../lib/types";
 import { useEgant } from "../store";
@@ -91,7 +92,7 @@ export function SettingsPage() {
       <aside className="sidebar-glass flex h-full w-[220px] shrink-0 flex-col border-r border-[var(--border)]">
         <div
           data-tauri-drag-region
-          className="flex h-[38px] w-full shrink-0 items-center gap-0.5 pr-2 pl-[76px]"
+          className={`flex h-[38px] w-full shrink-0 items-center gap-0.5 pr-2 ${windowBarPadClass()}`}
         >
           <NavArrow label="Back" disabled={index === 0} onClick={() => step(-1)}>
             <ChevronLeft size={15} strokeWidth={2} />
@@ -1208,16 +1209,15 @@ function NotificationsSection() {
 // Placeholders
 // ---------------------------------------------------------------------------
 
-const SHORTCUTS: [string, string][] = [
-  ["New conversation", "⌘N"],
-  ["Filter conversations", "⌘K"],
-  ["Focus composer", "⌘L"],
-  ["Toggle sidebar", "⌘B"],
-  ["Open settings", "⌘,"],
-  ["Close settings", "Esc"],
-];
-
 function ShortcutsSection() {
+  const shortcuts: [string, string][] = [
+    ["New conversation", modShortcut("N")],
+    ["Filter conversations", modShortcut("K")],
+    ["Focus composer", modShortcut("L")],
+    ["Toggle sidebar", modShortcut("B")],
+    ["Open settings", modShortcut(",")],
+    ["Close settings", "Esc"],
+  ];
   return (
     <div>
       <SectionHead
@@ -1225,7 +1225,7 @@ function ShortcutsSection() {
         sub="Keys that drive the window. They work wherever the window is focused."
       />
       <Card>
-        {SHORTCUTS.map(([label, keys]) => (
+        {shortcuts.map(([label, keys]) => (
           <div key={label} className="flex items-center justify-between px-4 py-3">
             <span className="text-[13px] text-[var(--ink)]">{label}</span>
             <span className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 text-[12px] text-[var(--muted)]">

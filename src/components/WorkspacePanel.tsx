@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { modShortcut } from "../lib/platform";
 import type { PanelTabKind } from "../store";
 import { useEgant, workspaceRoot } from "../store";
 import { DiffsPanel } from "./DiffsPanel";
@@ -172,7 +173,11 @@ export function WorkspacePanel() {
 
         <button
           type="button"
-          title={maximized ? "Back to the conversation · ⌘⇧J" : "Fill the window · ⌘⇧J"}
+          title={
+            maximized
+              ? `Back to the conversation · ${modShortcut("⇧J")}`
+              : `Fill the window · ${modShortcut("⇧J")}`
+          }
           onClick={() => toggleMaximized()}
           className="shrink-0 cursor-pointer rounded-md p-1 text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
         >

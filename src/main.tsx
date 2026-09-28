@@ -2,7 +2,14 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
+import { isLinux } from "./lib/platform";
 import { useEgant } from "./store";
+
+// Tag the document before the first React paint so Linux glass CSS (opaque
+// window + solid fills) applies immediately — no transparent "desktop hole".
+if (isLinux()) {
+  document.documentElement.dataset.platform = "linux";
+}
 
 if (import.meta.env.DEV) {
   // Testing hook only: lets Playwright seed snapshots and transcripts so the
