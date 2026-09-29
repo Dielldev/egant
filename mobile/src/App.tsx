@@ -1,15 +1,13 @@
 import { useEffect } from "react";
 import { LogoLoader } from "@egant/components/Logo";
-import { Conversation } from "./components/Conversation";
 import { OfflineScreen } from "./components/OfflineScreen";
 import { PairScreen } from "./components/PairScreen";
-import { SessionList } from "./components/SessionList";
+import { Shell } from "./components/Shell";
 import { useMobile } from "./store";
 import { startStream, stopStream } from "./stream";
 
 export function App() {
   const phase = useMobile((s) => s.phase);
-  const openSession = useMobile((s) => s.openSession);
 
   useEffect(() => {
     void boot();
@@ -27,7 +25,7 @@ export function App() {
     case "offline":
       return <OfflineScreen onRetry={boot} />;
     case "ready":
-      return openSession != null ? <Conversation id={openSession} /> : <SessionList />;
+      return <Shell />;
   }
 }
 

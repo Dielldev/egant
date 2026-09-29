@@ -4,6 +4,7 @@
 // forgery and how this page recognises its own changes coming back.
 
 import type {
+  AgentModel,
   DecisionResponse,
   PendingPermission,
   SessionUsage,
@@ -35,7 +36,11 @@ export interface MobileSession {
   kind: "chat" | "cli";
   branch: string | null;
   worktree: { branch: string; name: string } | null;
+  /** The model the agent last reported, else the one it started on. */
   model: string | null;
+  /** The catalog id it asked for; `null` is the CLI's default. */
+  requestedModel: string | null;
+  variant: string | null;
   permissionMode: string;
   state: TurnState;
   busy: boolean;
@@ -46,12 +51,41 @@ export interface MobileSession {
   lastActivityMs: number;
 }
 
+/** A project a new chat can run in — `ProjectRowDto`. */
+export interface MobileProject {
+  id: number;
+  name: string;
+  hue: number;
+}
+
+/** A chat agent, and whether the Mac has it. */
+export interface MobileAgent {
+  id: string;
+  name: string;
+  installed: boolean;
+  connected: boolean;
+}
+
 export interface MobileState {
   epoch: string;
   seq: number;
   machineName: string;
   device: { id: string; name: string };
   sessions: MobileSession[];
+  projects: MobileProject[];
+  /** The agent the Mac starts new sessions with. */
+  defaultAgent: string;
+  /** Version of the Mac's wallpaper, or `null` when it has none. */
+  wallpaper: string | null;
+}
+
+export interface NewChat {
+  projectId: number;
+  agent: string;
+  model: string | null;
+  variant: string | null;
+  mode: string;
+  text: string;
 }
 
 /** A window of one transcript (`TranscriptWindowDto`): the window's own
@@ -127,6 +161,24 @@ export const api = {
   send: (id: number, text: string) =>
     request<{ title: string | null }>("POST", `/api/v1/sessions/${id}/messages`, { text }),
   interrupt: (id: number) => request<{ ok: boolean }>("POST", `/api/v1/sessions/${id}/interrupt`),
+  agents: () => request<MobileAgent[]>("GET", "/api/v1/agents"),
+  models: (agent: string) =>
+    request<AgentModel[]>("GET", `/api/v1/agents/${encodeURIComponent(agent)}/models`),
+  /** Starts a chat and sends its first message. `error` is set when the
+   * session started but the message did not go out. */
+  createSession: (chat: NewChat) =>
+    request<{ id: number; title: string | null; error: string | null; session: MobileSession | null }>(
+      "POST",
+      "/api/v1/sessions",
+      chat,
+    ),
+  setModel: (id: number, model: string | null, variant: string | null) =>
+    request<{ session: MobileSession | null }>("POST", `/api/v1/sessions/${id}/model`, {
+      model,
+      variant,
+    }),
+  setMode: (id: number, mode: string) =>
+    request<{ permissionMode: string }>("POST", `/api/v1/sessions/${id}/mode`, { mode }),
   answerPermission: (id: number, requestId: string, decision: "allow" | "allow-always" | "deny") =>
     request<{ permissionMode: string | null }>(
       "POST",
@@ -140,3 +192,8 @@ export const api = {
       { response, text },
     ),
 };
+
+/** The Mac's wallpaper, addressed by version so the phone caches it. */
+export function wallpaperUrl(version: string): string {
+  return `/api/v1/wallpaper?v=${encodeURIComponent(version)}`;
+}

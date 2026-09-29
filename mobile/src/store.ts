@@ -20,6 +20,7 @@ import {
   resolvePermission,
 } from "@egant/lib/transcript";
 import type {
+  AgentModel,
   DecisionRequest,
   DecisionResponse,
   PermissionDecision,
@@ -27,7 +28,19 @@ import type {
   TranscriptState,
 } from "@egant/lib/types";
 import { ApiError, MY_ORIGIN, api } from "./api";
-import type { MobileSession, TranscriptWindow } from "./api";
+import type { MobileAgent, MobileProject, MobileSession, TranscriptWindow } from "./api";
+import { usePrefs } from "./prefs";
+
+/** The agents egant drives itself — the only ones a phone can chat with. */
+export const CHAT_AGENTS = ["claude", "codex", "opencode"] as const;
+
+/** A chat the phone has asked the Mac to start, before it has an id. */
+export interface StartingChat {
+  text: string;
+  agent: string;
+  model: string | null;
+  projectId: number;
+}
 
 export type Phase = "boot" | "unpaired" | "offline" | "ready";
 export type Connection = "connecting" | "live" | "down";
@@ -53,6 +66,20 @@ interface MobileStore {
   machineName: string;
   device: { id: string; name: string } | null;
   sessions: MobileSession[];
+  projects: MobileProject[];
+  /** The agent the Mac starts new sessions with. */
+  defaultAgent: string;
+  /** Version of the Mac's wallpaper, `null` when it has none. */
+  wallpaper: string | null;
+  /** The chat agents and whether the Mac has them, once asked. */
+  agents: MobileAgent[] | null;
+  models: Record<string, AgentModel[]>;
+  modelErrors: Record<string, string>;
+  /** A new chat on its way to the Mac. */
+  starting: StartingChat | null;
+  /** What was typed into a new chat that could not start, handed back. */
+  homeDraft: string;
+  settingsOpen: boolean;
   epoch: string;
   /** The newest envelope the list has applied. */
   seq: number;
@@ -60,7 +87,7 @@ interface MobileStore {
   transcriptErrors: Record<number, string>;
   /** Decision answers, keyed `${sessionId}:${decisionId}` like the desktop's. */
   decisionResponses: Record<string, DecisionResponse>;
-  /** The open conversation, or `null` for the list. */
+  /** The open conversation, or `null` for a new chat. */
   openSession: number | null;
   /** A passing problem, shown briefly (a send that failed, say). */
   toast: string | null;
@@ -82,6 +109,43 @@ interface MobileStore {
   navigate: (session: number | null) => void;
   showToast: (text: string) => void;
   dismissToast: () => void;
+  /** Picks up projects opened on the Mac since, leaving the stream's
+   * position (and so every open transcript) alone. */
+  refreshProjects: () => Promise<void>;
+  loadAgents: () => Promise<void>;
+  loadModels: (agent: string, force?: boolean) => Promise<void>;
+  /** Starts a chat with this phone's new-chat choices and opens it. */
+  startChat: (text: string) => Promise<void>;
+  setSessionModel: (id: number, model: string | null, variant: string | null) => Promise<boolean>;
+  setSessionMode: (id: number, mode: string) => Promise<void>;
+  openSettings: () => void;
+  closeSettings: () => void;
+}
+
+/** The project a new chat runs in: the phone's pick while the Mac still has
+ * it, else the one worked in most recently, else the first. */
+export function pickProject(
+  preferred: number | null,
+  projects: MobileProject[],
+  sessions: MobileSession[],
+): MobileProject | null {
+  if (preferred != null) {
+    const project = projects.find((p) => p.id === preferred);
+    if (project) return project;
+  }
+  let recent: MobileSession | null = null;
+  for (const session of sessions) {
+    if (!recent || session.lastActivityMs > recent.lastActivityMs) recent = session;
+  }
+  return projects.find((p) => p.id === recent?.projectId) ?? projects[0] ?? null;
+}
+
+/** The agent a new chat starts with: the phone's pick, else the Mac's
+ * default when the phone can chat with it, else Claude. */
+export function pickAgent(preferred: string | null, macDefault: string): string {
+  const chat = (id: string | null) =>
+    id != null && (CHAT_AGENTS as readonly string[]).includes(id) ? id : null;
+  return chat(preferred) ?? chat(macDefault) ?? "claude";
 }
 
 /** Envelopes for a transcript that is being fetched, held until it lands. */
@@ -259,6 +323,15 @@ export const useMobile = create<MobileStore>()((set, get) => {
     machineName: "",
     device: null,
     sessions: [],
+    projects: [],
+    defaultAgent: "claude",
+    wallpaper: null,
+    agents: null,
+    models: {},
+    modelErrors: {},
+    starting: null,
+    homeDraft: "",
+    settingsOpen: window.history.state?.egantSettings === true,
     epoch: "",
     seq: 0,
     transcripts: {},
@@ -279,6 +352,9 @@ export const useMobile = create<MobileStore>()((set, get) => {
           machineName: state.machineName,
           device: state.device,
           sessions: state.sessions,
+          projects: state.projects ?? [],
+          defaultAgent: state.defaultAgent ?? "claude",
+          wallpaper: state.wallpaper ?? null,
           epoch: state.epoch,
           seq: state.seq,
         });
@@ -333,11 +409,16 @@ export const useMobile = create<MobileStore>()((set, get) => {
         phase: "unpaired",
         connection: "down",
         sessions: [],
+        projects: [],
+        wallpaper: null,
+        agents: null,
+        models: {},
         transcripts: {},
         decisionResponses: {},
         device: null,
         seq: 0,
         epoch: "",
+        settingsOpen: false,
       });
     },
 
@@ -488,11 +569,14 @@ export const useMobile = create<MobileStore>()((set, get) => {
 
     navigate: (session) => {
       if (session === get().openSession) return;
+      // History holds at most the new-chat screen and one chat above it, so
+      // the phone's back gesture always lands on a new chat.
+      const inChat = window.history.state?.egantSession != null;
       if (session == null) {
-        // Back to the list: step back through history when the list is what
-        // is behind this page, so the phone's own back gesture stays in step.
-        if (window.history.state?.egantSession != null) window.history.back();
+        if (inChat) window.history.back();
         else window.history.replaceState({}, "", "#/");
+      } else if (inChat) {
+        window.history.replaceState({ egantSession: session }, "", `#/s/${session}`);
       } else {
         window.history.pushState({ egantSession: session }, "", `#/s/${session}`);
       }
@@ -501,6 +585,121 @@ export const useMobile = create<MobileStore>()((set, get) => {
 
     showToast: (text) => set({ toast: text }),
     dismissToast: () => set({ toast: null }),
+
+    refreshProjects: async () => {
+      try {
+        const state = await api.state();
+        set({
+          projects: state.projects ?? [],
+          defaultAgent: state.defaultAgent ?? "claude",
+          wallpaper: state.wallpaper ?? null,
+        });
+      } catch {
+        // The list on hand stays; the next reconnect refreshes everything.
+      }
+    },
+
+    loadAgents: async () => {
+      try {
+        set({ agents: await api.agents() });
+      } catch {
+        // The picker offers every chat agent until the Mac says otherwise.
+      }
+    },
+
+    loadModels: async (agent, force = false) => {
+      if (!force && get().models[agent]) return;
+      try {
+        const models = await api.models(agent);
+        const { [agent]: _cleared, ...errors } = get().modelErrors;
+        set({ models: { ...get().models, [agent]: models }, modelErrors: errors });
+      } catch (error) {
+        set({ modelErrors: { ...get().modelErrors, [agent]: message(error) } });
+      }
+    },
+
+    startChat: async (text) => {
+      if (!text.trim() || get().starting) return;
+      const prefs = usePrefs.getState();
+      const { projects, sessions, defaultAgent } = get();
+      const project = pickProject(prefs.project, projects, sessions);
+      if (!project) {
+        set({ homeDraft: text });
+        get().showToast("Open a project in egant on your Mac first.");
+        return;
+      }
+      const agent = pickAgent(prefs.agent, defaultAgent);
+      const model = prefs.models[agent] || null;
+      const variant = prefs.variants[agent] || null;
+      set({ starting: { text, agent, model, projectId: project.id }, homeDraft: "" });
+      try {
+        const reply = await api.createSession({
+          projectId: project.id,
+          agent,
+          model,
+          variant,
+          mode: prefs.mode,
+          text,
+        });
+        if (reply.session) {
+          const row = reply.session;
+          const others = get().sessions.filter((session) => session.id !== row.id);
+          set({ sessions: [...others, row] });
+        }
+        set({ starting: null });
+        // Somewhere else by now (the drawer, another chat): don't pull them back.
+        if (get().openSession == null && !get().settingsOpen) get().navigate(reply.id);
+        if (reply.error) get().showToast(reply.error);
+      } catch (error) {
+        set({ starting: null, homeDraft: text });
+        get().showToast(message(error));
+      }
+    },
+
+    setSessionModel: async (id, model, variant) => {
+      try {
+        const reply = await api.setModel(id, model, variant);
+        if (reply.session) patchSession(id, reply.session);
+        const transcript = get().transcripts[id];
+        if (transcript) {
+          set({ transcripts: { ...get().transcripts, [id]: { ...transcript, model } } });
+        }
+        return true;
+      } catch (error) {
+        get().showToast(message(error));
+        return false;
+      }
+    },
+
+    setSessionMode: async (id, mode) => {
+      const before = get().sessions.find((session) => session.id === id)?.permissionMode;
+      patchSession(id, { permissionMode: mode });
+      try {
+        const reply = await api.setMode(id, mode);
+        patchSession(id, { permissionMode: reply.permissionMode });
+      } catch (error) {
+        if (before) patchSession(id, { permissionMode: before });
+        get().showToast(message(error));
+      }
+    },
+
+    // Settings is an entry in the phone's history too, so the back gesture
+    // closes it; the address stays whatever it was beneath.
+    openSettings: () => {
+      if (get().settingsOpen) return;
+      window.history.pushState(
+        { ...(window.history.state ?? {}), egantSettings: true },
+        "",
+        window.location.hash || "#/",
+      );
+      set({ settingsOpen: true });
+    },
+
+    closeSettings: () => {
+      if (!get().settingsOpen) return;
+      if (window.history.state?.egantSettings === true) window.history.back();
+      else set({ settingsOpen: false });
+    },
   };
 });
 
@@ -512,5 +711,8 @@ function sessionFromHash(): number | null {
 // The phone's back gesture (and the browser's back button) walks the same
 // history `navigate` writes.
 window.addEventListener("popstate", () => {
-  useMobile.setState({ openSession: sessionFromHash() });
+  useMobile.setState({
+    openSession: sessionFromHash(),
+    settingsOpen: window.history.state?.egantSettings === true,
+  });
 });

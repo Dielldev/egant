@@ -1,6 +1,7 @@
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import "./mobile.css";
+import { applyTheme, usePrefs } from "./prefs";
 
 // The app is exactly as tall as what the phone leaves visible, so the
 // composer sits right on top of the keyboard instead of under it. iOS never
@@ -16,20 +17,9 @@ window.visualViewport?.addEventListener("scroll", syncViewport);
 window.addEventListener("resize", syncViewport);
 syncViewport();
 
-// The desktop's default palette is its dark one; a phone in light mode gets
-// the desktop's light palette.
-const light = window.matchMedia("(prefers-color-scheme: light)");
-function syncTheme(): void {
-  const html = document.documentElement;
-  if (light.matches) html.dataset.palette = "zeron-light";
-  else delete html.dataset.palette;
-  html.dataset.theme = light.matches ? "light" : "dark";
-  document
-    .querySelector('meta[name="theme-color"]')
-    ?.setAttribute("content", light.matches ? "#f2f2f5" : "#0d0d0d");
-}
-light.addEventListener("change", syncTheme);
-syncTheme();
+// The desktop's palettes, picked in this phone's Settings (following the
+// phone's light or dark mode unless told otherwise).
+applyTheme(usePrefs.getState());
 
 // Lets the app open with the Mac out of reach, to say so. Only where a
 // service worker is allowed at all: HTTPS (through Tailscale) or this

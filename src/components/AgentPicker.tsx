@@ -15,7 +15,13 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { AGENT_ACCENT, AGENT_PROVIDER, fallbackName } from "../lib/agents";
+import {
+  AGENT_ACCENT,
+  AGENT_PROVIDER,
+  SHORT_NAMES,
+  fallbackName,
+  variantLabel,
+} from "../lib/agents";
 import { api } from "../lib/api";
 import { fitBelow } from "../lib/popover";
 import { formatContext } from "../lib/types";
@@ -55,36 +61,7 @@ const RUNNABLE = ["claude", "codex", "opencode"] as const;
 
 // The display constants live in `lib/agents` so the phone app can draw the
 // same logos; re-exported here for everything that already imports them.
-export { AGENT_ACCENT, AGENT_PROVIDER, fallbackName };
-
-/** Tab labels. The full names ("Claude Code") don't fit three-across, and the
- * CLI is what's being picked, so the CLI's short name is the honest label. */
-const SHORT_NAMES: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  opencode: "OpenCode",
-};
-
-const VARIANT_LABELS: Record<string, string> = {
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "X-High",
-  "x-high": "X-High",
-  x_high: "X-High",
-  max: "Max",
-  ultra: "Ultra",
-  ultracode: "Ultracode",
-  ultrathink: "Ultrathink",
-};
-
-export function variantLabel(id: string): string {
-  if (!id) return "";
-  return (
-    VARIANT_LABELS[id.toLowerCase()] ?? id.charAt(0).toUpperCase() + id.slice(1)
-  );
-}
+export { AGENT_ACCENT, AGENT_PROVIDER, fallbackName, variantLabel };
 
 export function agentName(
   agents: { id: string; name: string }[],

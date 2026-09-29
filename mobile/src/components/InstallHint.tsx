@@ -22,7 +22,7 @@ export function isStandalone(): boolean {
   );
 }
 
-function isIos(): boolean {
+export function isIos(): boolean {
   const ua = navigator.userAgent;
   // iPadOS asks for the desktop site and reports itself as a Mac with touch.
   return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);

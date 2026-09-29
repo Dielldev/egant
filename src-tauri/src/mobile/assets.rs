@@ -81,6 +81,8 @@ fn mime_for(name: &str) -> &'static str {
         "webmanifest" => "application/manifest+json",
         "svg" => "image/svg+xml",
         "png" => "image/png",
+        "webp" => "image/webp",
+        "jpg" | "jpeg" => "image/jpeg",
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         "woff" => "font/woff",

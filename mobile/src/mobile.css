@@ -9,6 +9,9 @@
 @source "../../src/lib";
 @source "./";
 
+/* `dark:` follows the phone's own scheme setting, not only the system's. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 html,
 body {
   overscroll-behavior: none;
@@ -18,6 +21,8 @@ body {
   /* The desktop body is transparent over a frosted window; a phone has no
    * window behind it. */
   background: var(--stage);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-size: 15px;
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
@@ -32,12 +37,21 @@ body {
   overflow: hidden;
 }
 
+/* Surfaces the phone adds on top of the desktop's: a raised panel for sheets
+ * and grouped settings, and the hairline between rows. */
+:root {
+  --raised: color-mix(in srgb, var(--stage) 90%, var(--ink) 10%);
+  --raised-2: color-mix(in srgb, var(--stage) 84%, var(--ink) 16%);
+  --hairline: color-mix(in srgb, var(--ink) 9%, transparent);
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 .safe-top {
   padding-top: env(safe-area-inset-top);
 }
 
 .safe-bottom {
-  padding-bottom: max(env(safe-area-inset-bottom), 6px);
+  padding-bottom: max(env(safe-area-inset-bottom), 8px);
 }
 
 /* iOS zooms the whole page into any field smaller than 16px the moment it
@@ -56,4 +70,224 @@ body {
   .group .group-hover\:opacity-100 {
     opacity: 1;
   }
+}
+
+/* A press that reads as one: everything tappable dips a little. */
+.press {
+  transition:
+    transform 0.16s var(--ease-ios),
+    opacity 0.16s ease,
+    background-color 0.16s ease;
+}
+.press:active {
+  transform: scale(0.96);
+}
+
+/* Text over a picture: legible over bright skies too. */
+.on-image {
+  color: #fff;
+  text-shadow:
+    0 1px 12px rgba(0, 0, 0, 0.45),
+    0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/* The bar at the top of a conversation: the stage, frosted, so the thread
+ * scrolls away beneath it. */
+.bar-glass {
+  background: color-mix(in srgb, var(--stage) 78%, transparent);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+}
+
+/* Round glass buttons over the wallpaper. */
+.chip-glass {
+  background: rgba(20, 20, 26, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+}
+
+/* Bottom sheets. */
+.sheet {
+  background: var(--raised);
+  box-shadow: 0 -12px 48px rgba(0, 0, 0, 0.35);
+  transition: transform 0.42s var(--ease-ios);
+  will-change: transform;
+}
+.sheet-backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  transition: opacity 0.32s ease;
+}
+
+/* The chat drawer and the page it pushes aside. */
+.drawer-slide {
+  transition: transform 0.42s var(--ease-ios);
+  will-change: transform;
+}
+.dragging,
+.dragging .drawer-slide {
+  transition: none !important;
+}
+
+/* Full-screen pages (Settings) rise over whatever is open. */
+@keyframes page-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+.page-in {
+  animation: page-in 0.46s var(--ease-ios) backwards;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 0.6s var(--ease-ios) backwards;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-in {
+  animation: toast-in 0.3s var(--ease-ios) backwards;
+}
+
+/* The wallpaper leaving as a chat begins. */
+.backdrop-fade {
+  transition: opacity 0.7s ease;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* An iOS-style switch, in the accent. */
+.ios-switch {
+  position: relative;
+  width: 51px;
+  height: 31px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--raised-2);
+  transition: background-color 0.25s ease;
+}
+.ios-switch[aria-checked="true"] {
+  background: var(--accent);
+}
+.ios-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  transition: transform 0.28s var(--ease-ios);
+}
+.ios-switch[aria-checked="true"]::after {
+  transform: translateX(20px);
+}
+
+/* The dim slider. */
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--raised-2);
+  outline: none;
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.range::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .drawer-slide,
+  .page-in,
+  .fade-up,
+  .toast-in,
+  .backdrop-fade {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Replies read at phone size: the desktop's Markdown is set for a 13px
+ * window, a phone reads 16px. Unlayered, so these win over its utilities. */
+.phone-md .markdown {
+  font-size: 16px;
+  line-height: 26px;
+}
+.phone-md .markdown li {
+  line-height: 26px;
+}
+.phone-md .markdown > p {
+  margin-bottom: 12px;
+}
+.phone-md .markdown > p:last-child {
+  margin-bottom: 0;
+}
+.phone-md .markdown h1 {
+  font-size: 21px;
+  line-height: 28px;
+}
+.phone-md .markdown h2 {
+  font-size: 19px;
+  line-height: 26px;
+}
+.phone-md .markdown h3,
+.phone-md .markdown h4 {
+  font-size: 17px;
+  line-height: 24px;
+}
+.phone-md .markdown pre {
+  border-radius: 14px;
+  /* Room above the code for its language and copy button, which a phone
+   * shows all the time rather than on hover. */
+  padding: 36px 14px 12px;
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--muted);
+  background: var(--raised);
+}
+.phone-md .markdown table {
+  font-size: 14px;
 }

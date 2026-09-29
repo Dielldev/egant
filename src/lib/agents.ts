@@ -1,5 +1,5 @@
-// How each harnessed agent is drawn: its logo and its accent colour, and its
-// name when nothing better is known. Kept apart from the agent picker so
+// How each harnessed agent is drawn: its logo and its accent colour, its name
+// when nothing better is known, and how its effort levels read. Kept apart from the agent picker so
 // anything that draws a session row — the sidebar, the phone app — can use it
 // without the picker's state coming along.
 
@@ -26,4 +26,33 @@ export function fallbackName(id: string): string {
     default:
       return id;
   }
+}
+
+/** Tab labels. The full names ("Claude Code") don't fit three-across, and the
+ * CLI is what's being picked, so the CLI's short name is the honest label. */
+export const SHORT_NAMES: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  opencode: "OpenCode",
+};
+
+const VARIANT_LABELS: Record<string, string> = {
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "X-High",
+  "x-high": "X-High",
+  x_high: "X-High",
+  max: "Max",
+  ultra: "Ultra",
+  ultracode: "Ultracode",
+  ultrathink: "Ultrathink",
+};
+
+export function variantLabel(id: string): string {
+  if (!id) return "";
+  return (
+    VARIANT_LABELS[id.toLowerCase()] ?? id.charAt(0).toUpperCase() + id.slice(1)
+  );
 }

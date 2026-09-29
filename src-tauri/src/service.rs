@@ -1,14 +1,15 @@
 //! The session operations more than one client can perform.
 //!
-//! The desktop window and a paired phone both send turns, stop them and answer
-//! prompts. Each operation lives here once: the Tauri command and the phone's
-//! HTTP handler are thin callers, and every change is published to
-//! [`crate::sync`] as it is made, so whichever client did not cause it hears
-//! about it.
+//! The desktop window and a paired phone both start chats, send turns, stop
+//! them, switch models and answer prompts. Each operation lives here once:
+//! the Tauri command and the phone's HTTP handler are thin callers, and every
+//! change is published to [`crate::sync`] as it is made, so whichever client
+//! did not cause it hears about it.
 //!
 //! Every function takes the `AppState` the caller has already locked, and
 //! publishes before returning — under that same lock (see `crate::sync`).
 
+use egant_harness::{AgentId, PermissionMode};
 use serde_json::Value;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -16,6 +17,7 @@ use tauri::AppHandle;
 use crate::sessions::{self, PermissionAnswer};
 use crate::state::AppState;
 use crate::sync::{self, Origin};
+use crate::worktrees::SessionWorktree;
 
 fn entry_count(state: &AppState, id: u64) -> usize {
     state
@@ -39,6 +41,73 @@ pub fn send_message(
     sync::transcript_grew(app, state, id, before, origin);
     sync::session_touched(app, state, id, origin);
     Ok(title)
+}
+
+/// Starts a chat session in a project the Mac already has open, in `mode`.
+///
+/// For a client other than the window, the window's own selection is left
+/// where it was: starting a chat from the phone must not pull the desktop
+/// off the conversation it is showing. The window still hears about the new
+/// row through [`sync::session_touched`].
+#[allow(clippy::too_many_arguments)]
+pub fn start_session(
+    app: &AppHandle,
+    state: &mut AppState,
+    project_id: usize,
+    agent: AgentId,
+    model: Option<String>,
+    variant: Option<String>,
+    mode: PermissionMode,
+    worktree: Option<SessionWorktree>,
+    origin: &Origin,
+) -> Result<u64, String> {
+    let selection = (state.active_session, state.active_project);
+    let id = sessions::spawn_session(
+        app, state, project_id, agent, model, variant, None, worktree,
+    )?;
+    if !matches!(origin, Origin::Desktop) {
+        (state.active_session, state.active_project) = selection;
+    }
+    if mode != PermissionMode::Auto {
+        sessions::set_permission_mode(state, id, mode)?;
+    }
+    sync::session_touched(app, state, id, origin);
+    Ok(id)
+}
+
+/// Moves a chat session onto another model and effort, keeping the context
+/// window it asked for. See [`sessions::set_model`].
+pub fn set_model(
+    app: &AppHandle,
+    state: &mut AppState,
+    id: u64,
+    model: Option<String>,
+    variant: Option<String>,
+    origin: &Origin,
+) -> Result<(), String> {
+    let context = state
+        .sessions
+        .get(&id)
+        .ok_or_else(|| "unknown session".to_string())?
+        .meta
+        .context;
+    sessions::set_model(app, state, id, model, variant, context)?;
+    sync::session_touched(app, state, id, origin);
+    // The transcript's model badge moved too; clients holding it refetch.
+    sync::transcript_reset(app, id, origin);
+    Ok(())
+}
+
+pub fn set_permission_mode(
+    app: &AppHandle,
+    state: &mut AppState,
+    id: u64,
+    mode: PermissionMode,
+    origin: &Origin,
+) -> Result<&'static str, String> {
+    let applied = sessions::set_permission_mode(state, id, mode)?;
+    sync::session_touched(app, state, id, origin);
+    Ok(applied)
 }
 
 pub fn interrupt(

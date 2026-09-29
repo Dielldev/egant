@@ -950,7 +950,7 @@ fn wallpaper_data_url(state: BackendState<'_>) -> Result<Option<String>, String>
     )))
 }
 
-fn mime_for(path: &Path) -> &'static str {
+pub(crate) fn mime_for(path: &Path) -> &'static str {
     match path
         .extension()
         .and_then(|extension| extension.to_str())

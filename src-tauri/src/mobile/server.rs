@@ -1,16 +1,21 @@
 //! The phone's HTTP API: an explicit list of what a paired phone may do, and
 //! nothing else.
 //!
-//! Reads: the session list, a window of one transcript, and the live event
-//! stream. Writes: send a message, stop a turn,
-//! answer a permission request, answer a decision prompt. Each write goes
-//! through [`crate::service`] — the same code the desktop window's commands
-//! run — so the desktop stays the one place the agents live, and the window
-//! hears about everything the phone does.
+//! Reads: the session and project lists, the chat agents and their models, a
+//! window of one transcript, the Mac's wallpaper, and the live event stream.
+//! Writes: start a chat in a project the Mac already has open, send a
+//! message, stop a turn, switch a session's model or permission mode, answer
+//! a permission request, answer a decision prompt. Each write goes through
+//! [`crate::service`] — the same code the desktop window's commands run — so
+//! the desktop stays the one place the agents live, and the window hears
+//! about everything the phone does.
 //!
 //! What is deliberately absent matters as much: no path is ever taken from
-//! the phone, nothing runs a shell or a terminal, nothing reads or writes a
-//! file, installs an agent, starts a session or touches git.
+//! the phone (a project is named by its id, and only one the Mac already
+//! has), nothing runs a shell or a terminal, nothing reads or writes a file
+//! beyond the one wallpaper the user picked, installs an agent, opens a
+//! folder or touches git on its own — a new chat's worktree follows the
+//! Mac's own default.
 //!
 //! Every request must name a host egant answers to (loopback on its own port,
 //! or this Mac's `*.ts.net` name — through `tailscale serve` on the tailnet,
@@ -24,6 +29,7 @@
 //! is the only credential, on every route but health, pairing and the app's
 //! own files.
 
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header, request::Parts};
 use axum::middleware::{self, Next};
@@ -46,12 +52,19 @@ use crate::service::{self, DecisionOutcome};
 use crate::sessions::PermissionAnswer;
 use crate::state::AppState;
 use crate::sync::{self, Envelope, Origin, SyncHub};
+use crate::worktrees::{self, CheckoutPlan};
+use egant_harness::{AgentId, AgentModel, PermissionMode};
 
 /// The cookie a paired phone carries.
 pub const COOKIE: &str = "egant_device";
 const CLIENT_HEADER: &str = "x-egant-client";
 const MAX_MESSAGE_BYTES: usize = 100_000;
 const MAX_DECISION_REPLY_BYTES: usize = 20_000;
+/// The largest wallpaper the phone is sent. Anything bigger is a camera
+/// original that has no business crossing a phone connection.
+const MAX_WALLPAPER_BYTES: u64 = 25 * 1024 * 1024;
+/// The agents egant drives itself — the ones a phone can chat with.
+const CHAT_AGENTS: [AgentId; 3] = [AgentId::Claude, AgentId::Codex, AgentId::Opencode];
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -67,9 +80,14 @@ pub fn router(ctx: Ctx) -> Router {
         .route("/api/v1/unpair", post(unpair))
         .route("/api/v1/state", get(state))
         .route("/api/v1/events", get(events))
+        .route("/api/v1/agents", get(agents))
+        .route("/api/v1/agents/{agent}/models", get(models))
+        .route("/api/v1/sessions", post(create_session))
         .route("/api/v1/sessions/{id}/transcript", get(transcript))
         .route("/api/v1/sessions/{id}/messages", post(send_message))
         .route("/api/v1/sessions/{id}/interrupt", post(interrupt))
+        .route("/api/v1/sessions/{id}/model", post(set_model))
+        .route("/api/v1/sessions/{id}/mode", post(set_mode))
         .route(
             "/api/v1/sessions/{id}/permissions/{request_id}",
             post(answer_permission),
@@ -79,8 +97,11 @@ pub fn router(ctx: Ctx) -> Router {
             post(answer_decision),
         )
         .layer(middleware::from_fn(no_store));
+    // Cached on the phone by version, so outside `no_store`.
+    let files = Router::new().route("/api/v1/wallpaper", get(wallpaper));
     Router::new()
         .merge(api)
+        .merge(files)
         .fallback(fallback)
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn_with_state(ctx.clone(), guard))
@@ -268,6 +289,10 @@ impl ApiError {
         }
     }
 
+    fn internal() -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+    }
+
     fn unpaired() -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
@@ -311,7 +336,7 @@ async fn with_state<T: Send + 'static>(
         work(&app, &mut guard)
     })
     .await
-    .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))?
+    .map_err(|_| ApiError::internal())?
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +415,9 @@ async fn state(State(ctx): State<Ctx>, device: Device) -> Result<Json<Value>, Ap
             "machineName": crate::state::machine_name(),
             "device": { "id": device.id, "name": device.name },
             "sessions": dto::session_rows(state),
+            "projects": dto::project_rows(state),
+            "defaultAgent": state.settings.default_agent,
+            "wallpaper": state.settings.wallpaper.as_deref().and_then(wallpaper_version),
         })))
     })
     .await
@@ -423,6 +451,108 @@ async fn transcript(
         )))
     })
     .await
+}
+
+/// The chat agents, and whether this Mac has each one installed and signed
+/// in. A filesystem probe that can fall through to a login shell the first
+/// time, so off the async threads.
+async fn agents(_device: Device) -> Result<Json<Value>, ApiError> {
+    let statuses = tauri::async_runtime::spawn_blocking(egant_harness::detect_agents)
+        .await
+        .map_err(|_| ApiError::internal())?;
+    Ok(Json(Value::Array(
+        statuses
+            .into_iter()
+            .filter(|status| CHAT_AGENTS.contains(&status.id))
+            .map(|status| {
+                json!({
+                    "id": status.id.as_str(),
+                    "name": status.name,
+                    "installed": status.installed,
+                    "connected": status.connected,
+                })
+            })
+            .collect(),
+    )))
+}
+
+/// One agent's models — the desktop picker's own catalog, cached the same
+/// way (see `egant_harness::models::list_models`).
+async fn models(
+    _device: Device,
+    Path(agent): Path<String>,
+) -> Result<Json<Vec<AgentModel>>, ApiError> {
+    let id = chat_agent(&agent)?;
+    tauri::async_runtime::spawn_blocking(move || egant_harness::models::list_models(id))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map(Json)
+        .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error))
+}
+
+#[derive(Deserialize)]
+struct WallpaperQuery {
+    v: Option<String>,
+}
+
+/// The wallpaper the user picked for egant on the Mac — the one file on
+/// disk the phone may read, and only because the desktop already shows it.
+/// Addressed by version (`?v=`, from `/state`), so a phone keeps its copy
+/// until the picture changes.
+async fn wallpaper(
+    State(ctx): State<Ctx>,
+    _device: Device,
+    Query(query): Query<WallpaperQuery>,
+) -> Result<Response, ApiError> {
+    let no_wallpaper = || ApiError::new(StatusCode::NOT_FOUND, "no wallpaper");
+    let path = with_state(&ctx, |_, state| Ok(state.settings.wallpaper.clone()))
+        .await?
+        .ok_or_else(no_wallpaper)?;
+    let version = wallpaper_version(&path).ok_or_else(no_wallpaper)?;
+    let bytes = tauri::async_runtime::spawn_blocking({
+        let path = path.clone();
+        move || -> Result<Vec<u8>, ApiError> {
+            let size = std::fs::metadata(&path).map_err(|_| no_wallpaper())?.len();
+            if size > MAX_WALLPAPER_BYTES {
+                return Err(ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "The wallpaper on your Mac is too large to send to a phone.",
+                ));
+            }
+            std::fs::read(&path).map_err(|_| no_wallpaper())
+        }
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+
+    let mut response = Response::new(Body::from(bytes));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(crate::commands::mime_for(&path)),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if query.v.as_deref() == Some(version.as_str()) {
+            "private, max-age=31536000, immutable"
+        } else {
+            "private, no-cache"
+        }),
+    );
+    Ok(response)
+}
+
+/// Names one state of the wallpaper file — its path, size and modification
+/// time — so the phone's cached copy is replaced exactly when it changes.
+/// `None` when there is no such file any more.
+fn wallpaper_version(path: &std::path::Path) -> Option<String> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let meta = std::fs::metadata(path).ok().filter(|meta| meta.is_file())?;
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    meta.len().hash(&mut hasher);
+    meta.modified().ok().hash(&mut hasher);
+    Some(format!("{:016x}", hasher.finish()))
 }
 
 #[derive(Deserialize)]
@@ -552,15 +682,7 @@ async fn send_message(
     Json(body): Json<SendBody>,
 ) -> Result<Json<Value>, ApiError> {
     let text = body.text;
-    if text.trim().is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Nothing to send."));
-    }
-    if text.len() > MAX_MESSAGE_BYTES {
-        return Err(ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "That message is too long to send from a phone.",
-        ));
-    }
+    check_message(&text)?;
     log::info!(
         "mobile: {} sent a message to session {id} ({} chars)",
         device.name,
@@ -586,6 +708,194 @@ async fn interrupt(
         Ok(Json(json!({ "ok": true })))
     })
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewSessionBody {
+    project_id: usize,
+    agent: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    variant: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    text: String,
+}
+
+/// A new chat: a session in one of the projects the Mac already has open,
+/// with the phone's first message sent into it. The checkout follows the
+/// Mac's own default for new sessions (a fresh worktree or the project
+/// folder), cut off the state lock the way the window's own start is.
+async fn create_session(
+    State(ctx): State<Ctx>,
+    device: Device,
+    client: Client,
+    Json(body): Json<NewSessionBody>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = chat_agent(&body.agent)?;
+    let model = cli_value(body.model, "model")?;
+    let variant = cli_value(body.variant, "effort")?;
+    let mode = match body.mode.as_deref().filter(|name| !name.is_empty()) {
+        None => PermissionMode::Auto,
+        Some(name) => PermissionMode::from_cli_arg(name)
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unknown permission mode"))?,
+    };
+    let text = body.text;
+    check_message(&text)?;
+    let project_id = body.project_id;
+
+    let (new_worktree, project_path) = with_state(&ctx, move |_, state| {
+        let project = state.project(project_id).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "That project isn't open on your Mac any more.",
+            )
+        })?;
+        Ok((state.settings.worktree_default, project.fs_path()))
+    })
+    .await?;
+    let worktree = if new_worktree {
+        tauri::async_runtime::spawn_blocking(move || {
+            worktrees::prepare(&CheckoutPlan::NewWorktree { base: None }, &project_path)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| ApiError::new(StatusCode::CONFLICT, error))?
+    } else {
+        None
+    };
+
+    log::info!(
+        "mobile: {} started a {} chat in project {project_id}",
+        device.name,
+        agent.as_str()
+    );
+    let origin = client.origin();
+    with_state(&ctx, move |app, state| {
+        let id = service::start_session(
+            app, state, project_id, agent, model, variant, mode, worktree, &origin,
+        )
+        .map_err(ApiError::from_service)?;
+        // The session exists from here on: a first message that could not go
+        // out is the phone's to try again in it, not a failed start.
+        let (title, error) = match service::send_message(app, state, id, text, Vec::new(), &origin)
+        {
+            Ok(title) => (title, None),
+            Err(error) => (None, Some(error)),
+        };
+        Ok(Json(json!({
+            "id": id,
+            "title": title,
+            "error": error,
+            "session": dto::session_row(state, id),
+        })))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct ModelBody {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    variant: Option<String>,
+}
+
+/// Moves a session onto another model or effort between turns — the
+/// desktop's restart-with-resume.
+async fn set_model(
+    State(ctx): State<Ctx>,
+    device: Device,
+    client: Client,
+    Path(id): Path<u64>,
+    Json(body): Json<ModelBody>,
+) -> Result<Json<Value>, ApiError> {
+    let model = cli_value(body.model, "model")?;
+    let variant = cli_value(body.variant, "effort")?;
+    log::info!(
+        "mobile: {} switched session {id} to model {model:?}, effort {variant:?}",
+        device.name
+    );
+    with_state(&ctx, move |app, state| {
+        service::set_model(app, state, id, model, variant, &client.origin())
+            .map_err(ApiError::from_service)?;
+        Ok(Json(json!({ "session": dto::session_row(state, id) })))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct ModeBody {
+    mode: String,
+}
+
+async fn set_mode(
+    State(ctx): State<Ctx>,
+    device: Device,
+    client: Client,
+    Path(id): Path<u64>,
+    Json(body): Json<ModeBody>,
+) -> Result<Json<Value>, ApiError> {
+    let mode = PermissionMode::from_cli_arg(&body.mode)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unknown permission mode"))?;
+    log::info!(
+        "mobile: {} set session {id} to {}",
+        device.name,
+        mode.as_cli_arg()
+    );
+    with_state(&ctx, move |app, state| {
+        let applied = service::set_permission_mode(app, state, id, mode, &client.origin())
+            .map_err(ApiError::from_service)?;
+        Ok(Json(json!({ "permissionMode": applied })))
+    })
+    .await
+}
+
+/// One of the agents a phone can chat with.
+fn chat_agent(name: &str) -> Result<AgentId, ApiError> {
+    AgentId::from_str(name)
+        .filter(|id| CHAT_AGENTS.contains(id))
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unknown agent"))
+}
+
+/// A model or effort name, which reaches the agent's CLI as an argument of
+/// its own: the characters real catalog ids use, and never something that
+/// reads as a flag. Blank means the CLI's own default.
+fn cli_value(value: Option<String>, what: &str) -> Result<Option<String>, ApiError> {
+    let Some(value) = value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let valid = value.len() <= 200
+        && !value.starts_with('-')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:[]@+".contains(c));
+    if valid {
+        Ok(Some(value))
+    } else {
+        Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("bad {what}"),
+        ))
+    }
+}
+
+fn check_message(text: &str) -> Result<(), ApiError> {
+    if text.trim().is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Nothing to send."));
+    }
+    if text.len() > MAX_MESSAGE_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "That message is too long to send from a phone.",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -681,6 +991,35 @@ async fn fallback(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_names_are_catalog_ids_and_never_flags() {
+        let ok = |value: &str| cli_value(Some(value.to_string()), "model").ok().flatten();
+        assert_eq!(ok("opus").as_deref(), Some("opus"));
+        assert_eq!(
+            ok("claude-opus-5-5[1m]").as_deref(),
+            Some("claude-opus-5-5[1m]")
+        );
+        assert_eq!(
+            ok(" anthropic/claude-sonnet-5.5 ").as_deref(),
+            Some("anthropic/claude-sonnet-5.5")
+        );
+        assert!(cli_value(Some("  ".into()), "model").unwrap().is_none());
+        assert!(cli_value(None, "model").unwrap().is_none());
+        assert!(cli_value(Some("--dangerously-skip-permissions".into()), "model").is_err());
+        assert!(cli_value(Some("opus; rm -rf ~".into()), "model").is_err());
+        assert!(cli_value(Some("opus\n--flag".into()), "model").is_err());
+        assert!(cli_value(Some("x".repeat(201)), "model").is_err());
+    }
+
+    #[test]
+    fn only_harnessed_agents_can_be_chatted_with() {
+        assert!(chat_agent("claude").is_ok());
+        assert!(chat_agent("codex").is_ok());
+        assert!(chat_agent("opencode").is_ok());
+        assert!(chat_agent("cursor").is_err());
+        assert!(chat_agent("bash").is_err());
+    }
 
     #[test]
     fn only_loopback_on_our_port_and_tailnet_names_are_served() {

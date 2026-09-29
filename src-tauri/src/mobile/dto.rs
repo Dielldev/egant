@@ -34,6 +34,11 @@ pub struct SessionRowDto {
     pub worktree: Option<WorktreeRowDto>,
     /// The model the agent last reported, else the one it was started on.
     pub model: Option<String>,
+    /// The model this session asked for — a catalog id, or `None` for the
+    /// CLI's default — which is what a model picker marks as chosen.
+    pub requested_model: Option<String>,
+    /// The effort it asked for, `None` for the model's default.
+    pub variant: Option<String>,
     pub permission_mode: &'static str,
     /// `idle`, `running` or `awaiting_permission`.
     pub state: &'static str,
@@ -81,6 +86,8 @@ pub fn session_row(state: &AppState, id: u64) -> Option<SessionRowDto> {
             name: worktree.name.clone(),
         }),
         model: transcript.model.clone().or_else(|| meta.model.clone()),
+        requested_model: meta.model.clone(),
+        variant: meta.variant.clone(),
         permission_mode: meta.permission_mode.as_cli_arg(),
         state: turn_state_name(transcript.state),
         busy: transcript.is_busy(),
@@ -90,6 +97,28 @@ pub fn session_row(state: &AppState, id: u64) -> Option<SessionRowDto> {
         started_unix_ms: meta.started_unix_ms,
         last_activity_ms: session.last_activity_ms,
     })
+}
+
+/// A project the phone can start a chat in: its name and colour, never its
+/// folder.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRowDto {
+    pub id: usize,
+    pub name: String,
+    pub hue: f32,
+}
+
+pub fn project_rows(state: &AppState) -> Vec<ProjectRowDto> {
+    state
+        .projects
+        .iter()
+        .map(|project| ProjectRowDto {
+            id: project.id,
+            name: project.name.clone(),
+            hue: project.hue,
+        })
+        .collect()
 }
 
 /// Every session, newest activity first.
