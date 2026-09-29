@@ -15,13 +15,16 @@ mod commands;
 mod dto;
 mod files;
 mod github;
+mod mobile;
 mod notifications;
 mod persist;
 mod project;
 mod pty;
+mod service;
 mod sessions;
 mod settings;
 mod state;
+mod sync;
 mod worktrees;
 
 use state::AppState;
@@ -40,8 +43,19 @@ pub fn run() {
         // reader thread behind every terminal tab must never wait on the lock
         // the whole UI takes to render a snapshot.
         .manage(Mutex::new(pty::Terminals::default()))
+        // The numbered stream every client follows (see `sync`), and phone
+        // access (see `mobile`). Managed up front so no command can arrive
+        // before them; `setup` hands them the app once it exists.
+        .manage(sync::SyncHub::new())
+        .manage(mobile::MobileService::load())
         .invoke_handler(commands::handlers())
-        .setup(|_app| {
+        .setup(|app| {
+            {
+                use tauri::Manager;
+                app.state::<sync::SyncHub>().attach(app.handle().clone());
+                mobile::init(app.handle());
+            }
+
             // Warm the login-shell environment snapshot off the main thread.
             // Opening an agent's CLI needs it, and capturing it costs a shell
             // that sources the user's rc files — a second or more on a busy
@@ -60,7 +74,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 use tauri::Manager;
-                if let Some(window) = _app.get_webview_window("main") {
+                if let Some(window) = app.get_webview_window("main") {
                     let _ = window_vibrancy::apply_vibrancy(
                         &window,
                         window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,

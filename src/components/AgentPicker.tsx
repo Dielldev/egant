@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { AGENT_ACCENT, AGENT_PROVIDER, fallbackName } from "../lib/agents";
 import { api } from "../lib/api";
 import { fitBelow } from "../lib/popover";
 import { formatContext } from "../lib/types";
@@ -52,17 +53,9 @@ import { ProviderGlyph, ProviderLogo } from "./ProviderLogo";
 
 const RUNNABLE = ["claude", "codex", "opencode"] as const;
 
-export const AGENT_PROVIDER: Record<string, string> = {
-  claude: "claude",
-  codex: "openai",
-  opencode: "opencode",
-};
-
-export const AGENT_ACCENT: Record<string, string> = {
-  claude: "#e8835a",
-  codex: "#b9b9c4",
-  opencode: "#8e7cf6",
-};
+// The display constants live in `lib/agents` so the phone app can draw the
+// same logos; re-exported here for everything that already imports them.
+export { AGENT_ACCENT, AGENT_PROVIDER, fallbackName };
 
 /** Tab labels. The full names ("Claude Code") don't fit three-across, and the
  * CLI is what's being picked, so the CLI's short name is the honest label. */
@@ -99,19 +92,6 @@ export function agentName(
 ): string {
   if (!id) return "Claude Code";
   return agents.find((a) => a.id === id)?.name ?? fallbackName(id);
-}
-
-export function fallbackName(id: string): string {
-  switch (id) {
-    case "claude":
-      return "Claude Code";
-    case "codex":
-      return "Codex";
-    case "opencode":
-      return "OpenCode";
-    default:
-      return id;
-  }
 }
 
 /** One selectable line in the list. Headings aren't rows — they're drawn

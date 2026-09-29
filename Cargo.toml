@@ -62,6 +62,21 @@ serde_json = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 
+# The phone's way in (`src-tauri/src/mobile`): a small HTTP + SSE server inside
+# the app, reached over Tailscale. `tokio` is already the runtime Tauri runs
+# on; naming it here only turns on the pieces the server needs.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tokio = { version = "1", features = ["net", "sync", "time", "macros"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The phone app is built into the binary in release and read from disk in
+# debug, so `npm run build:mobile` is all a dev loop needs.
+rust-embed = "8"
+# Device tokens are stored hashed, never as the token itself.
+sha2 = "0.10"
+getrandom = "0.3"
+# The pairing QR code, rendered as SVG for the Devices panel.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
 [profile.dev]
 # GPUI pulls in a large dependency tree; building it unoptimized makes the app
 # unusably slow to run, while optimizing our own crates slows edit-compile.

@@ -15,9 +15,11 @@ use crate::dto::{
     ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, RepoRefDto, RepoStatusDto,
     StateDto, TranscriptDto, UnmergedFileDto, WorktreeDto,
 };
+use crate::service::{self, DecisionOutcome};
 use crate::sessions;
 use crate::settings::{SettingsDto, is_supported_image};
 use crate::state::AppState;
+use crate::sync::{self, Origin};
 use crate::worktrees::{self, CheckoutPlan, Released, SessionWorktree};
 use egant_harness::{AgentId, AgentModel, AgentStatus, CatalogStatus, InstallOutcome, UpdateInfo};
 
@@ -79,13 +81,14 @@ async fn add_project(
     let model = model.filter(|model| !model.trim().is_empty());
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
-    sessions::spawn_session(
+    let id = sessions::spawn_session(
         &app, &mut guard, project_id, requested, model, variant, context, worktree,
     )
     .map_err(|error| {
         log::error!("add_project spawn failed: {error}");
         error
     })?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
     Ok(guard.snapshot())
 }
 
@@ -147,13 +150,14 @@ async fn create_session(
     let model = model.filter(|model| !model.trim().is_empty());
     let variant = variant.filter(|variant| !variant.trim().is_empty());
     let context = context.filter(|n| *n > 0);
-    sessions::spawn_session(
+    let id = sessions::spawn_session(
         &app, &mut guard, project, requested, model, variant, context, worktree,
     )
     .map_err(|error| {
         log::error!("create_session spawn failed: {error}");
         error
     })?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
     Ok(guard.snapshot())
 }
 
@@ -354,6 +358,7 @@ async fn repo_refs(root: String) -> Result<Vec<RepoRefDto>, String> {
 /// and why rather than opening a terminal onto "command not found".
 #[tauri::command]
 async fn create_cli_session(
+    app: AppHandle,
     state: BackendState<'_>,
     agent: String,
     checkout: Option<CheckoutPlan>,
@@ -371,10 +376,12 @@ async fn create_cli_session(
     let worktree = resolve_checkout(&state, project, checkout).await?;
 
     let mut guard = state.lock().unwrap();
-    sessions::spawn_cli_session(&mut guard, project, &agent, worktree).map_err(|error| {
-        log::error!("create_cli_session failed: {error}");
-        error
-    })?;
+    let id =
+        sessions::spawn_cli_session(&mut guard, project, &agent, worktree).map_err(|error| {
+            log::error!("create_cli_session failed: {error}");
+            error
+        })?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
     Ok(guard.snapshot())
 }
 
@@ -409,13 +416,16 @@ fn select_session(state: BackendState<'_>, id: u64) -> Result<StateDto, String> 
 /// holding work is left on disk with a notice saying where.
 #[tauri::command]
 async fn close_session(
+    app: AppHandle,
     state: BackendState<'_>,
     id: u64,
     force: Option<bool>,
 ) -> Result<CloseResultDto, String> {
     let worktree = {
         let mut guard = state.lock().unwrap();
-        sessions::close_session(&mut guard, id)
+        let worktree = sessions::close_session(&mut guard, id);
+        sync::session_removed(&app, id, &Origin::Desktop);
+        worktree
     };
 
     let mut notice = None;
@@ -512,17 +522,17 @@ fn send_message(
         images.len()
     );
     let mut guard = state.lock().unwrap();
-    sessions::send_text(&app, &mut guard, id, text, images).map_err(|error| {
+    service::send_message(&app, &mut guard, id, text, images, &Origin::Desktop).map_err(|error| {
         log::error!("send_message session {id} failed: {error}");
         error
     })
 }
 
 #[tauri::command]
-fn interrupt_session(state: BackendState<'_>, id: u64) -> Result<(), String> {
+fn interrupt_session(app: AppHandle, state: BackendState<'_>, id: u64) -> Result<(), String> {
     log::info!("interrupt_session {id}");
     let mut guard = state.lock().unwrap();
-    sessions::interrupt(&mut guard, id).map_err(|error| {
+    service::interrupt(&app, &mut guard, id, &Origin::Desktop).map_err(|error| {
         log::error!("interrupt_session {id} failed: {error}");
         error
     })
@@ -530,6 +540,7 @@ fn interrupt_session(state: BackendState<'_>, id: u64) -> Result<(), String> {
 
 #[tauri::command]
 fn answer_permission(
+    app: AppHandle,
     state: BackendState<'_>,
     id: u64,
     request_id: Option<String>,
@@ -547,11 +558,14 @@ fn answer_permission(
             log::warn!("answer_permission unknown decision `{decision}`; ignoring");
             return Ok(None);
         };
-        sessions::answer_permission(&mut guard, id, &request_id, answer)
+        service::answer_permission(&app, &mut guard, id, &request_id, answer, &Origin::Desktop)
             .map(|mode| mode.map(str::to_owned))
     } else if let Some(allow) = allow {
-        sessions::answer_permission_legacy(&mut guard, id, allow)
-            .map(|mode| mode.map(str::to_owned))
+        let answered = sessions::answer_permission_legacy(&mut guard, id, allow)
+            .map(|mode| mode.map(str::to_owned));
+        sync::permissions(&app, &guard, id, &Origin::Desktop);
+        sync::session_touched(&app, &guard, id, &Origin::Desktop);
+        answered
     } else {
         // No-op, not an error: a stale or double-clicked row can arrive with
         // nothing to answer (already resolved, session gone). Returning an
@@ -563,27 +577,40 @@ fn answer_permission(
 }
 
 #[tauri::command]
-fn cycle_permission_mode(state: BackendState<'_>, id: u64) -> Result<String, String> {
+fn cycle_permission_mode(
+    app: AppHandle,
+    state: BackendState<'_>,
+    id: u64,
+) -> Result<String, String> {
     let mut guard = state.lock().unwrap();
-    sessions::cycle_permission_mode(&mut guard, id)
+    let mode = sessions::cycle_permission_mode(&mut guard, id)
         .map(str::to_owned)
         .map_err(|error| {
             log::error!("cycle_permission_mode session {id} failed: {error}");
             error
-        })
+        })?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
+    Ok(mode)
 }
 
 /// Jumps straight to a named mode — the composer's mode-info popover uses
 /// this so picking a row takes effect immediately, rather than stepping
 /// through `cycle_permission_mode` one click at a time.
 #[tauri::command]
-fn set_permission_mode(state: BackendState<'_>, id: u64, mode: String) -> Result<String, String> {
+fn set_permission_mode(
+    app: AppHandle,
+    state: BackendState<'_>,
+    id: u64,
+    mode: String,
+) -> Result<String, String> {
     let parsed = egant_harness::PermissionMode::from_cli_arg(&mode).ok_or_else(|| {
         log::warn!("set_permission_mode unknown mode `{mode}`");
         format!("unknown permission mode `{mode}`")
     })?;
     let mut guard = state.lock().unwrap();
-    sessions::set_permission_mode(&mut guard, id, parsed).map(str::to_owned)
+    let applied = sessions::set_permission_mode(&mut guard, id, parsed).map(str::to_owned)?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
+    Ok(applied)
 }
 
 /// Moves a chat session onto another model and effort mid-conversation — the
@@ -604,7 +631,9 @@ fn set_session_model(
     sessions::set_model(&app, &mut guard, id, model, variant, context).map_err(|error| {
         log::error!("set_session_model session {id} failed: {error}");
         error
-    })
+    })?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
+    Ok(())
 }
 
 #[tauri::command]
@@ -614,7 +643,75 @@ fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, Str
         log::warn!("get_transcript unknown session {id}");
         return Err("unknown session".to_string());
     };
-    Ok(TranscriptDto::from(&session.transcript))
+    let mut dto = TranscriptDto::from(&session.transcript);
+    dto.decision_responses = session.decisions.clone();
+    Ok(dto)
+}
+
+/// Answers a decision prompt from the window: records the answer and sends
+/// `text` as the turn the agent reads. Returns the session's new title when
+/// the reply named it, like `send_message`. An answer another device already
+/// gave wins — this one is dropped, not sent a second time.
+#[tauri::command]
+fn answer_decision(
+    app: AppHandle,
+    state: BackendState<'_>,
+    id: u64,
+    decision_id: String,
+    response: serde_json::Value,
+    text: String,
+) -> Result<Option<String>, String> {
+    if !service::is_decision_response(&response) {
+        return Err("not a decision answer".to_string());
+    }
+    log::info!("answer_decision session {id} {decision_id}");
+    let mut guard = state.lock().unwrap();
+    match service::answer_decision(
+        &app,
+        &mut guard,
+        id,
+        &decision_id,
+        response,
+        text,
+        &Origin::Desktop,
+    )? {
+        DecisionOutcome::Sent(title) => Ok(title),
+        DecisionOutcome::AlreadyAnswered => {
+            log::info!("answer_decision session {id} {decision_id}: already answered elsewhere");
+            Ok(None)
+        }
+    }
+}
+
+/// One decision answer the window kept in its own storage before the backend
+/// kept them.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportedDecision {
+    session_id: u64,
+    decision_id: String,
+    response: serde_json::Value,
+}
+
+/// Hands the backend the decision answers an older build kept only in the
+/// window, so a phone sees those prompts as answered too. Nothing is sent.
+#[tauri::command]
+fn import_decision_responses(
+    app: AppHandle,
+    state: BackendState<'_>,
+    answers: Vec<ImportedDecision>,
+) -> usize {
+    let answers: Vec<_> = answers
+        .into_iter()
+        .filter(|answer| service::is_decision_response(&answer.response))
+        .map(|answer| (answer.session_id, answer.decision_id, answer.response))
+        .collect();
+    let mut guard = state.lock().unwrap();
+    let imported = service::import_decisions(&app, &mut guard, answers);
+    if imported > 0 {
+        log::info!("imported decision answers for {imported} session(s)");
+    }
+    imported
 }
 
 // ---------------------------------------------------------------------------
@@ -1490,6 +1587,13 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         set_permission_mode,
         set_session_model,
         get_transcript,
+        answer_decision,
+        import_decision_responses,
+        crate::mobile::mobile_status,
+        crate::mobile::mobile_set_enabled,
+        crate::mobile::mobile_setup_tailscale,
+        crate::mobile::mobile_create_pairing,
+        crate::mobile::mobile_revoke_device,
         get_settings,
         set_wallpaper,
         cycle_dim,

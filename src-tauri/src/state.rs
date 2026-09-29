@@ -87,6 +87,13 @@ pub struct ManagedSession {
     /// would answer a question nobody asked any more. Recorded off-thread (see
     /// `sessions::mark_turn_baseline`), so a turn never waits on git.
     pub turn_baseline: Option<String>,
+    /// Answers to this session's decision prompts, keyed by the prompt's id.
+    /// Here rather than in one window's storage so the desktop and a phone
+    /// agree on which prompts are settled; saved with the transcript.
+    pub decisions: std::collections::BTreeMap<String, serde_json::Value>,
+    /// When anything last happened in this session — a turn sent, an event
+    /// from the agent. What the phone's list sorts by.
+    pub last_activity_ms: u64,
 }
 
 pub struct AppState {
@@ -212,6 +219,8 @@ impl AppState {
             };
             next_session_id = next_session_id.max(meta.id + 1);
             order.push(meta.id);
+            let last_activity_ms = persisted.modified_ms.max(meta.started_unix_ms);
+            let decisions = persisted.decisions;
             let mut transcript = persisted.transcript;
             // A turn in flight when the app last closed (crash, force-quit)
             // has nothing running behind it any more; left as `Running` or
@@ -230,6 +239,8 @@ impl AppState {
                     last_user_text: None,
                     last_user_images: Vec::new(),
                     turn_baseline: None,
+                    decisions,
+                    last_activity_ms,
                 },
             );
         }
@@ -304,7 +315,7 @@ impl AppState {
             permission_mode: session.meta.permission_mode,
             worktree: session.meta.worktree.clone(),
         };
-        persist::save_session(&meta, &session.transcript);
+        persist::save_session(&meta, &session.transcript, &session.decisions);
     }
 
     /// Everything the window draws, gathered in one pass.
@@ -418,7 +429,7 @@ impl Default for AppState {
 /// the network hostname and `scutil` is the only way to read it. Resolved
 /// once: renaming the machine mid-session is not worth a subprocess on every
 /// snapshot.
-fn machine_name() -> String {
+pub(crate) fn machine_name() -> String {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
         #[cfg(target_os = "macos")]
@@ -539,6 +550,8 @@ mod tests {
                 last_user_text: None,
                 last_user_images: Vec::new(),
                 turn_baseline: None,
+                decisions: Default::default(),
+                last_activity_ms: 0,
             },
         );
         AppState {
@@ -606,6 +619,8 @@ mod tests {
                 last_user_text: None,
                 last_user_images: Vec::new(),
                 turn_baseline: None,
+                decisions: Default::default(),
+                last_activity_ms: 0,
             },
         );
         state.order.push(2);

@@ -33,6 +33,8 @@ import type {
   RepoRef,
   SessionEventPayload,
   SessionInfo,
+  SyncEnvelope,
+  TranscriptDto,
   TranscriptState,
   WindowState,
   WorktreeInfo,
@@ -679,9 +681,10 @@ interface EgantStore {
   answerPermission: (id: number, requestId: string, decision: string) => Promise<void>;
   /** Answers to `agent_request` entries the transcript fold pulled out of the
    * agent's own text — keyed `${sessionId}:${decisionId}` so a reload or a
-   * session switch (which rebuilds the transcript mirror from a snapshot
-   * that carries no notion of "answered") still shows the card as completed.
-   * Persisted to localStorage; see `loadDecisionResponses`. */
+   * session switch still shows the card as completed. The backend keeps the
+   * same answers (and hands them back with each transcript), which is how a
+   * prompt answered on a paired phone shows as answered here too; this map
+   * is the window's copy, also kept in localStorage (`loadDecisionResponses`). */
   decisionResponses: Record<string, DecisionResponse>;
   answerDecision: (
     sessionId: number,
@@ -854,6 +857,30 @@ function saveDecisionResponses(responses: Record<string, DecisionResponse>): voi
   } catch {
     // Unavailable storage: the answer still reached the agent; only the
     // "already answered" replay across a reload is lost.
+  }
+}
+
+const DECISIONS_IMPORTED_KEY = "egant.decisionResponsesImported";
+
+/** Decision answers used to live only in this window's storage. Hands them
+ * to the backend once, so a paired phone sees those prompts as answered too
+ * rather than offering to send the agent a stale answer. Nothing is sent to
+ * any agent. Retried next launch if it fails. */
+async function importLegacyDecisions(responses: Record<string, DecisionResponse>): Promise<void> {
+  if (loadString(DECISIONS_IMPORTED_KEY) === "1") return;
+  const answers = Object.entries(responses).flatMap(([key, response]) => {
+    const split = key.indexOf(":");
+    const sessionId = Number(key.slice(0, split));
+    const decisionId = key.slice(split + 1);
+    return split > 0 && Number.isInteger(sessionId) && decisionId
+      ? [{ sessionId, decisionId, response }]
+      : [];
+  });
+  try {
+    if (answers.length > 0) await api.importDecisionResponses(answers);
+    saveString(DECISIONS_IMPORTED_KEY, "1");
+  } catch (error) {
+    log.warn("store", `decision answers not handed to the backend yet: ${String(error)}`);
   }
 }
 
@@ -1164,6 +1191,91 @@ export const useEgant = create<EgantStore>()((set, get) => {
     }
     if (startingNewSessionWorktree) {
       set({ startingNewSessionWorktree: rename(startingNewSessionWorktree) });
+    }
+  }
+
+  /** Adopts a transcript snapshot, and the decision answers the backend keeps
+   * with it — which may have been given on a paired phone. */
+  function adoptTranscript(id: number, dto: TranscriptDto): void {
+    set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+    const answered = Object.entries(dto.decisionResponses ?? {}).filter(
+      ([decisionId]) => !get().decisionResponses[`${id}:${decisionId}`],
+    );
+    if (answered.length > 0) {
+      const decisionResponses = { ...get().decisionResponses };
+      for (const [decisionId, response] of answered) {
+        decisionResponses[`${id}:${decisionId}`] = response;
+      }
+      set({ decisionResponses });
+      saveDecisionResponses(decisionResponses);
+    }
+  }
+
+  /** A change made somewhere other than this window — a paired phone sent a
+   * message, answered a permission, picked a decision — mirrored in from the
+   * numbered stream every client follows (`session-sync`). This window's own
+   * changes come back on it too and are skipped: they were applied the moment
+   * they were made. */
+  function onSessionSync(envelope: SyncEnvelope): void {
+    if (envelope.origin === "desktop" || envelope.sessionId == null) return;
+    const id = envelope.sessionId;
+    const prev = get().transcripts[id];
+    switch (envelope.type) {
+      case "user_message":
+        log.info("session-sync", `session ${id}: a message sent from another device`);
+        if (prev) {
+          set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, envelope.payload.text) } });
+        }
+        patchSession(id, { busy: true });
+        break;
+      case "permissions": {
+        const { state, pending } = envelope.payload;
+        log.info("session-sync", `session ${id}: permissions answered on another device`);
+        if (prev) {
+          const next: TranscriptState = {
+            ...prev,
+            state,
+            pending: pending[0] ?? null,
+            pendingList: pending,
+            turnStartedAt: state === "idle" ? null : (prev.turnStartedAt ?? Date.now()),
+          };
+          set({ transcripts: { ...get().transcripts, [id]: next } });
+        }
+        patchSession(id, { busy: state !== "idle" });
+        break;
+      }
+      case "decision": {
+        const key = `${id}:${envelope.payload.decisionId}`;
+        if (get().decisionResponses[key]) break;
+        const decisionResponses = { ...get().decisionResponses, [key]: envelope.payload.response };
+        set({ decisionResponses });
+        saveDecisionResponses(decisionResponses);
+        break;
+      }
+      case "interrupted":
+        // Stopped from the phone: the turn end it causes is no news here.
+        if ((prev?.state ?? "idle") !== "idle") noteInterrupt(id);
+        break;
+      case "transcript_reset":
+        if (prev) {
+          void api
+            .getTranscript(id)
+            .then((dto) => adoptTranscript(id, dto))
+            .catch((error: unknown) => fail(set, error));
+        }
+        break;
+      case "session":
+        // Rows the agent changes already reach this window through
+        // `session-event`; a phone's changes (its first message naming the
+        // session, say) arrive only here.
+        if (envelope.origin != null) void get().refresh();
+        break;
+      case "session_removed":
+        void get().refresh();
+        break;
+      case "harness":
+        // Never mirrored to the window: it has `session-event`.
+        break;
     }
   }
 
@@ -1899,9 +2011,15 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const unlistenRenames = await listen<WorktreeRenamedPayload>("worktree-renamed", (e) =>
         onWorktreeRenamed(e.payload),
       );
+      // What a paired phone does to a session: its messages, its answers.
+      const unlistenSync = await listen<SyncEnvelope>("session-sync", (e) =>
+        onSessionSync(e.payload),
+      );
+      void importLegacyDecisions(get().decisionResponses);
       return () => {
         unlistenEvents();
         unlistenRenames();
+        unlistenSync();
       };
     },
 
@@ -1917,8 +2035,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       if (get().transcripts[id]) return;
       log.debug("store", `fetching transcript for session ${id}`);
       try {
-        const dto = await api.getTranscript(id);
-        set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+        adoptTranscript(id, await api.getTranscript(id));
       } catch (error) {
         fail(set, error);
       }
@@ -2228,8 +2345,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       try {
         const newMode = await api.answerPermission(id, requestId, decision);
         if (newMode) patchSession(id, { permissionMode: newMode });
-        const dto = await api.getTranscript(id);
-        set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+        adoptTranscript(id, await api.getTranscript(id));
       } catch (error) {
         // Seamless, never red: the click already updated the UI optimistically
         // and the backend treats already-answered rows as no-ops, so a failure
@@ -2237,8 +2353,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         // quietly; the row comes back if the answer never landed.
         log.error("store", `answer permission failed: ${String(error)}`, error);
         try {
-          const dto = await api.getTranscript(id);
-          set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+          adoptTranscript(id, await api.getTranscript(id));
         } catch {
           // Still quiet — the next session-event re-syncs anyway.
         }
@@ -2262,7 +2377,14 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ transcripts: { ...get().transcripts, [id]: markRunning(prev) } });
       patchSession(id, { busy: true });
       try {
-        const title = await api.sendMessage(id, formatDecisionReply(decision, response));
+        // The backend records the answer and sends the reply in one step, so
+        // a paired phone can neither miss it nor answer the same prompt twice.
+        const title = await api.answerDecision(
+          id,
+          decision.id,
+          response,
+          formatDecisionReply(decision, response),
+        );
         if (title) patchSession(id, { title });
       } catch (error) {
         fail(set, error);

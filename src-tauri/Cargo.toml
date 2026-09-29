@@ -32,6 +32,13 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 window-vibrancy = "0.8.0"
+axum.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+rust-embed.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+qrcode.workspace = true
 
 [dev-dependencies]
 # Real repositories for the worktree tests: what `release` decides is only

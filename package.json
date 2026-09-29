@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "dev:1421": "VITE_PORT=1421 vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && npm run build:mobile",
+    "build:mobile": "tsc --noEmit -p mobile/tsconfig.json && vite build --config mobile/vite.config.ts",
+    "vercel-build": "npm run build:mobile",
+    "dev:mobile": "vite --config mobile/vite.config.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev:1421": "VITE_PORT=1421 tauri dev --config '{\"build\":{\"devUrl\":\"http://localhost:1421\",\"beforeDevCommand\":\"npm run dev:1421\"}}'"

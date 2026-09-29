@@ -57,6 +57,7 @@ import {
   usePersistentState,
 } from "./SettingsKit";
 import { useNow } from "./useNow";
+import { PhoneAccess } from "./PhoneAccess";
 import { ProviderGlyph } from "./ProviderLogo";
 
 /** Settings: the window behind the "Local only" profile. A left rail of
@@ -333,6 +334,7 @@ function DevicesSection() {
           </button>
         </div>
       </Card>
+      <PhoneAccess />
     </div>
   );
 }

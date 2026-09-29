@@ -378,6 +378,11 @@ impl Transcript {
             }
             _ => {}
         }
+        // A new block has begun, so the one before it is done: the reply's
+        // text starting closes the thinking that preceded it. Left open, that
+        // thinking would read as still streaming for the rest of the session,
+        // since nothing later settles past the reply sitting after it.
+        self.settle_streaming();
         self.entries.push(if thinking {
             TranscriptEntry::Thinking {
                 text: delta,
@@ -443,6 +448,23 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_reply_starting_closes_the_thinking_before_it() {
+        let mut transcript = Transcript::new();
+        transcript.apply(HarnessEvent::ThinkingDelta { text: "Hmm".into() });
+        transcript.apply(HarnessEvent::AssistantDelta { text: "Hi".into() });
+        transcript.apply(HarnessEvent::AssistantMessage { text: "Hi".into() });
+        assert_eq!(transcript.entries.len(), 2);
+        assert!(matches!(
+            &transcript.entries[0],
+            TranscriptEntry::Thinking { streaming: false, .. }
+        ));
+        assert!(matches!(
+            &transcript.entries[1],
+            TranscriptEntry::Assistant { streaming: false, .. }
+        ));
     }
 
     #[test]

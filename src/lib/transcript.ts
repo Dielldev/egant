@@ -238,7 +238,12 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
       if (index !== undefined) {
         const entry = s.entries[index];
         if (entry?.kind === "tool") {
-          s.entries[index] = { ...entry, output: event.output, isError: event.is_error };
+          s.entries[index] = {
+            ...entry,
+            output: event.output,
+            isError: event.is_error,
+            ...(event.bytes !== undefined ? { outputBytes: event.bytes } : {}),
+          };
         }
       }
       return s;
@@ -327,6 +332,10 @@ function appendStreaming(s: TranscriptState, delta: string, thinking: boolean): 
     s.entries[s.entries.length - 1] = { ...last, text: last.text + delta };
     return;
   }
+  // A new block has begun, so the one before it is done — the same rule as
+  // `append_streaming` in Rust. Without it the thinking before a reply never
+  // settles: nothing later settles past the reply sitting after it.
+  settleStreaming(s.entries);
   s.entries.push(
     thinking
       ? { kind: "thinking", text: delta, streaming: true, at: Date.now() }
@@ -810,14 +819,16 @@ export function permissionSummary(input: unknown): string {
 
 /** Tool output can be megabytes; the transcript shows the head and says so.
  * Never splits a UTF-8 character: the cut walks back over continuation
- * bytes. */
-export function truncate(text: string, limit: number): string {
+ * bytes. `totalBytes` is the text's real size when it arrived already cut
+ * down (a tool output on the phone), so the note still counts truthfully. */
+export function truncate(text: string, limit: number, totalBytes?: number): string {
   const bytes = new TextEncoder().encode(text);
-  if (bytes.length <= limit) return text;
-  let end = limit;
-  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  const total = Math.max(bytes.length, totalBytes ?? 0);
+  if (total <= limit) return text;
+  let end = Math.min(limit, bytes.length);
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
   const head = new TextDecoder().decode(bytes.slice(0, end));
-  return `${head}\n… ${bytes.length - end} more bytes`;
+  return `${head}\n… ${total - end} more bytes`;
 }
 
 /** The project's colour dot, from the backend's stable hue. */

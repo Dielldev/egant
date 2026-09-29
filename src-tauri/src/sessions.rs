@@ -200,6 +200,8 @@ pub fn spawn_session(
                     last_user_text: None,
                     last_user_images: Vec::new(),
                     turn_baseline: None,
+                    decisions: Default::default(),
+                    last_activity_ms: unix_now_ms(),
                 },
             );
             state.order.push(id);
@@ -227,6 +229,8 @@ pub fn spawn_session(
             last_user_text: None,
             last_user_images: Vec::new(),
             turn_baseline: None,
+            decisions: Default::default(),
+            last_activity_ms: unix_now_ms(),
         },
     );
     state.order.push(id);
@@ -336,6 +340,8 @@ pub fn spawn_cli_session(
             last_user_text: None,
             last_user_images: Vec::new(),
             turn_baseline: None,
+            decisions: Default::default(),
+            last_activity_ms: unix_now_ms(),
         },
     );
     state.order.push(id);
@@ -445,6 +451,7 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 let Some(session) = guard.sessions.get_mut(&id) else {
                     break; // the session is gone
                 };
+                session.last_activity_ms = unix_now_ms();
                 // A model switch hands the session a new process (see
                 // [`set_model`]). This one is being shut down, and nothing it
                 // says now — its exit least of all — belongs in the transcript.
@@ -526,6 +533,16 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 if worth_persisting {
                     guard.persist_session(id);
                 }
+                // Published before the lock is released, so a snapshot taken
+                // under it never already holds an event its stream will
+                // deliver again (see `crate::sync`).
+                crate::sync::harness_event(&listener_app, id, &dto);
+                crate::sync::session_touched(
+                    &listener_app,
+                    &guard,
+                    id,
+                    &crate::sync::Origin::Agent,
+                );
             }
             let _ = listener_app.emit(
                 "session-event",
@@ -652,6 +669,7 @@ fn apply_worktree_rename(app: &AppHandle, previous: &SessionWorktree, renamed: &
     }
     for id in ids {
         guard.persist_session(id);
+        crate::sync::session_touched(app, &guard, id, &crate::sync::Origin::Agent);
     }
     drop(guard);
     let _ = app.emit(
@@ -951,6 +969,7 @@ fn notice(app: &AppHandle, session: &mut crate::state::ManagedSession, id: u64, 
     let event = HarnessEvent::Error { message };
     let dto = EventDto::from(&event);
     session.transcript.apply(event);
+    crate::sync::harness_event(app, id, &dto);
     let _ = app.emit(
         "session-event",
         SessionEventPayload {
@@ -1072,6 +1091,7 @@ pub fn send_text(
         session.transcript.push_user(text.clone());
         session.last_user_text = Some(text.clone());
         session.last_user_images = images.clone();
+        session.last_activity_ms = unix_now_ms();
         dispatch(session, SessionCommand::Send(text, images));
     }
     state.persist_session(id);

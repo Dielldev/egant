@@ -24,10 +24,10 @@ import {
   toolWriteContent,
   truncate,
 } from "../lib/transcript";
+import { languageFor } from "../lib/language";
 import type { Entry } from "../lib/types";
 import { AddedLinesView, DiffView } from "./DiffView";
 import { FileIcon } from "./FileIcon";
-import { languageFor } from "./FileView";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -377,15 +377,15 @@ function ReadBody({ entry }: { entry: ToolEntry }) {
   const base = basename(filePath) || "file";
   const raw = entry.output ?? "";
   const { numbers, text } = useMemo(
-    () => splitReadLines(truncate(raw, 4000)),
-    [raw],
+    () => splitReadLines(truncate(raw, 4000, entry.outputBytes)),
+    [raw, entry.outputBytes],
   );
   if (entry.isError) {
     return (
       <div className="flex flex-col gap-1.5">
         <BodyHeader path={filePath} />
         <div className="max-h-[320px] overflow-y-auto rounded-lg bg-[rgba(0,0,0,0.15)] p-2 font-mono text-[11px] leading-5 whitespace-pre-wrap text-[var(--danger)]">
-          {truncate(raw, 4000)}
+          {truncate(raw, 4000, entry.outputBytes)}
         </div>
       </div>
     );
@@ -518,7 +518,7 @@ function commandSnippet(entry: ToolEntry): string {
  * drops down exactly the way a command card always has. */
 function CommandBody({ entry }: { entry: ToolEntry }) {
   const command = toolCommand(entry.input);
-  const output = entry.output == null ? null : truncate(entry.output, 4000);
+  const output = entry.output == null ? null : truncate(entry.output, 4000, entry.outputBytes);
   const empty = output != null && output.trim() === "";
   return (
     <>
@@ -725,7 +725,7 @@ function GenericBody({ entry }: { entry: ToolEntry }) {
           <span className="flex-1" />
         )}
         {entry.output != null && (
-          <CopyButton text={truncate(entry.output, 4000)} title="Copy output" />
+          <CopyButton text={truncate(entry.output, 4000, entry.outputBytes)} title="Copy output" />
         )}
       </div>
       {entry.output != null && (
@@ -734,7 +734,7 @@ function GenericBody({ entry }: { entry: ToolEntry }) {
             entry.isError ? "text-[var(--danger)]" : "text-[var(--faint)]"
           }`}
         >
-          {truncate(entry.output, 4000)}
+          {truncate(entry.output, 4000, entry.outputBytes)}
         </div>
       )}
     </div>

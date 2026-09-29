@@ -97,6 +97,10 @@ pub struct TranscriptDto {
     pub total_cost_usd: f64,
     pub last_turn_ms: u64,
     pub usage: SessionUsageDto,
+    /// Answers to the decision prompts in this transcript, keyed by the
+    /// prompt's id. Kept by the backend rather than one window, so every
+    /// device sees a prompt answered wherever it was answered.
+    pub decision_responses: std::collections::BTreeMap<String, Value>,
 }
 
 /// What a session has spent, for the meter under the composer. Mirrors
@@ -155,11 +159,26 @@ impl From<&egant_harness::TurnUsage> for TurnUsageDto {
     }
 }
 
-impl From<&Transcript> for TranscriptDto {
-    fn from(transcript: &Transcript) -> Self {
-        let pending_list: Vec<PendingDto> = transcript
-            .pending_permissions
-            .iter()
+/// Every outstanding permission request, in arrival order.
+pub fn pending_list(transcript: &Transcript) -> Vec<PendingDto> {
+    let pending_list: Vec<PendingDto> = transcript
+        .pending_permissions
+        .iter()
+        .map(|pending| PendingDto {
+            request_id: pending.request_id.clone(),
+            tool_name: pending.tool_name.clone(),
+            input: pending.input.clone(),
+            patterns: pending.patterns.clone(),
+            always_patterns: pending.always_patterns.clone(),
+        })
+        .collect();
+    // Backfill from the legacy single slot when the list is empty (a
+    // transcript restored from disk written before the table existed
+    // can't have one, but a live one always keeps both in step).
+    if pending_list.is_empty() {
+        transcript
+            .pending_permission
+            .as_ref()
             .map(|pending| PendingDto {
                 request_id: pending.request_id.clone(),
                 tool_name: pending.tool_name.clone(),
@@ -167,26 +186,16 @@ impl From<&Transcript> for TranscriptDto {
                 patterns: pending.patterns.clone(),
                 always_patterns: pending.always_patterns.clone(),
             })
-            .collect();
-        // Backfill from the legacy single slot when the list is empty (a
-        // transcript restored from disk written before the table existed
-        // can't have one, but a live one always keeps both in step).
-        let pending_list = if pending_list.is_empty() {
-            transcript
-                .pending_permission
-                .as_ref()
-                .map(|pending| PendingDto {
-                    request_id: pending.request_id.clone(),
-                    tool_name: pending.tool_name.clone(),
-                    input: pending.input.clone(),
-                    patterns: pending.patterns.clone(),
-                    always_patterns: pending.always_patterns.clone(),
-                })
-                .into_iter()
-                .collect()
-        } else {
-            pending_list
-        };
+            .into_iter()
+            .collect()
+    } else {
+        pending_list
+    }
+}
+
+impl From<&Transcript> for TranscriptDto {
+    fn from(transcript: &Transcript) -> Self {
+        let pending_list = pending_list(transcript);
         Self {
             entries: transcript.entries.iter().map(EntryDto::from).collect(),
             state: turn_state_name(transcript.state),
@@ -198,6 +207,7 @@ impl From<&Transcript> for TranscriptDto {
             total_cost_usd: transcript.total_cost_usd,
             last_turn_ms: transcript.last_turn_ms,
             usage: SessionUsageDto::from(&transcript.usage),
+            decision_responses: Default::default(),
         }
     }
 }

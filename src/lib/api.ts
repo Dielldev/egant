@@ -16,6 +16,7 @@ import type {
   ConflictBlock,
   ConflictSide,
   ConflictStatus,
+  DecisionResponse,
   DiffHunk,
   DiffScope,
   FileContent,
@@ -23,6 +24,8 @@ import type {
   GhStatus,
   GitChange,
   HistoryPage,
+  MobilePairing,
+  MobileStatus,
   PrDetail,
   PullRequest,
   RepoRef,
@@ -135,6 +138,41 @@ export const api = {
     ),
   getTranscript: (id: number) =>
     traced("get_transcript", `id=${id}`, () => invoke<TranscriptDto>("get_transcript", { id })),
+  /** Records a decision answer and sends `text` (the reply the agent reads)
+   * as the next turn. Resolves to the session's new title when the reply
+   * named it. An answer a paired phone already gave wins: nothing is sent. */
+  answerDecision: (id: number, decisionId: string, response: DecisionResponse, text: string) =>
+    traced("answer_decision", `id=${id} decision=${decisionId}`, () =>
+      invoke<string | null>("answer_decision", { id, decisionId, response, text }),
+    ),
+  /** Hands the backend decision answers this window kept before the backend
+   * did. Nothing is sent to any agent. */
+  importDecisionResponses: (
+    answers: { sessionId: number; decisionId: string; response: DecisionResponse }[],
+  ) =>
+    traced("import_decision_responses", `${answers.length} answers`, () =>
+      invoke<number>("import_decision_responses", { answers }),
+    ),
+
+  // Phone access — Settings → Devices. See `src-tauri/src/mobile`.
+  /** `refresh` re-asks Tailscale rather than reusing the last few seconds. */
+  mobileStatus: (refresh = false) =>
+    traced("mobile_status", `refresh=${refresh}`, () =>
+      invoke<MobileStatus>("mobile_status", { refresh }),
+    ),
+  mobileSetEnabled: (enabled: boolean) =>
+    traced("mobile_set_enabled", `enabled=${enabled}`, () =>
+      invoke<MobileStatus>("mobile_set_enabled", { enabled }),
+    ),
+  /** Retries `tailscale serve`, after Tailscale was installed or HTTPS enabled. */
+  mobileSetupTailscale: () =>
+    traced("mobile_setup_tailscale", "", () => invoke<MobileStatus>("mobile_setup_tailscale")),
+  mobileCreatePairing: () =>
+    traced("mobile_create_pairing", "", () => invoke<MobilePairing>("mobile_create_pairing")),
+  mobileRevokeDevice: (id: string) =>
+    traced("mobile_revoke_device", `id=${id}`, () =>
+      invoke<MobileStatus>("mobile_revoke_device", { id }),
+    ),
 
   getSettings: () => traced("get_settings", "", () => invoke<SettingsState>("get_settings")),
   setWallpaper: (path: string | null) =>

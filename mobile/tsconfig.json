@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // `@egant/*` is the desktop app's own source: the phone draws the same
+    // transcript with the same fold and the same components.
+    "paths": {
+      "@egant/*": ["../src/*"]
+    }
+  },
+  "include": ["src"]
+}

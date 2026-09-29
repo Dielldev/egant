@@ -1,5 +1,4 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import hljs from "highlight.js/lib/common";
 import { Lock, RefreshCw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
@@ -12,58 +11,6 @@ import type { CodeEditorHandle } from "./CodeEditor";
 import { FileIcon } from "./FileIcon";
 import { Markdown } from "./Markdown";
 import { useFilesSettings } from "./SettingsKit";
-
-/** Extension to highlight.js language. Only the families the common bundle
- * actually registers — anything else falls through to plain text rather than
- * to an auto-detect guess that gets it wrong. */
-const LANGUAGE: Record<string, string> = {
-  ts: "typescript",
-  mts: "typescript",
-  cts: "typescript",
-  tsx: "typescript",
-  js: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  jsx: "javascript",
-  rs: "rust",
-  json: "json",
-  jsonc: "json",
-  md: "markdown",
-  mdx: "markdown",
-  markdown: "markdown",
-  css: "css",
-  scss: "scss",
-  less: "less",
-  html: "xml",
-  htm: "xml",
-  xml: "xml",
-  svg: "xml",
-  vue: "xml",
-  sh: "bash",
-  bash: "bash",
-  zsh: "bash",
-  py: "python",
-  go: "go",
-  rb: "ruby",
-  java: "java",
-  c: "c",
-  h: "c",
-  cpp: "cpp",
-  hpp: "cpp",
-  cs: "csharp",
-  php: "php",
-  swift: "swift",
-  kt: "kotlin",
-  sql: "sql",
-  yaml: "yaml",
-  yml: "yaml",
-  toml: "ini",
-  ini: "ini",
-  cfg: "ini",
-  conf: "ini",
-  diff: "diff",
-  patch: "diff",
-};
 
 const IMAGE_EXTENSIONS = new Set([
   "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif", "icns",
@@ -110,16 +57,6 @@ export function PreviewPane({ text, kind }: { text: string; kind: "markdown" | "
       </div>
     </div>
   );
-}
-
-/** The highlight.js language for a filename, or `null` when the pack has no
- * grammar for it — shared with the diff viewer, which highlights the same
- * languages a line at a time. */
-export function languageFor(name: string): string | null {
-  const dot = name.toLowerCase().lastIndexOf(".");
-  if (dot < 0) return null;
-  const language = LANGUAGE[name.toLowerCase().slice(dot + 1)];
-  return language && hljs.getLanguage(language) ? language : null;
 }
 
 function sizeLabel(bytes: number): string {

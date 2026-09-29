@@ -1,0 +1,59 @@
+/* The desktop's own stylesheet — palette, type, the composer's glass, the
+ * status line's shimmer, the code colours — so the phone reads as the same
+ * app. Everything below only adapts it to a phone. */
+@import "../../src/index.css";
+
+/* The shared components live in the desktop's tree; their classes have to be
+ * generated too. */
+@source "../../src/components";
+@source "../../src/lib";
+@source "./";
+
+html,
+body {
+  overscroll-behavior: none;
+}
+
+body {
+  /* The desktop body is transparent over a frosted window; a phone has no
+   * window behind it. */
+  background: var(--stage);
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+#root {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
+  height: var(--app-height, 100dvh);
+  overflow: hidden;
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom), 6px);
+}
+
+/* iOS zooms the whole page into any field smaller than 16px the moment it
+ * takes focus — the decision card's "Something else…" field included. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* No hover on a touchscreen: the copy buttons the desktop reveals on hover
+ * stay visible instead. */
+@media (hover: none) {
+  .group .group-hover\:opacity-100 {
+    opacity: 1;
+  }
+}

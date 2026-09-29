@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { languageFor } from "../lib/language";
 import { modShortcut } from "../lib/platform";
 import type { DiffHunk, DiffScope, GitChange, RepoStatus } from "../lib/types";
 import type { DiffScopeKind } from "../store";
@@ -40,7 +41,6 @@ import { ConflictToolbar } from "./ConflictResolution";
 import type { DiffStyle } from "./DiffHunks";
 import { DiffHunks } from "./DiffHunks";
 import { FileIcon } from "./FileIcon";
-import { languageFor } from "./FileView";
 import { PullRequests } from "./PullRequests";
 
 /** Which section of the panel a row belongs to. `disk` is the working tree

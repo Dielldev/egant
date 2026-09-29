@@ -70,6 +70,9 @@ export type Entry =
       input: unknown;
       output?: string | null;
       isError: boolean;
+      /** The output's real size, when what arrived was cut down to what a
+       * card shows (the phone app's transcripts). Absent on the desktop. */
+      outputBytes?: number;
     }
   | { kind: "notice"; text: string; isError: boolean }
   /** An interactive prompt the agent raised inline — never sent by the
@@ -102,6 +105,9 @@ export interface TranscriptDto {
   totalCostUsd: number;
   lastTurnMs: number;
   usage: SessionUsage;
+  /** Answers to this transcript's decision prompts, keyed by prompt id. Kept
+   * by the backend so every device agrees on which prompts are settled. */
+  decisionResponses?: Record<string, DecisionResponse>;
 }
 
 /** What one turn put through the model. Mirrors the Rust `TurnUsage`. */
@@ -151,7 +157,9 @@ export type HarnessEvent =
   | { type: "thinking_delta"; text: string }
   | { type: "assistant_message"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; id: string; output: string; is_error: boolean }
+  /** `bytes` is set when `output` was cut down in transit (the phone's
+   * stream): the output's real size. */
+  | { type: "tool_result"; id: string; output: string; is_error: boolean; bytes?: number }
   | {
       type: "permission_request";
       request_id: string;
@@ -179,6 +187,31 @@ export interface SessionEventPayload {
   sessionId: number;
   event: HarnessEvent;
 }
+
+/** Who caused a synced change: `desktop`, `client:<id>` for one page load of
+ * a paired phone, or `null` for the agent itself. */
+export type SyncOrigin = string | null;
+
+/** One change on the numbered stream every client follows (`src-tauri/src/
+ * sync.rs`). The window receives the kinds it does not already learn through
+ * `session-event` as `session-sync` — a message sent from a paired phone, a
+ * permission answered there — and the phone reads every kind, harness events
+ * included, from its event stream. */
+export type SyncEnvelope = {
+  seq: number;
+  ts: number;
+  sessionId: number | null;
+  origin: SyncOrigin;
+} & (
+  | { type: "harness"; payload: HarnessEvent }
+  | { type: "user_message"; payload: { text: string } }
+  | { type: "permissions"; payload: { state: TurnState; pending: PendingPermission[] } }
+  | { type: "decision"; payload: { decisionId: string; response: DecisionResponse } }
+  | { type: "session"; payload: unknown }
+  | { type: "session_removed"; payload: Record<string, never> }
+  | { type: "interrupted"; payload: Record<string, never> }
+  | { type: "transcript_reset"; payload: Record<string, never> }
+);
 
 /** The `worktree-renamed` event: a session's first turn said what it is
  * about, and the worktree at `path` moved off its placeholder branch
@@ -665,6 +698,58 @@ export interface BrowserNav {
   label: string;
   url: string;
   loading: boolean;
+}
+
+/** What Settings → Devices shows about Tailscale (`mobile_status`). */
+export interface TailscaleStatus {
+  installed: boolean;
+  /** The daemon's own word for its state: `Running`, `Stopped`, `NeedsLogin`… */
+  backendState: string | null;
+  running: boolean;
+  /** This Mac on the tailnet, e.g. `diells-macbook-air.tail1234.ts.net`. */
+  dnsName: string | null;
+  /** Whether the tailnet issues HTTPS certificates. */
+  httpsEnabled: boolean;
+  /** `tailscale serve` already sends egant's HTTPS port to egant. */
+  serving: boolean;
+  /** Another `tailscale serve` entry holds the port. */
+  portConflict: boolean;
+  error: string | null;
+}
+
+/** A phone paired with this Mac. */
+export interface MobileDevice {
+  id: string;
+  name: string;
+  createdMs: number;
+  lastSeenMs: number;
+  /** Has an event stream open right now. */
+  connected: boolean;
+}
+
+/** Phone access, as Settings → Devices shows it. */
+export interface MobileStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  error: string | null;
+  tailscale: TailscaleStatus;
+  /** Where a phone reaches egant, once `tailscale serve` is up. */
+  url: string | null;
+  /** The phone app on this Mac, for trying it in a desktop browser. */
+  localUrl: string;
+  serveCommand: string;
+  devices: MobileDevice[];
+}
+
+/** A pairing code and the QR code that carries it (`mobile_create_pairing`). */
+export interface MobilePairing {
+  /** `ABCDE-FGHJK`, for typing into a phone that can't scan. */
+  code: string;
+  url: string | null;
+  localUrl: string;
+  qrSvg: string | null;
+  expiresAtMs: number;
 }
 
 export interface WindowState {

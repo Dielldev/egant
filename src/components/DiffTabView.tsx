@@ -2,12 +2,13 @@ import { AlignJustify, Columns2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { api } from "../lib/api";
+import { languageFor } from "../lib/language";
 import type { DiffHunk } from "../lib/types";
 import type { StageTab } from "../store";
 import { useEgant } from "../store";
 import type { DiffStyle } from "./DiffHunks";
 import { DiffHunks } from "./DiffHunks";
-import { isImage, languageFor, previewKind, PreviewPane } from "./FileView";
+import { isImage, previewKind, PreviewPane } from "./FileView";
 import { FileIcon } from "./FileIcon";
 import { useEditorFontSize } from "./SettingsKit";
 

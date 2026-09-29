@@ -20,6 +20,7 @@
 
 use egant_harness::{AgentId, PermissionMode, Transcript};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::settings::config_dir;
@@ -134,6 +135,16 @@ pub struct PersistedMeta {
 pub struct PersistedSession {
     pub meta: PersistedMeta,
     pub transcript: Transcript,
+    /// Answers to the transcript's decision prompts, keyed by prompt id.
+    /// `#[serde(default)]` so sessions written before the backend kept them
+    /// still load — with none, which is what they had.
+    #[serde(default)]
+    pub decisions: BTreeMap<String, serde_json::Value>,
+    /// When the file was last written, read back from the filesystem at
+    /// load: the closest thing a restored session has to a last-activity
+    /// time. Never written into the file itself.
+    #[serde(skip)]
+    pub modified_ms: u64,
 }
 
 fn sessions_dir() -> Option<PathBuf> {
@@ -151,13 +162,19 @@ fn session_path(id: u64) -> Option<PathBuf> {
 /// also being followed shortly by a coarser event that saves it anyway, and
 /// if it is, losing the last few in-flight words is a fair trade against
 /// disk I/O on every token).
-pub fn save_session(meta: &PersistedMeta, transcript: &Transcript) {
+pub fn save_session(
+    meta: &PersistedMeta,
+    transcript: &Transcript,
+    decisions: &BTreeMap<String, serde_json::Value>,
+) {
     let Some(path) = session_path(meta.id) else {
         return;
     };
     let record = PersistedSession {
         meta: meta.clone(),
         transcript: transcript.clone(),
+        decisions: decisions.clone(),
+        modified_ms: 0,
     };
     match serde_json::to_string(&record) {
         Ok(text) => {
@@ -200,7 +217,15 @@ pub fn load_sessions() -> Vec<PersistedSession> {
             let path = entry.path();
             let text = std::fs::read_to_string(&path).ok()?;
             match serde_json::from_str::<PersistedSession>(&text) {
-                Ok(session) => Some(session),
+                Ok(mut session) => {
+                    session.modified_ms = entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |since| since.as_millis() as u64);
+                    Some(session)
+                }
                 Err(error) => {
                     log::warn!("ignoring unreadable session at {}: {error}", path.display());
                     None
@@ -271,6 +296,8 @@ mod tests {
         let text = serde_json::to_string(&PersistedSession {
             meta: meta.clone(),
             transcript: transcript.clone(),
+            decisions: BTreeMap::new(),
+            modified_ms: 0,
         })
         .expect("serializes");
         let back: PersistedSession = serde_json::from_str(&text).expect("deserializes");
@@ -304,6 +331,8 @@ mod tests {
         let mut value = serde_json::to_value(&PersistedSession {
             meta,
             transcript: Transcript::new(),
+            decisions: BTreeMap::new(),
+            modified_ms: 0,
         })
         .expect("serializes");
         // Exactly what an older egant wrote: the key simply isn't there.
