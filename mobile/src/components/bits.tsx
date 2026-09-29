@@ -1,4 +1,4 @@
-import { AGENT_ACCENT, AGENT_PROVIDER, fallbackName } from "@egant/lib/agents";
+import { AGENT_PROVIDER, fallbackName } from "@egant/lib/agents";
 import { elapsedLabel, statusVerb } from "@egant/lib/transcript";
 import type { TurnState } from "@egant/lib/types";
 import { LogoLoader } from "@egant/components/Logo";
@@ -34,13 +34,9 @@ export function StatusLine({
   );
 }
 
-/** The agent's mark, in its accent colour, as the desktop sidebar draws it —
- * except Codex's, a light grey that vanishes on a light palette, which
- * follows the text colour instead. */
+/** The agent's mark, in the text colour around it — no brand colours. */
 export function AgentGlyph({ agent, size = 14 }: { agent: string; size?: number }) {
-  const color =
-    agent === "codex" ? "color-mix(in srgb, var(--ink) 80%, transparent)" : AGENT_ACCENT[agent];
-  return <ProviderGlyph provider={AGENT_PROVIDER[agent] ?? agent} size={size} color={color} />;
+  return <ProviderGlyph provider={AGENT_PROVIDER[agent] ?? agent} size={size} />;
 }
 
 export function agentLabel(agent: string, kind: "chat" | "cli"): string {

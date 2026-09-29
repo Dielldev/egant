@@ -2,7 +2,7 @@ import { AlertTriangle, RotateCw, Search, ShieldOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { SHORT_NAMES, fallbackName, variantLabel } from "@egant/lib/agents";
 import { MODE_INFO, NUMBERED_MODES } from "@egant/lib/modes";
-import { modeLabel, prettyClaudeModelId, projectColor } from "@egant/lib/transcript";
+import { modeLabel, prettyClaudeModelId } from "@egant/lib/transcript";
 import { formatContext } from "@egant/lib/types";
 import type { AgentModel } from "@egant/lib/types";
 import type { MobileSession } from "../api";
@@ -390,12 +390,11 @@ function chatsLabel(n: number): string {
   return n === 1 ? "1 chat" : `${n} chats`;
 }
 
-export function ProjectDot({ hue, size = 10 }: { hue: number; size?: number }) {
+export function ProjectDot({ size = 10 }: { hue?: number; size?: number }) {
   return (
     <span
-      className="inline-block shrink-0 rounded-full"
-      style={{ width: size, height: size, background: projectColor(hue) }}
+      className="inline-block shrink-0 rounded-full bg-[var(--faint)]"
+      style={{ width: size, height: size }}
     />
   );
 }
-

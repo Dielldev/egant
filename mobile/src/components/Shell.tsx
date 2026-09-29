@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { TouchEvent } from "react";
 import { useMobile } from "../store";
-import { Backdrop } from "./Backdrop";
 import { Conversation, StartingChat } from "./Conversation";
 import { Drawer } from "./Drawer";
 import { Home } from "./Home";
@@ -13,13 +12,9 @@ import { Toast } from "./Toast";
  * sideways scroll, say). */
 const EDGE_PX = 28;
 
-function drawerWidth(): number {
-  return Math.round(Math.min(window.innerWidth * 0.86, 360));
-}
-
-/** The whole app once it is connected: the page (a new chat or an open one)
- * over the chat drawer, which a tap on ☰ or a swipe from the left edge
- * slides the page aside to show — and Settings rising over both. */
+/** The whole app once it is connected: the page (a new chat or an open one),
+ * the chat drawer that a tap on ☰ or a swipe from the left edge slides in
+ * over all of it, and Settings rising over both. */
 export function Shell() {
   const openSession = useMobile((s) => s.openSession);
   const starting = useMobile((s) => s.starting);
@@ -37,13 +32,13 @@ export function Shell() {
     dragRef.current = value;
     setDragState(value);
   };
-  const [width, setWidth] = useState(drawerWidth);
+  const [width, setWidth] = useState(() => window.innerWidth);
   const gesture = useRef<{ x0: number; y0: number; base: number; axis: "x" | "y" | null } | null>(
     null,
   );
 
   useEffect(() => {
-    const onResize = () => setWidth(drawerWidth());
+    const onResize = () => setWidth(window.innerWidth);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -86,50 +81,32 @@ export function Shell() {
   };
 
   const offset = drag ?? (open ? width : 0);
-  const progress = offset / width;
 
   return (
     <div
-      className={`relative h-full overflow-hidden bg-[var(--raised)] ${drag != null ? "dragging" : ""}`}
+      className={`relative h-full overflow-hidden bg-[var(--stage)] ${drag != null ? "dragging" : ""}`}
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
+      <main className="absolute inset-0" aria-hidden={open}>
+        {openSession != null ? (
+          <Conversation id={openSession} onMenu={() => setOpen(true)} needsYou={needsYou} />
+        ) : starting != null ? (
+          <StartingChat starting={starting} onMenu={() => setOpen(true)} />
+        ) : (
+          <Home onMenu={() => setOpen(true)} needsYou={needsYou} />
+        )}
+      </main>
+
       <aside
-        className="drawer-slide absolute inset-y-0 left-0"
-        style={{ width, transform: `translateX(${(progress - 1) * width * 0.25}px)` }}
+        className="drawer-slide absolute inset-0 z-40"
+        style={{ transform: `translateX(${offset - width}px)` }}
         aria-hidden={!open}
       >
         <Drawer onClose={() => setOpen(false)} />
       </aside>
-
-      <main
-        className="drawer-slide absolute inset-0 overflow-hidden bg-[var(--stage)]"
-        style={{
-          transform: `translateX(${offset}px)`,
-          borderRadius: offset > 0 ? 28 : 0,
-          boxShadow: offset > 0 ? "-12px 0 40px rgba(0,0,0,0.35)" : undefined,
-        }}
-      >
-        <Backdrop visible={openSession == null && starting == null} />
-        <div className="relative h-full">
-          {openSession != null ? (
-            <Conversation id={openSession} onMenu={() => setOpen(true)} needsYou={needsYou} />
-          ) : starting != null ? (
-            <StartingChat starting={starting} onMenu={() => setOpen(true)} />
-          ) : (
-            <Home onMenu={() => setOpen(true)} needsYou={needsYou} />
-          )}
-        </div>
-        {offset > 0 && (
-          <div
-            className="absolute inset-0 z-40 bg-black"
-            style={{ opacity: 0.3 * progress }}
-            onClick={() => setOpen(false)}
-          />
-        )}
-      </main>
 
       {settingsOpen && <SettingsScreen />}
       <Toast />

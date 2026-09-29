@@ -8,8 +8,8 @@ import { AgentGlyph, Mark, shortAgo } from "./bits";
 import { InstallHint } from "./InstallHint";
 import { ProjectDot } from "./Pickers";
 
-/** Every chat on the Mac, the way ChatGPT's side panel lists them: search and
- * a new chat up top, the ones blocked on an answer first, then the rest by
+/** Every chat on the Mac, full screen over the page: close, search and a new
+ * chat up top, the ones blocked on an answer first, then the rest by
  * when they were last active — and this Mac, with Settings, at the foot. */
 export function Drawer({ onClose }: { onClose: () => void }) {
   const sessions = useMobile((s) => s.sessions);
@@ -40,10 +40,18 @@ export function Drawer({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-[var(--raised)]">
+    <div className="flex h-full flex-col bg-[var(--stage)]">
       <div className="safe-top shrink-0">
-        <div className="flex items-center gap-2 px-3 pt-2 pb-2">
-          <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full bg-[var(--raised-2)] px-3.5">
+        <div className="flex items-center gap-1.5 px-2 pt-2 pb-2">
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="press flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[var(--ink)] active:bg-[var(--hover)]"
+          >
+            <X size={22} strokeWidth={2} />
+          </button>
+          <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full bg-[var(--raised)] px-3.5">
             <Search size={16} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
             <input
               value={query}
@@ -134,7 +142,7 @@ export function Drawer({ onClose }: { onClose: () => void }) {
           <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--raised-2)] text-[var(--ink)]">
             <Monitor size={17} strokeWidth={2} />
             <span
-              className={`absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-[var(--raised)] ${
+              className={`absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-[var(--stage)] ${
                 connection === "live"
                   ? "bg-emerald-400"
                   : connection === "connecting"

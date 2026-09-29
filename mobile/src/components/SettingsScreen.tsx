@@ -1,36 +1,29 @@
 import {
-  Ban,
   ChevronRight,
   FolderOpen,
-  ImagePlus,
   LogOut,
   Monitor,
-  Palette,
   Plus,
   Share,
   Shield,
-  Sparkles,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { fallbackName, variantLabel } from "@egant/lib/agents";
-import { ACCENTS, DARK_THEMES, LIGHT_THEMES } from "@egant/lib/themes";
-import type { ThemeOption } from "@egant/lib/themes";
 import { modeLabel } from "@egant/lib/transcript";
-import { wallpaperUrl } from "../api";
-import { BUILT_IN_BACKGROUNDS, accentOf, resolvedScheme, usePrefs } from "../prefs";
-import type { Background, Scheme } from "../prefs";
+import { usePrefs } from "../prefs";
+import type { Scheme } from "../prefs";
 import { pickAgent, pickProject, useMobile } from "../store";
 import { AgentGlyph } from "./bits";
 import { isIos, isStandalone } from "./InstallHint";
 import { ModeSheet, ModelSheet, ProjectSheet, modelName } from "./Pickers";
-import { Choice, Group, Sheet } from "./Sheet";
+import { Group, Sheet } from "./Sheet";
 
-type SheetName = "model" | "mode" | "project" | "theme" | "forget" | "install" | null;
+type SheetName = "model" | "mode" | "project" | "forget" | "install" | null;
 
 /** This phone's settings, as a page that rises over the app: the Mac it is
- * paired with, what a new chat starts with, how the app looks, and how chats
+ * paired with, what a new chat starts with, light or dark, and how chats
  * read. Everything but forgetting the Mac stays on the phone. */
 export function SettingsScreen() {
   const close = useMobile((s) => s.closeSettings);
@@ -53,10 +46,6 @@ export function SettingsScreen() {
   const project = pickProject(prefs.project, projects, sessions);
   const model = modelName(agent, catalogs[agent], prefs.models[agent] || null);
   const variant = prefs.variants[agent];
-  const scheme = resolvedScheme(prefs.scheme);
-  const theme = [...DARK_THEMES, ...LIGHT_THEMES].find(
-    (t) => t.value === (scheme === "light" ? prefs.lightTheme : prefs.darkTheme),
-  );
 
   return (
     <div className="page-in fixed inset-0 z-50 flex flex-col bg-[var(--stage)]">
@@ -131,50 +120,7 @@ export function SettingsScreen() {
                 onChange={(value) => prefs.set({ scheme: value })}
               />
             </div>
-            <Row
-              icon={<Palette size={18} strokeWidth={2} />}
-              label="Theme"
-              value={theme?.label ?? "Default"}
-              trailingSwatch={theme}
-              onClick={() => setSheet("theme")}
-            />
-            <div className="border-t border-[var(--hairline)] px-4 pt-3 pb-3.5">
-              <div className="mb-3 flex items-center gap-3">
-                <Sparkles size={18} strokeWidth={2} className="text-[var(--muted)]" />
-                <span className="flex-1 text-[16px] text-[var(--ink)]">Accent color</span>
-                <span className="text-[15px] text-[var(--muted)]">
-                  {ACCENTS.find((a) => a.value === prefs.accent)?.label ?? "Custom"}
-                </span>
-              </div>
-              <div className="no-scrollbar -mx-1 flex gap-2.5 overflow-x-auto px-1 py-1">
-                {ACCENTS.map((accent) => {
-                  const color = accent.value === "default" ? accentOf({ ...prefs, accent: "default" }) : accent.value;
-                  const active = prefs.accent === accent.value;
-                  return (
-                    <button
-                      key={accent.value}
-                      type="button"
-                      aria-label={accent.label}
-                      onClick={() => prefs.set({ accent: accent.value })}
-                      className="press relative h-8 w-8 shrink-0 rounded-full"
-                      style={{
-                        background: color,
-                        boxShadow: active ? `0 0 0 2px var(--raised), 0 0 0 4px ${color}` : undefined,
-                      }}
-                    >
-                      {accent.value === "default" && (
-                        <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-black/60">
-                          A
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
           </Group>
-
-          <BackgroundGroup />
 
           <Group label="Chats">
             <Toggle
@@ -223,7 +169,6 @@ export function SettingsScreen() {
         onPick={(mode) => prefs.set({ mode })}
       />
       <ProjectSheet open={sheet === "project"} onClose={() => setSheet(null)} />
-      <ThemeSheet open={sheet === "theme"} onClose={() => setSheet(null)} />
       <Sheet open={sheet === "install"} onClose={() => setSheet(null)} title="Add to Home Screen">
         <div className="px-3 pb-4 text-[15px] leading-relaxed text-[var(--muted)]">
           {isIos() ? (
@@ -272,14 +217,12 @@ function Row({
   label,
   value,
   onClick,
-  trailingSwatch,
   plain,
 }: {
   icon: ReactNode;
   label: ReactNode;
   value?: ReactNode;
   onClick: () => void;
-  trailingSwatch?: ThemeOption;
   /** No chevron: the row does one thing, it doesn't open anything. */
   plain?: boolean;
 }) {
@@ -292,7 +235,6 @@ function Row({
       <span className="flex w-5 shrink-0 items-center justify-center text-[var(--muted)]">{icon}</span>
       <span className="shrink-0 text-[16px] text-[var(--ink)]">{label}</span>
       <span className="ml-auto flex min-w-0 items-center gap-2 pl-3">
-        {trailingSwatch && <Swatch theme={trailingSwatch} />}
         {value != null && <span className="min-w-0 truncate text-[15px] text-[var(--muted)]">{value}</span>}
         {!plain && <ChevronRight size={17} strokeWidth={2.2} className="shrink-0 text-[var(--faint)]" />}
       </span>
@@ -354,160 +296,5 @@ function Segmented<T extends string>({
         </button>
       ))}
     </div>
-  );
-}
-
-function Swatch({ theme }: { theme: ThemeOption }) {
-  return (
-    <span
-      className="inline-flex h-5 w-5 shrink-0 overflow-hidden rounded-full border border-[var(--hairline)]"
-      style={{ background: `linear-gradient(135deg, ${theme.swatch[0]} 50%, ${theme.swatch[1]} 50%)` }}
-    />
-  );
-}
-
-/** The desktop's palettes: the dark set and the light set, each used when
- * the phone is in that scheme. */
-function ThemeSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const darkTheme = usePrefs((s) => s.darkTheme);
-  const lightTheme = usePrefs((s) => s.lightTheme);
-  const scheme = usePrefs((s) => resolvedScheme(s.scheme));
-  const set = usePrefs((s) => s.set);
-  const dark = (
-    <Group label="Dark" key="dark">
-      {DARK_THEMES.map((theme) => (
-        <Choice
-          key={theme.value}
-          leading={<Swatch theme={theme} />}
-          label={theme.label}
-          selected={theme.value === darkTheme}
-          onClick={() => set({ darkTheme: theme.value })}
-        />
-      ))}
-    </Group>
-  );
-  const light = (
-    <Group label="Light" key="light">
-      {LIGHT_THEMES.map((theme) => (
-        <Choice
-          key={theme.value}
-          leading={<Swatch theme={theme} />}
-          label={theme.label}
-          selected={theme.value === lightTheme}
-          onClick={() => set({ lightTheme: theme.value })}
-        />
-      ))}
-    </Group>
-  );
-  return (
-    <Sheet open={open} onClose={onClose} title="Theme" tall>
-      {scheme === "light" ? [light, dark] : [dark, light]}
-    </Sheet>
-  );
-}
-
-/** The new-chat screen's picture: the Mac's wallpaper, one of the built-in
- * ones, a photo from this phone, or none — and how far it is darkened. */
-function BackgroundGroup() {
-  const background = usePrefs((s) => s.background);
-  const photo = usePrefs((s) => s.photo);
-  const dim = usePrefs((s) => s.dim);
-  const set = usePrefs((s) => s.set);
-  const setPhoto = usePrefs((s) => s.setPhoto);
-  const showToast = useMobile((s) => s.showToast);
-  const wallpaper = useMobile((s) => s.wallpaper);
-  const machine = useMobile((s) => s.machineName);
-  const file = useRef<HTMLInputElement>(null);
-
-  const options: { id: Background; label: string; src: string | null; disabled?: boolean }[] = [
-    { id: "mac", label: "Mac", src: wallpaper ? wallpaperUrl(wallpaper) : null, disabled: !wallpaper },
-    ...BUILT_IN_BACKGROUNDS.map((b) => ({ id: b.id as Background, label: b.label, src: b.src as string })),
-    { id: "photo", label: "Photo", src: photo },
-    { id: "none", label: "None", src: null },
-  ];
-  // "Mac" with no wallpaper there shows the first built-in instead.
-  const effective = background === "mac" && !wallpaper ? "dusk" : background;
-
-  return (
-    <Group
-      label="Background"
-      note={
-        wallpaper
-          ? `“Mac” is the wallpaper egant shows on ${machine || "your Mac"}.`
-          : `${machine || "Your Mac"} has no wallpaper set in egant, so the phone uses Dusk until it does.`
-      }
-    >
-      <div className="no-scrollbar flex gap-2.5 overflow-x-auto px-3 pt-3.5 pb-3">
-        {options.map((option) => {
-          const active = option.id === effective;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              disabled={option.disabled}
-              onClick={() => {
-                if (option.id === "photo" && (!photo || background === "photo")) {
-                  file.current?.click();
-                  return;
-                }
-                set({ background: option.id });
-              }}
-              className="press flex shrink-0 flex-col items-center gap-1.5 disabled:opacity-40"
-            >
-              <span
-                className={`relative flex h-[118px] w-[66px] items-center justify-center overflow-hidden rounded-[14px] bg-[var(--raised-2)] ${
-                  active ? "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--raised)]" : ""
-                }`}
-              >
-                {option.src ? (
-                  <img src={option.src} alt="" className="h-full w-full object-cover" />
-                ) : option.id === "photo" ? (
-                  <ImagePlus size={20} strokeWidth={1.8} className="text-[var(--muted)]" />
-                ) : option.id === "none" ? (
-                  <Ban size={20} strokeWidth={1.8} className="text-[var(--muted)]" />
-                ) : (
-                  <Monitor size={20} strokeWidth={1.8} className="text-[var(--muted)]" />
-                )}
-                {option.id === "photo" && photo && background === "photo" && (
-                  <span className="absolute inset-x-1 bottom-1 rounded-md bg-black/55 py-0.5 text-center text-[10px] font-medium text-white">
-                    Change
-                  </span>
-                )}
-              </span>
-              <span className={`text-[12px] ${active ? "font-semibold text-[var(--ink)]" : "text-[var(--muted)]"}`}>
-                {option.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-      {background !== "none" && (
-        <div className="flex items-center gap-3 border-t border-[var(--hairline)] px-4 py-3.5">
-          <span className="shrink-0 text-[16px] text-[var(--ink)]">Darken</span>
-          <input
-            type="range"
-            min={0}
-            max={0.8}
-            step={0.05}
-            value={dim}
-            onChange={(e) => set({ dim: Number(e.target.value) })}
-            className="range"
-            aria-label="Darken the background"
-          />
-        </div>
-      )}
-      <input
-        ref={file}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => {
-          const picked = e.target.files?.[0];
-          e.target.value = "";
-          if (!picked) return;
-          void setPhoto(picked).catch(() => showToast("That photo couldn't be read."));
-        }}
-      />
-    </Group>
   );
 }

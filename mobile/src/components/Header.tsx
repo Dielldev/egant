@@ -4,8 +4,8 @@ import { SHORT_NAMES, fallbackName, variantLabel } from "@egant/lib/agents";
 import { AgentGlyph } from "./bits";
 
 /** The bar across the top: a button each side and the title between, truly
- * centred. `clear` sits straight on the wallpaper; otherwise it is frosted
- * stage, so a thread scrolls away beneath it. */
+ * centred. `clear` has no bar at all (an empty new chat); otherwise it is
+ * frosted stage, so a thread scrolls away beneath it. */
 export function TopBar({
   clear,
   left,
@@ -36,13 +36,11 @@ export function IconButton({
   label,
   onClick,
   children,
-  clear,
   badge,
 }: {
   label: string;
   onClick: () => void;
   children: ReactNode;
-  clear?: boolean;
   /** A dot in the corner — something in the drawer needs you. */
   badge?: boolean;
 }) {
@@ -51,9 +49,7 @@ export function IconButton({
       type="button"
       aria-label={label}
       onClick={onClick}
-      className={`press relative flex h-11 w-11 items-center justify-center rounded-full ${
-        clear ? "on-image active:bg-white/10" : "text-[var(--ink)] active:bg-[var(--hover)]"
-      }`}
+      className="press relative flex h-11 w-11 items-center justify-center rounded-full text-[var(--ink)] active:bg-[var(--hover)]"
     >
       {children}
       {badge && (
@@ -78,32 +74,28 @@ export function ModelTitle({
   agent,
   model,
   variant,
-  clear,
   onClick,
 }: {
   agent: string;
   model: string;
   variant?: string;
-  clear?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`press flex h-10 min-w-0 items-center gap-2 rounded-full px-3 ${
-        clear ? "on-image active:bg-white/10" : "text-[var(--ink)] active:bg-[var(--hover)]"
-      }`}
+      className="press flex h-10 min-w-0 items-center gap-2 rounded-full px-3 text-[var(--ink)] active:bg-[var(--hover)]"
     >
       <AgentGlyph agent={agent} size={16} />
       <span className="shrink-0 text-[17px] font-semibold tracking-[-0.01em]">
         {SHORT_NAMES[agent] ?? fallbackName(agent)}
       </span>
-      <span className={`min-w-0 truncate text-[16px] ${clear ? "opacity-75" : "text-[var(--muted)]"}`}>
+      <span className="min-w-0 truncate text-[16px] text-[var(--muted)]">
         {model}
         {variant ? ` · ${variantLabel(variant)}` : ""}
       </span>
-      <ChevronDown size={16} strokeWidth={2.4} className={clear ? "shrink-0 opacity-75" : "shrink-0 text-[var(--faint)]"} />
+      <ChevronDown size={16} strokeWidth={2.4} className="shrink-0 text-[var(--faint)]" />
     </button>
   );
 }

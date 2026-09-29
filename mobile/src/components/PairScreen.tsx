@@ -2,7 +2,6 @@ import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useMobile } from "../store";
-import { Backdrop } from "./Backdrop";
 import { Mark } from "./bits";
 
 /** No 0/O or 1/I — the same alphabet the Mac draws codes from. */
@@ -34,12 +33,11 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
 
   return (
     <div className="relative h-full">
-      <Backdrop />
       <div className="safe-top safe-bottom relative z-10 flex h-full flex-col items-center justify-center overflow-y-auto px-6 text-center">
-        <div className="on-image fade-up flex flex-col items-center">
+        <div className="fade-up flex flex-col items-center text-[var(--ink)]">
           <Mark height={30} className="mb-6" />
           <h1 className="text-[28px] leading-9 font-semibold tracking-[-0.02em]">Connect to your Mac</h1>
-          <p className="mt-2.5 max-w-[320px] text-[15px] leading-relaxed opacity-85">
+          <p className="mt-2.5 max-w-[320px] text-[15px] leading-relaxed text-[var(--muted)]">
             On your Mac, open egant → Settings → Devices → <em>Connect a device</em>, and scan the QR
             code with your phone's camera.
           </p>
@@ -77,7 +75,7 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
           )}
         </form>
 
-        <p className="on-image mt-8 max-w-[300px] text-[12.5px] leading-relaxed opacity-70">
+        <p className="mt-8 max-w-[300px] text-[12.5px] leading-relaxed text-[var(--faint)]">
           Your phone talks to your Mac directly, encrypted all the way to it. Only phones paired
           with a code from the Mac get in.
         </p>

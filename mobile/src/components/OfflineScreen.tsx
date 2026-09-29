@@ -1,6 +1,5 @@
 import { Loader2, WifiOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Backdrop } from "./Backdrop";
 
 /** The app opened (from its cache) but the Mac didn't answer at all. It
  * retries on its own, and whenever the phone comes back to the app. */
@@ -45,10 +44,9 @@ export function OfflineScreen({ onRetry }: { onRetry: () => Promise<void> }) {
 
   return (
     <div className="relative h-full">
-      <Backdrop />
       <div className="safe-top safe-bottom relative z-10 flex h-full flex-col items-center justify-center px-7 text-center">
-        <div className="on-image fade-up flex flex-col items-center">
-          <span className="chip-glass mb-5 flex h-16 w-16 items-center justify-center rounded-full">
+        <div className="fade-up flex flex-col items-center text-[var(--ink)]">
+          <span className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--raised)]">
             <WifiOff size={26} strokeWidth={1.8} />
           </span>
           <h1 className="text-[26px] leading-8 font-semibold tracking-[-0.02em]">Can't reach your Mac</h1>
@@ -61,7 +59,7 @@ export function OfflineScreen({ onRetry }: { onRetry: () => Promise<void> }) {
         <button
           type="button"
           onClick={() => void retryNow()}
-          className="press mt-6 flex h-12 items-center gap-2 rounded-full bg-white px-6 text-[15px] font-semibold text-black"
+          className="press mt-6 flex h-12 items-center gap-2 rounded-full bg-[var(--ink)] px-6 text-[15px] font-semibold text-[var(--stage)]"
         >
           {trying && <Loader2 size={16} strokeWidth={2.4} className="animate-spin" />}
           Try again

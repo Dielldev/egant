@@ -37,6 +37,34 @@ body {
   overflow: hidden;
 }
 
+/* Black and white, nothing else: the desktop's palettes with their colour
+ * taken out. Status colours (approval amber, error red) stay — they mean
+ * something. */
+html[data-theme="dark"] {
+  --stage: #000000;
+  --sidebar: rgba(0, 0, 0, 0.94);
+  --ink: #ececec;
+  --muted: #8e8e93;
+  --faint: #5c5c61;
+  --bubble: rgba(255, 255, 255, 0.1);
+  --accent: #ffffff;
+  --busy: #ececec;
+  --code-chip-bg: #ececec;
+  --code-chip-fg: #000000;
+}
+html[data-theme="light"] {
+  --stage: #ffffff;
+  --sidebar: rgba(255, 255, 255, 0.94);
+  --ink: #0d0d0d;
+  --muted: #6e6e73;
+  --faint: #a1a1a6;
+  --bubble: rgba(0, 0, 0, 0.06);
+  --accent: #000000;
+  --busy: #0d0d0d;
+  --code-chip-bg: #0d0d0d;
+  --code-chip-fg: #ffffff;
+}
+
 /* Surfaces the phone adds on top of the desktop's: a raised panel for sheets
  * and grouped settings, and the hairline between rows. */
 :root {
@@ -83,28 +111,12 @@ body {
   transform: scale(0.96);
 }
 
-/* Text over a picture: legible over bright skies too. */
-.on-image {
-  color: #fff;
-  text-shadow:
-    0 1px 12px rgba(0, 0, 0, 0.45),
-    0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
 /* The bar at the top of a conversation: the stage, frosted, so the thread
  * scrolls away beneath it. */
 .bar-glass {
   background: color-mix(in srgb, var(--stage) 78%, transparent);
   backdrop-filter: blur(20px) saturate(1.6);
   -webkit-backdrop-filter: blur(20px) saturate(1.6);
-}
-
-/* Round glass buttons over the wallpaper. */
-.chip-glass {
-  background: rgba(20, 20, 26, 0.32);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(18px) saturate(1.5);
-  -webkit-backdrop-filter: blur(18px) saturate(1.5);
 }
 
 /* Bottom sheets. */
@@ -119,7 +131,7 @@ body {
   transition: opacity 0.32s ease;
 }
 
-/* The chat drawer and the page it pushes aside. */
+/* The chat drawer, sliding in over the whole page. */
 .drawer-slide {
   transition: transform 0.42s var(--ease-ios);
   will-change: transform;
@@ -170,11 +182,6 @@ body {
   animation: toast-in 0.3s var(--ease-ios) backwards;
 }
 
-/* The wallpaper leaving as a chat begins. */
-.backdrop-fade {
-  transition: opacity 0.7s ease;
-}
-
 .no-scrollbar {
   scrollbar-width: none;
 }
@@ -209,33 +216,7 @@ body {
 }
 .ios-switch[aria-checked="true"]::after {
   transform: translateX(20px);
-}
-
-/* The dim slider. */
-.range {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--raised-2);
-  outline: none;
-}
-.range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-.range::-moz-range-thumb {
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: 999px;
-  background: #fff;
+  background: var(--stage);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -243,8 +224,7 @@ body {
   .drawer-slide,
   .page-in,
   .fade-up,
-  .toast-in,
-  .backdrop-fade {
+  .toast-in {
     transition: none !important;
     animation: none !important;
   }
