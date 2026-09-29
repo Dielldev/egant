@@ -13,10 +13,16 @@
 //! file, installs an agent, starts a session or touches git.
 //!
 //! Every request must name a host egant answers to (loopback on its own port,
-//! or this Mac's `*.ts.net` name through `tailscale serve`), which shuts out
-//! DNS-rebinding pages. Every write must carry an `X-Egant-Client` header,
-//! which a cross-site form or image cannot send and a cross-site script cannot
-//! either without a CORS preflight this server never grants.
+//! or this Mac's `*.ts.net` name — through `tailscale serve` on the tailnet,
+//! or Funnel from the internet), which shuts out DNS-rebinding pages. Every
+//! write must carry an `X-Egant-Client` header, which a cross-site form or
+//! image cannot send and a cross-site script cannot either without a CORS
+//! preflight this server never grants.
+//!
+//! Whichever way a request arrives, it comes from 127.0.0.1 — Tailscale's
+//! proxy is local — so nothing here trusts the peer address: the device token
+//! is the only credential, on every route but health, pairing and the app's
+//! own files.
 
 use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header, request::Parts};
@@ -130,7 +136,8 @@ fn split_host(host: &str) -> (&str, Option<&str>) {
 
 /// Loopback on egant's own port (this Mac, or `tailscale serve` proxying to
 /// it), or a `*.ts.net` name (the same proxy keeping the name it was asked
-/// by). Anything else is a page that pointed its own domain at 127.0.0.1.
+/// by — the public link through Funnel included, as it is this Mac's name
+/// too). Anything else is a page that pointed its own domain at 127.0.0.1.
 pub fn host_allowed(host: &str, port: u16) -> bool {
     let host = host.trim().to_ascii_lowercase();
     let (name, host_port) = split_host(&host);
@@ -143,8 +150,9 @@ pub fn host_allowed(host: &str, port: u16) -> bool {
     }
 }
 
-/// Whether the phone reached egant over HTTPS, which only `tailscale serve`
-/// provides — the one case the device cookie can be marked `Secure`.
+/// Whether the phone reached egant over HTTPS, which only Tailscale (`serve`
+/// or Funnel) provides — the one case the device cookie can be marked
+/// `Secure`.
 fn is_https(headers: &HeaderMap) -> bool {
     let forwarded = headers
         .get("x-forwarded-proto")

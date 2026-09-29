@@ -714,7 +714,27 @@ export interface TailscaleStatus {
   serving: boolean;
   /** Another `tailscale serve` entry holds the port. */
   portConflict: boolean;
+  /** The Funnel port opening egant to the internet: the public link is live. */
+  funnelPort: number | null;
+  /** Every Funnel port (443, 8443, 10000) already serves something else. */
+  funnelBlocked: boolean;
   error: string | null;
+}
+
+/** The public link: Tailscale Funnel in front of phone access, so a phone
+ * opens egant from any network with nothing installed. */
+export interface MobilePublicLink {
+  /** Wanted: it comes back whenever phone access does. */
+  on: boolean;
+  live: boolean;
+  /** `https://<mac>.<tailnet>.ts.net`, while live. */
+  url: string | null;
+  /** Why it couldn't open — often naming the Tailscale page that fixes it. */
+  error: string | null;
+  /** What to run by hand when egant can't open it itself. */
+  command: string;
+  /** When egant opened it in this run. */
+  openedMs: number | null;
 }
 
 /** A phone paired with this Mac. */
@@ -734,8 +754,12 @@ export interface MobileStatus {
   port: number;
   error: string | null;
   tailscale: TailscaleStatus;
-  /** Where a phone reaches egant, once `tailscale serve` is up. */
+  /** Where a QR code sends a phone: the public link while it is live, else
+   * the tailnet address once `tailscale serve` is up. */
   url: string | null;
+  /** This Mac's tailnet-only address, once `tailscale serve` is up. */
+  tailnetUrl: string | null;
+  public: MobilePublicLink;
   /** The phone app on this Mac, for trying it in a desktop browser. */
   localUrl: string;
   serveCommand: string;
@@ -747,6 +771,8 @@ export interface MobilePairing {
   /** `ABCDE-FGHJK`, for typing into a phone that can't scan. */
   code: string;
   url: string | null;
+  /** `url` is the public link: the phone needs nothing installed. */
+  public: boolean;
   localUrl: string;
   qrSvg: string | null;
   expiresAtMs: number;

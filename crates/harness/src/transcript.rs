@@ -459,11 +459,17 @@ mod tests {
         assert_eq!(transcript.entries.len(), 2);
         assert!(matches!(
             &transcript.entries[0],
-            TranscriptEntry::Thinking { streaming: false, .. }
+            TranscriptEntry::Thinking {
+                streaming: false,
+                ..
+            }
         ));
         assert!(matches!(
             &transcript.entries[1],
-            TranscriptEntry::Assistant { streaming: false, .. }
+            TranscriptEntry::Assistant {
+                streaming: false,
+                ..
+            }
         ));
     }
 

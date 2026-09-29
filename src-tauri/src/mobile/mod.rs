@@ -5,10 +5,12 @@
 //!
 //! - [`server`], a small HTTP API inside the app, bound to 127.0.0.1 only,
 //!   serving the phone app ([`assets`]) and an explicit list of operations;
-//! - [`tailscale`], which puts that port on the tailnet behind HTTPS with
-//!   `tailscale serve`, so the phone reaches it from anywhere without egant
-//!   ever listening on a real network interface;
-//! - [`auth`], pairing by QR code and device tokens stored hashed.
+//! - [`tailscale`], which puts that port behind HTTPS on this Mac's
+//!   `*.ts.net` name without egant ever listening on a real network
+//!   interface: `tailscale serve` for the tailnet, and Funnel for the public
+//!   link, which a phone opens from any network with nothing installed;
+//! - [`auth`], pairing by QR code and device tokens stored hashed — the same
+//!   whichever way the phone arrives.
 //!
 //! Off until the user turns it on in Settings → Devices.
 
@@ -201,6 +203,11 @@ pub struct MobileService {
     server: Mutex<Option<RunningServer>>,
     /// Why the server could not start, or why `tailscale serve` refused.
     error: Mutex<Option<String>>,
+    /// Why the public link could not open (or close).
+    public_error: Mutex<Option<String>>,
+    /// When egant opened the public link in this run: a new public name can
+    /// take a few minutes to reach phones.
+    public_opened: Mutex<Option<u64>>,
     tailscale: Mutex<Option<(Instant, TailscaleStatus)>>,
 }
 
@@ -222,6 +229,8 @@ impl MobileService {
             shared: Arc::new(shared),
             server: Mutex::new(None),
             error: Mutex::new(None),
+            public_error: Mutex::new(None),
+            public_opened: Mutex::new(None),
             tailscale: Mutex::new(None),
         }
     }
@@ -336,6 +345,73 @@ async fn setup_serve(app: &AppHandle) {
     *lock(&service.tailscale) = None;
 }
 
+/// Opens the public link: Tailscale Funnel in front of the same server, on
+/// this Mac's `*.ts.net` name. Like [`setup_serve`], a refusal is recorded
+/// for the panel rather than returned.
+async fn setup_funnel(app: &AppHandle) {
+    let status = tailscale_status(app, true).await;
+    let service = app.state::<MobileService>();
+    let refusal = if !status.installed {
+        Some("Install Tailscale on this Mac first. Your phone doesn't need it.")
+    } else if !status.running {
+        Some("Tailscale isn't connected on this Mac.")
+    } else if !status.https_enabled {
+        Some("Turn on HTTPS certificates for your tailnet first.")
+    } else {
+        None
+    };
+    if let Some(refusal) = refusal {
+        *lock(&service.public_error) = Some(refusal.to_string());
+        return;
+    }
+    if status.funnel_port.is_some() {
+        *lock(&service.public_error) = None;
+        return;
+    }
+    let port = service.shared.port();
+    let outcome = tauri::async_runtime::spawn_blocking(move || tailscale::enable_funnel(port))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    match outcome {
+        Ok(funnel) => {
+            log::info!(
+                "mobile: Funnel opens https port {funnel} to egant — the public link is live"
+            );
+            *lock(&service.public_opened) = Some(now_ms());
+            *lock(&service.public_error) = None;
+        }
+        Err(error) => {
+            log::warn!("mobile: Funnel failed: {error}");
+            *lock(&service.public_error) = Some(error);
+        }
+    }
+    *lock(&service.tailscale) = None;
+}
+
+/// Closes the public link: the Funnel entry pointing at egant — whoever
+/// opened it — and nothing else.
+async fn remove_funnel(app: &AppHandle) {
+    let service = app.state::<MobileService>();
+    *lock(&service.public_error) = None;
+    *lock(&service.public_opened) = None;
+    let Some(port) = tailscale_status(app, true).await.funnel_port else {
+        return;
+    };
+    let outcome = tauri::async_runtime::spawn_blocking(move || tailscale::disable_funnel(port))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    match outcome {
+        Ok(()) => log::info!("mobile: closed the public link (Funnel on port {port})"),
+        Err(error) => {
+            log::warn!("mobile: couldn't close Funnel on port {port}: {error}");
+            *lock(&service.public_error) = Some(format!("Couldn't close the public link: {error}"));
+        }
+    }
+    *lock(&service.tailscale) = None;
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceDto {
@@ -346,6 +422,25 @@ pub struct DeviceDto {
     pub connected: bool,
 }
 
+/// The public link, as the Devices panel shows it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLinkDto {
+    /// Wanted: it comes back whenever phone access does.
+    pub on: bool,
+    /// Funnel is sending the internet to egant right now.
+    pub live: bool,
+    /// `https://<mac>.<tailnet>.ts.net`, while live.
+    pub url: Option<String>,
+    /// Why it couldn't open, with the Tailscale page that fixes it when the
+    /// CLI named one.
+    pub error: Option<String>,
+    /// What to run by hand when egant can't open it itself.
+    pub command: String,
+    /// When egant opened it in this run.
+    pub opened_ms: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MobileStatusDto {
@@ -354,9 +449,13 @@ pub struct MobileStatusDto {
     pub port: u16,
     pub error: Option<String>,
     pub tailscale: TailscaleStatus,
-    /// Where a phone reaches egant — this Mac's tailnet HTTPS address, once
-    /// `tailscale serve` points at the server.
+    /// Where a pairing QR code sends a phone: the public link while it is
+    /// live, else this Mac's tailnet address once `tailscale serve` points at
+    /// the server.
     pub url: Option<String>,
+    /// This Mac's tailnet-only address, once `tailscale serve` is up.
+    pub tailnet_url: Option<String>,
+    pub public: PublicLinkDto,
     /// The same app on this Mac, for trying it in a desktop browser.
     pub local_url: String,
     /// What to run by hand when egant can't set `serve` up itself.
@@ -364,7 +463,20 @@ pub struct MobileStatusDto {
     pub devices: Vec<DeviceDto>,
 }
 
-fn public_url(service: &MobileService, tailscale: &TailscaleStatus) -> Option<String> {
+/// The public link while Funnel is live: `https://<name>` on 443, with the
+/// port on 8443 or 10000.
+fn funnel_url(tailscale: &TailscaleStatus) -> Option<String> {
+    let port = tailscale.funnel_port?;
+    let name = tailscale.dns_name.as_deref()?;
+    Some(match port {
+        443 => format!("https://{name}"),
+        port => format!("https://{name}:{port}"),
+    })
+}
+
+/// This Mac's tailnet-only address, once `tailscale serve` points at the
+/// server.
+fn tailnet_url(service: &MobileService, tailscale: &TailscaleStatus) -> Option<String> {
     let config = lock(&service.shared.config);
     let reachable = tailscale.running
         && tailscale.https_enabled
@@ -376,7 +488,9 @@ fn public_url(service: &MobileService, tailscale: &TailscaleStatus) -> Option<St
 async fn status(app: &AppHandle, fresh: bool) -> MobileStatusDto {
     let tailscale = tailscale_status(app, fresh).await;
     let service = app.state::<MobileService>();
-    let url = public_url(&service, &tailscale);
+    let public_url = funnel_url(&tailscale);
+    let tailnet = tailnet_url(&service, &tailscale);
+    let url = public_url.clone().or_else(|| tailnet.clone());
     let running = lock(&service.server).is_some();
     let connections = lock(&service.shared.connections).clone();
     let config = lock(&service.shared.config).clone();
@@ -399,6 +513,15 @@ async fn status(app: &AppHandle, fresh: bool) -> MobileStatusDto {
         error: lock(&service.error).clone(),
         tailscale,
         url,
+        tailnet_url: tailnet,
+        public: PublicLinkDto {
+            on: config.public,
+            live: public_url.is_some(),
+            url: public_url,
+            error: lock(&service.public_error).clone(),
+            command: tailscale::funnel_command(config.port),
+            opened_ms: *lock(&service.public_opened),
+        },
         local_url: format!("http://127.0.0.1:{}", config.port),
         serve_command: tailscale::serve_command(config.port, config.port),
         devices,
@@ -412,8 +535,9 @@ pub async fn mobile_status(app: AppHandle, refresh: Option<bool>) -> MobileStatu
     status(&app, refresh.unwrap_or(false)).await
 }
 
-/// Turns phone access on — the server, then `tailscale serve` in front of it —
-/// or off, taking down only a `serve` entry egant made itself.
+/// Turns phone access on — the server, then `tailscale serve` in front of it,
+/// and Funnel too when the public link is wanted — or off, taking down the
+/// public link and only a `serve` entry egant made itself.
 #[tauri::command]
 pub async fn mobile_set_enabled(app: AppHandle, enabled: bool) -> MobileStatusDto {
     log::info!(
@@ -425,10 +549,14 @@ pub async fn mobile_set_enabled(app: AppHandle, enabled: bool) -> MobileStatusDt
     if enabled {
         if start(&app).await.is_ok() {
             setup_serve(&app).await;
+            if lock(&service.shared.config).public {
+                setup_funnel(&app).await;
+            }
         }
     } else {
         stop(&app);
         *lock(&service.error) = None;
+        remove_funnel(&app).await;
         let (configured, port) = {
             let config = lock(&service.shared.config);
             (config.serve_configured, config.port)
@@ -448,14 +576,45 @@ pub async fn mobile_set_enabled(app: AppHandle, enabled: bool) -> MobileStatusDt
     status(&app, true).await
 }
 
-/// "Set up" beside Tailscale in the panel: tries `tailscale serve` again,
-/// after the user has installed Tailscale, signed in or enabled HTTPS.
+/// "Recheck" beside Tailscale in the panel: tries `tailscale serve` again —
+/// and Funnel, when the public link is wanted — after the user has installed
+/// Tailscale, signed in, or turned on HTTPS or Funnel.
 #[tauri::command]
 pub async fn mobile_setup_tailscale(app: AppHandle) -> MobileStatusDto {
-    let enabled = lock(&app.state::<MobileService>().shared.config).enabled;
+    let service = app.state::<MobileService>();
+    let (enabled, public) = {
+        let config = lock(&service.shared.config);
+        (config.enabled, config.public)
+    };
     if enabled && start(&app).await.is_ok() {
         setup_serve(&app).await;
+        if public {
+            setup_funnel(&app).await;
+        }
     }
+    status(&app, true).await
+}
+
+/// Opens or closes the public link: Tailscale Funnel in front of the same
+/// server, so a phone reaches egant from any network with nothing installed.
+/// Opening it turns phone access on first; pairing is unchanged either way.
+#[tauri::command]
+pub async fn mobile_set_public(app: AppHandle, on: bool) -> MobileStatusDto {
+    log::info!("mobile: public link {}", if on { "on" } else { "off" });
+    let service = app.state::<MobileService>();
+    service.shared.update(|config| {
+        config.public = on;
+        config.enabled |= on;
+    });
+    if on {
+        if start(&app).await.is_ok() {
+            setup_serve(&app).await;
+            setup_funnel(&app).await;
+        }
+    } else {
+        remove_funnel(&app).await;
+    }
+    service.shared.changed();
     status(&app, true).await
 }
 
@@ -464,8 +623,11 @@ pub async fn mobile_setup_tailscale(app: AppHandle) -> MobileStatusDto {
 pub struct PairingDto {
     /// `ABCDE-FGHJK`, for typing into a phone that can't scan.
     pub code: String,
-    /// The link the QR code carries, when the tailnet address is up.
+    /// The link the QR code carries: the public link while it is live, else
+    /// the tailnet address when that is up.
     pub url: Option<String>,
+    /// `url` is the public link — a phone needs nothing installed.
+    pub public: bool,
     pub local_url: String,
     /// The QR code for `url`, as SVG.
     pub qr_svg: Option<String>,
@@ -481,12 +643,17 @@ pub async fn mobile_create_pairing(app: AppHandle) -> Result<PairingDto, String>
     }
     let (code, expires_at_ms) = lock(&service.shared.pairings).issue(now_ms());
     let tailscale = tailscale_status(&app, false).await;
-    let url = public_url(&service, &tailscale).map(|base| format!("{base}/#pair={code}"));
+    let public = funnel_url(&tailscale);
+    let url = public
+        .clone()
+        .or_else(|| tailnet_url(&service, &tailscale))
+        .map(|base| format!("{base}/#pair={code}"));
     let qr_svg = url.as_deref().and_then(qr_svg);
     log::info!("mobile: new pairing code (valid 5 minutes)");
     Ok(PairingDto {
         code: auth::format_code(&code),
         url,
+        public: public.is_some(),
         local_url: format!("http://127.0.0.1:{}/#pair={code}", service.shared.port()),
         qr_svg,
         expires_at_ms,
@@ -523,6 +690,26 @@ mod tests {
         let svg = qr_svg("https://mac.tail1234.ts.net:47247/#pair=ABCDEFGHJK").unwrap();
         assert!(svg.contains("<svg"), "{svg}");
         assert!(svg.contains("#0d0d0d"));
+    }
+
+    #[test]
+    fn the_public_link_leaves_out_the_default_https_port() {
+        let mut tailscale = TailscaleStatus {
+            dns_name: Some("mac.tail1234.ts.net".into()),
+            funnel_port: Some(443),
+            ..TailscaleStatus::default()
+        };
+        assert_eq!(
+            funnel_url(&tailscale).as_deref(),
+            Some("https://mac.tail1234.ts.net")
+        );
+        tailscale.funnel_port = Some(8443);
+        assert_eq!(
+            funnel_url(&tailscale).as_deref(),
+            Some("https://mac.tail1234.ts.net:8443")
+        );
+        tailscale.funnel_port = None;
+        assert_eq!(funnel_url(&tailscale), None);
     }
 
     #[test]

@@ -32,7 +32,7 @@ light.addEventListener("change", syncTheme);
 syncTheme();
 
 // Lets the app open with the Mac out of reach, to say so. Only where a
-// service worker is allowed at all: HTTPS (through `tailscale serve`) or this
+// service worker is allowed at all: HTTPS (through Tailscale) or this
 // machine's own loopback.
 if ("serviceWorker" in navigator && window.isSecureContext && !import.meta.env.DEV) {
   window.addEventListener("load", () => {

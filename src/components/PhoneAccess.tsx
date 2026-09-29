@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Globe,
   Loader2,
+  Network,
   QrCode,
   RefreshCw,
   Smartphone,
@@ -17,13 +18,20 @@ import type { MobilePairing, MobileStatus } from "../lib/types";
 import { Card, Dot, Row, Toggle } from "./SettingsKit";
 import { useNow } from "./useNow";
 
-/** Settings → Devices, below this Mac: using egant from a phone.
+/** How long a newly opened public link may still be reaching the public
+ * DNS: Tailscale quotes up to ten minutes. */
+const FRESH_LINK_MS = 10 * 60_000;
+
+/** Phones in Settings → Devices: using egant from a phone.
  *
- * The phone is a second window onto this Mac — the agents keep running here —
- * reached over Tailscale. This is the whole setup for it: one switch, the
- * Tailscale state with the one thing to fix next, the button that shows a
- * pairing QR code, and the phones already paired, each revocable. */
-export function PhoneAccess() {
+ * A phone is a second window onto this Mac — the agents keep running here —
+ * so it's listed as a device beside it, with "Connect a device" (the pairing
+ * QR code) right under them. It arrives through Tailscale on this Mac: over
+ * the tailnet, or through the public link from any network, with nothing
+ * installed on the phone. The settings for that sit below the list: one
+ * switch, the Tailscale state with the one thing to fix next, and the public
+ * link. This hook is the state they all share. */
+export function usePhoneAccess() {
   const [status, setStatus] = useState<MobileStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -33,7 +41,7 @@ export function PhoneAccess() {
     try {
       setStatus(await api.mobileStatus(refresh));
     } catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error));
+      setProblem(messageOf(error));
     }
   }, []);
 
@@ -53,104 +61,152 @@ export function PhoneAccess() {
     };
   }, [load]);
 
-  const run = async (action: () => Promise<MobileStatus>) => {
+  const run = async (action: () => Promise<MobileStatus>): Promise<MobileStatus | null> => {
     setBusy(true);
     setProblem(null);
     try {
-      setStatus(await action());
+      const next = await action();
+      setStatus(next);
+      return next;
     } catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error));
+      setProblem(messageOf(error));
+      return null;
     } finally {
       setBusy(false);
     }
   };
 
-  if (!status) return null;
-  const ready = status.enabled && status.running;
+  // Stable, so the dialog's close-after-pairing timer isn't restarted by
+  // every status refresh.
+  const closeConnect = useCallback(() => {
+    setConnecting(false);
+    void load();
+  }, [load]);
 
+  return {
+    status,
+    setStatus,
+    busy,
+    problem,
+    run,
+    connecting,
+    /** Opens the pairing QR code — from any state: phone access comes on
+     * first when it's off. */
+    connect: async () => {
+      const next =
+        status?.enabled && status.running ? status : await run(() => api.mobileSetEnabled(true));
+      if (next?.running) setConnecting(true);
+    },
+    closeConnect,
+  };
+}
+
+export type PhoneAccess = ReturnType<typeof usePhoneAccess>;
+
+/** The phones paired with this Mac, as rows of the device list. */
+export function PairedPhones({ phone }: { phone: PhoneAccess }) {
+  return (
+    <>
+      {phone.status?.devices.map((device) => (
+        <DeviceRow
+          key={device.id}
+          name={device.name}
+          connected={device.connected}
+          lastSeenMs={device.lastSeenMs}
+          createdMs={device.createdMs}
+          onRevoke={() => void phone.run(() => api.mobileRevokeDevice(device.id))}
+        />
+      ))}
+    </>
+  );
+}
+
+/** The last row of the device list: connect another one — a phone — by
+ * scanning a QR code this shows. */
+export function ConnectDeviceRow({ phone }: { phone: PhoneAccess }) {
+  return (
+    <Row
+      icon={QrCode}
+      title="Connect a device"
+      sub={
+        phone.status?.enabled
+          ? "Scan a QR code with your phone's camera. It remembers this Mac after that."
+          : "Shows a QR code to scan with your phone's camera, and turns phone access on."
+      }
+      control={
+        <button
+          type="button"
+          disabled={phone.busy}
+          onClick={() => void phone.connect()}
+          className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--ink)] px-3 py-1.5 text-[12px] font-medium text-[var(--stage)] hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+        >
+          {phone.busy && <Loader2 size={12} strokeWidth={2.5} className="animate-spin" />}
+          Connect device
+        </button>
+      }
+    />
+  );
+}
+
+/** How phones reach this Mac, under the device list. */
+export function PhoneAccessSettings({ phone }: { phone: PhoneAccess }) {
+  const { status, busy, run } = phone;
   return (
     <div className="mt-8">
-      <h2 className="text-[13px] font-semibold text-[var(--ink)]">Phone</h2>
+      <h2 className="text-[13px] font-semibold text-[var(--ink)]">Phone access</h2>
       <p className="mt-1 mb-3 max-w-[660px] text-[13px] leading-relaxed text-[var(--muted)]">
-        Use egant from your phone over Tailscale — see your sessions, send messages, stop agents
-        and answer prompts. The agents keep running on this Mac.
+        From a connected phone you can see your sessions, send messages, stop agents and answer
+        prompts. The agents keep running on this Mac.
       </p>
-      <Card>
-        <Row
-          icon={Smartphone}
-          title="Allow phone connections"
-          sub={
-            status.enabled
-              ? status.running
-                ? `egant is listening on this Mac only (port ${status.port}); Tailscale carries it to your phone.`
-                : (status.error ?? "Starting…")
-              : "Off — no phone can reach this Mac."
-          }
-          control={
-            <Toggle
-              label="Allow phone connections"
-              on={status.enabled}
-              disabled={busy}
-              onChange={(on) => void run(() => api.mobileSetEnabled(on))}
-            />
-          }
-        />
-        {status.enabled && (
-          <TailscaleRow
-            status={status}
-            busy={busy}
-            onRecheck={() => void run(() => api.mobileSetupTailscale())}
-          />
-        )}
-        {ready && (
+      {status && (
+        <Card>
           <Row
-            icon={QrCode}
-            title="Connect a device"
-            sub="Scan a QR code with your phone's camera. It remembers this Mac after that."
+            icon={Smartphone}
+            title="Allow phone connections"
+            sub={
+              status.enabled
+                ? status.running
+                  ? `egant is listening on this Mac only (port ${status.port}); Tailscale carries it to your phone.`
+                  : (status.error ?? "Starting…")
+                : "Off — no phone can reach this Mac."
+            }
             control={
-              <button
-                type="button"
-                onClick={() => setConnecting(true)}
-                className="shrink-0 cursor-pointer rounded-lg bg-[var(--ink)] px-3 py-1.5 text-[12px] font-medium text-[var(--stage)] hover:opacity-90"
-              >
-                Connect device
-              </button>
+              <Toggle
+                label="Allow phone connections"
+                on={status.enabled}
+                disabled={busy}
+                onChange={(on) => void run(() => api.mobileSetEnabled(on))}
+              />
             }
           />
-        )}
-      </Card>
-      {problem && <div className="mt-2 text-[12px] text-[var(--danger)]">{problem}</div>}
-
-      {status.devices.length > 0 && (
-        <>
-          <h3 className="mt-6 mb-2 text-[12px] font-medium text-[var(--muted)]">
-            Paired devices <span className="text-[var(--faint)]">{status.devices.length}</span>
-          </h3>
-          <Card>
-            {status.devices.map((device) => (
-              <DeviceRow
-                key={device.id}
-                name={device.name}
-                connected={device.connected}
-                lastSeenMs={device.lastSeenMs}
-                createdMs={device.createdMs}
-                onRevoke={() => void run(() => api.mobileRevokeDevice(device.id))}
-              />
-            ))}
-          </Card>
-        </>
+          {status.enabled && (
+            <TailscaleRow
+              status={status}
+              busy={busy}
+              onRecheck={() => void run(() => api.mobileSetupTailscale())}
+            />
+          )}
+          {status.enabled && (
+            <PublicLinkRow
+              status={status}
+              busy={busy}
+              onSet={(on) => void run(() => api.mobileSetPublic(on))}
+            />
+          )}
+        </Card>
       )}
-
-      {connecting && (
-        <ConnectDialog
-          status={status}
-          onClose={() => {
-            setConnecting(false);
-            void load();
-          }}
-        />
+      {phone.problem && (
+        <div className="mt-2 text-[12px] text-[var(--danger)]">{phone.problem}</div>
       )}
     </div>
+  );
+}
+
+/** The pairing QR code, while "Connect a device" has it open. */
+export function PhoneConnectDialog({ phone }: { phone: PhoneAccess }) {
+  if (!phone.connecting || !phone.status) return null;
+  return (
+    <ConnectDialog status={phone.status} onStatus={phone.setStatus} onClose={phone.closeConnect} />
   );
 }
 
@@ -168,7 +224,8 @@ function TailscaleRow({
   let sub: ReactNode;
   let action: ReactNode = null;
   if (!ts.installed) {
-    sub = "Tailscale isn't installed on this Mac. Install it here and on your phone, and sign both in to the same account.";
+    sub =
+      "Tailscale isn't installed on this Mac. Install it and sign in — with the public link, your phone doesn't need it.";
     action = <LinkButton url="https://tailscale.com/download">Get Tailscale</LinkButton>;
   } else if (!ts.running) {
     sub =
@@ -180,30 +237,35 @@ function TailscaleRow({
     action = (
       <LinkButton url="https://login.tailscale.com/admin/dns">Open DNS settings</LinkButton>
     );
-  } else if (status.url) {
+  } else if (status.tailnetUrl) {
     sub = (
       <>
         Reachable from your tailnet at{" "}
-        <span className="font-mono text-[var(--ink)]">{status.url.replace("https://", "")}</span>
+        <span className="font-mono text-[var(--ink)]">
+          {status.tailnetUrl.replace("https://", "")}
+        </span>
       </>
     );
   } else if (ts.portConflict) {
     sub = `Another tailscale serve entry already uses port ${status.port} on this Mac.`;
   } else {
+    const fix = status.error ? adminFix(status.error) : null;
     sub = (
       <>
-        {status.error ?? "Tailscale is ready; egant still needs to publish itself with tailscale serve."}
-        <CommandLine command={status.serveCommand} />
+        {fix?.text ??
+          "Tailscale is ready; egant still needs to publish itself with tailscale serve."}
+        {!fix?.url && <CopyLine text={status.serveCommand} title="Copy command" />}
       </>
     );
+    if (fix?.url) action = <LinkButton url={fix.url}>{fix.label}</LinkButton>;
   }
   return (
     <Row
-      icon={Globe}
+      icon={Network}
       title={
         <span className="flex items-center gap-1.5">
           Tailscale
-          {ts.running && status.url && (
+          {ts.running && status.tailnetUrl && (
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" title="Ready" />
           )}
         </span>
@@ -232,6 +294,92 @@ function TailscaleRow({
   );
 }
 
+/** The public link: Tailscale Funnel puts this Mac's Tailscale name on the
+ * internet, so a phone opens egant from any network with nothing installed.
+ * Pairing still decides who gets in. */
+function PublicLinkRow({
+  status,
+  busy,
+  onSet,
+}: {
+  status: MobileStatus;
+  busy: boolean;
+  onSet: (on: boolean) => void;
+}) {
+  const now = useNow(30_000);
+  const link = status.public;
+  const ts = status.tailscale;
+  const tailscaleReady = ts.installed && ts.running && ts.httpsEnabled;
+  const fix = link.error ? adminFix(link.error) : null;
+  let sub: ReactNode;
+  if (link.live && link.url) {
+    const fresh = link.openedMs != null && now - link.openedMs < FRESH_LINK_MS;
+    sub = (
+      <>
+        <CopyLine text={link.url} title="Copy link" />
+        <span className="mt-1 block">
+          Anyone can open it; only phones you pair get in.
+          {fresh && " A new address can take a few minutes to reach phones."}
+        </span>
+      </>
+    );
+  } else if (fix) {
+    sub = (
+      <>
+        {fix.text}
+        {!fix.url && <CopyLine text={link.command} title="Copy command" />}
+      </>
+    );
+  } else if (!tailscaleReady) {
+    sub = "Needs Tailscale ready on this Mac (above). Your phone doesn't need it.";
+  } else if (ts.funnelBlocked) {
+    sub = "Funnel's ports (443, 8443 and 10000) are all used by other tailscale serve entries on this Mac.";
+  } else if (link.on) {
+    sub = "Closed outside egant. Start opens it again.";
+  } else {
+    sub =
+      "Off. Reach this Mac from any network with nothing to install on your phone, through Tailscale Funnel.";
+  }
+  return (
+    <Row
+      icon={Globe}
+      title={
+        <span className="flex items-center gap-1.5">
+          Public link
+          {link.live && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" title="Live" />}
+        </span>
+      }
+      sub={sub}
+      control={
+        <div className="flex shrink-0 items-center gap-2">
+          {fix?.url && !link.live && <LinkButton url={fix.url}>{fix.label}</LinkButton>}
+          <button
+            type="button"
+            disabled={busy || (!link.live && !tailscaleReady)}
+            onClick={() => onSet(!link.live)}
+            className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-[12px] text-[var(--ink)] hover:bg-[var(--hover)] disabled:cursor-default disabled:opacity-45"
+          >
+            {busy && <Loader2 size={12} strokeWidth={2} className="animate-spin" />}
+            {link.live ? "Stop" : "Start"}
+          </button>
+        </div>
+      }
+    />
+  );
+}
+
+/** A Tailscale refusal ends with the admin page that turns on what's
+ * missing. That link is the useful part: a button, not a URL mid-sentence. */
+function adminFix(message: string): { text: string; url: string | null; label: string } {
+  const url = /https:\/\/login\.tailscale\.com\/\S+/.exec(message)?.[0] ?? null;
+  if (!url) return { text: message, url: null, label: "" };
+  return {
+    text: `${message.replace(url, "").replace(/[\s:]+$/, "")}.`,
+    url,
+    label: url.includes("/f/funnel") ? "Turn on Funnel" : "Open Tailscale",
+  };
+}
+
 function LinkButton({ url, children }: { url: string; children: ReactNode }) {
   return (
     <button
@@ -245,8 +393,8 @@ function LinkButton({ url, children }: { url: string; children: ReactNode }) {
   );
 }
 
-/** A command to run by hand, with a copy button. */
-function CommandLine({ command }: { command: string }) {
+/** A command to run by hand, or a link to pass on, with a copy button. */
+function CopyLine({ text, title }: { text: string; title: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -256,12 +404,12 @@ function CommandLine({ command }: { command: string }) {
   return (
     <span className="mt-1.5 flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-1">
       <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--ink)]">
-        {command}
+        {text}
       </code>
       <button
         type="button"
-        title="Copy command"
-        onClick={() => void navigator.clipboard.writeText(command).then(() => setCopied(true))}
+        title={title}
+        onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
         className="shrink-0 cursor-pointer text-[var(--faint)] hover:text-[var(--ink)]"
       >
         {copied ? <Check size={12} strokeWidth={2} /> : <Copy size={12} strokeWidth={2} />}
@@ -286,7 +434,7 @@ function DeviceRow({
   const now = useNow(30_000);
   const [confirming, setConfirming] = useState(false);
   return (
-    <div className="flex items-center gap-3.5 px-4 py-3">
+    <div className="flex items-center gap-3.5 px-4 py-3.5">
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted)]">
         <Smartphone size={16} strokeWidth={2} />
       </span>
@@ -342,12 +490,28 @@ function ago(ms: number, now: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** The pairing QR code: scan it and the phone is in. Closes itself once a
- * phone pairs with it. */
-function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () => void }) {
+function messageOf(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure);
+}
+
+/** The pairing QR code: scan it and the phone is in. Carries the public link
+ * when it's open; offers to open it when the phone would otherwise need
+ * Tailscale, or couldn't reach this Mac at all. Closes itself once a phone
+ * pairs with it. */
+function ConnectDialog({
+  status,
+  onStatus,
+  onClose,
+}: {
+  status: MobileStatus;
+  onStatus: (status: MobileStatus) => void;
+  onClose: () => void;
+}) {
   const [pairing, setPairing] = useState<MobilePairing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paired, setPaired] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
   const now = useNow(1000);
   const known = useRef(new Set(status.devices.map((device) => device.id)));
 
@@ -356,7 +520,7 @@ function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () 
     try {
       setPairing(await api.mobileCreatePairing());
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(messageOf(failure));
     }
   }, []);
 
@@ -400,9 +564,44 @@ function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () 
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
+  // Opening the public link is a deliberate step, never a side effect of
+  // asking for a code: it puts this Mac's address on the internet.
+  const openPublic = async () => {
+    setOpening(true);
+    setOpenError(null);
+    try {
+      const next = await api.mobileSetPublic(true);
+      onStatus(next);
+      if (next.public.live) await issue();
+      else setOpenError(next.public.error ?? "The public link didn't open.");
+    } catch (failure) {
+      setOpenError(messageOf(failure));
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const ts = status.tailscale;
+  const tailscaleReady = ts.installed && ts.running && ts.httpsEnabled;
   const remaining = pairing ? Math.max(0, pairing.expiresAtMs - now) : 0;
   const expired = pairing != null && remaining === 0;
   const clock = `${Math.floor(remaining / 60_000)}:${String(Math.floor((remaining % 60_000) / 1000)).padStart(2, "0")}`;
+  const fresh =
+    pairing?.public === true &&
+    status.public.openedMs != null &&
+    now - status.public.openedMs < FRESH_LINK_MS;
+  const fix = openError ? adminFix(openError) : null;
+
+  const openButton = (label: string) => (
+    <button
+      type="button"
+      onClick={() => void openPublic()}
+      className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--ink)] px-3 py-1.5 text-[12px] font-medium text-[var(--stage)] hover:opacity-90"
+    >
+      <Globe size={12} strokeWidth={2.5} />
+      {label}
+    </button>
+  );
 
   return (
     <div
@@ -417,8 +616,11 @@ function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () 
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold text-[var(--ink)]">Connect a device</div>
             <div className="mt-0.5 text-[12px] leading-[1.45] text-[var(--muted)]">
-              Scan with your phone's camera. Your phone needs Tailscale, signed in to the same
-              tailnet as this Mac.
+              {pairing?.url && pairing.public
+                ? "Scan with your phone's camera. It opens egant over the public link — nothing to install on the phone."
+                : pairing?.url
+                  ? "Scan with your phone's camera. Your phone needs Tailscale, signed in to the same tailnet as this Mac."
+                  : "Your phone reaches this Mac through Tailscale on this Mac."}
             </div>
           </div>
           <button
@@ -441,25 +643,69 @@ function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () 
             </div>
           ) : error ? (
             <div className="py-10 text-center text-[12px] text-[var(--danger)]">{error}</div>
-          ) : !pairing ? (
-            <div className="flex h-[232px] items-center justify-center">
+          ) : !pairing || opening ? (
+            <div className="flex h-[232px] flex-col items-center justify-center gap-2 text-[12px] text-[var(--muted)]">
               <Loader2 size={18} strokeWidth={2} className="animate-spin text-[var(--faint)]" />
+              {opening && "Opening the public link…"}
             </div>
           ) : pairing.qrSvg && !expired ? (
-            <img
-              alt="Pairing QR code"
-              src={`data:image/svg+xml;utf8,${encodeURIComponent(pairing.qrSvg)}`}
-              className="h-[232px] w-[232px] rounded-xl"
-            />
+            <>
+              <img
+                alt="Pairing QR code"
+                src={`data:image/svg+xml;utf8,${encodeURIComponent(pairing.qrSvg)}`}
+                className="h-[232px] w-[232px] rounded-xl"
+              />
+              {!pairing.public && tailscaleReady && !ts.funnelBlocked && (
+                <button
+                  type="button"
+                  onClick={() => void openPublic()}
+                  className="mt-2 cursor-pointer text-[11.5px] text-[var(--muted)] underline decoration-[var(--border)] underline-offset-2 hover:text-[var(--ink)]"
+                >
+                  No Tailscale on your phone? Use the public link
+                </button>
+              )}
+            </>
           ) : (
-            <div className="flex h-[232px] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] px-4 text-center text-[12px] text-[var(--muted)]">
-              {expired
-                ? "This code has expired."
-                : "Your phone can't reach this Mac yet — finish the Tailscale step in Settings first."}
+            <div className="flex h-[232px] w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[var(--border)] px-5 text-center text-[12px] leading-[1.5] text-[var(--muted)]">
+              {expired ? (
+                "This code has expired."
+              ) : !ts.installed ? (
+                <>
+                  Install Tailscale on this Mac and sign in. Your phone doesn't need it.
+                  <LinkButton url="https://tailscale.com/download">Get Tailscale</LinkButton>
+                </>
+              ) : !ts.running ? (
+                "Tailscale isn't connected on this Mac. Open it and sign in, then try again."
+              ) : !ts.httpsEnabled ? (
+                <>
+                  Turn on HTTPS certificates for your tailnet, then try again.
+                  <LinkButton url="https://login.tailscale.com/admin/dns">
+                    Open DNS settings
+                  </LinkButton>
+                </>
+              ) : ts.funnelBlocked ? (
+                "Funnel's ports (443, 8443 and 10000) are all used by other tailscale serve entries on this Mac."
+              ) : (
+                <>
+                  Open the public link so your phone can reach this Mac from any network. Anyone
+                  can open the address; only phones you pair get in.
+                  {!openError && openButton("Open public link")}
+                </>
+              )}
             </div>
           )}
 
-          {pairing && !paired && (
+          {openError && !opening && (
+            <div className="mt-3 flex flex-col items-center gap-2 text-center text-[12px] text-[var(--danger)]">
+              {fix?.text}
+              <div className="flex items-center gap-2">
+                {fix?.url && <LinkButton url={fix.url}>{fix.label}</LinkButton>}
+                {openButton("Try again")}
+              </div>
+            </div>
+          )}
+
+          {pairing && !paired && !opening && (
             <>
               <div className="mt-4 text-[11px] text-[var(--faint)]">Or enter this code on your phone</div>
               <div className="mt-1 font-mono text-[18px] tracking-[0.12em] text-[var(--ink)]">
@@ -469,8 +715,16 @@ function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () 
                 {expired ? "Expired" : `Works once · expires in ${clock}`}
               </div>
               {pairing.url && !expired && (
-                <div className="mt-3 max-w-full truncate font-mono text-[10.5px] text-[var(--faint)]" title={pairing.url}>
+                <div
+                  className="mt-3 max-w-full truncate font-mono text-[10.5px] text-[var(--faint)]"
+                  title={pairing.url}
+                >
                   {pairing.url.split("#")[0]}
+                </div>
+              )}
+              {fresh && !expired && (
+                <div className="mt-1 text-center text-[11px] text-[var(--faint)]">
+                  Just opened — the address can take a few minutes to reach phones.
                 </div>
               )}
             </>
@@ -490,7 +744,7 @@ function ConnectDialog({ status, onClose }: { status: MobileStatus; onClose: () 
           <button
             type="button"
             onClick={() => void issue()}
-            disabled={paired != null}
+            disabled={paired != null || opening}
             className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--ink)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--stage)] hover:opacity-90 disabled:cursor-default disabled:opacity-45"
           >
             <RefreshCw size={12} strokeWidth={2.5} />

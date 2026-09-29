@@ -11,24 +11,6 @@ import type {
   TurnState,
 } from "@egant/lib/types";
 
-/**
- * Where the egant backend lives.
- *
- * - Same-origin (desktop serving `mobile/dist`, or `vite dev` proxy): leave
- *   `VITE_EGANT_API_URL` unset and every request goes to `/api/...`.
- * - Vercel (static UI on `*.vercel.app`): set `VITE_EGANT_API_URL` to the Mac's
- *   reachable origin (e.g. your Tailscale URL) and requests + the event stream
- *   go there instead. That origin must allow CORS with credentials for the
- *   Vercel origin.
- */
-export const API_BASE = (
-  (import.meta.env.VITE_EGANT_API_URL as string | undefined) ?? ""
-).replace(/\/$/, "");
-
-export function apiUrl(path: string): string {
-  return `${API_BASE}${path}`;
-}
-
 /** One page load. Its writes come back on the event stream tagged with it. */
 export const CLIENT_ID = newClientId();
 export const MY_ORIGIN = `client:${CLIENT_ID}`;
@@ -94,8 +76,8 @@ export class ApiError extends Error {
   }
 
   /** Nothing answered, or the proxy in front of egant did because egant
-   * itself didn't: the Mac is asleep, egant is closed, or the phone is off
-   * the tailnet. */
+   * itself didn't: the Mac is asleep or offline, egant is closed, or phone
+   * access is off. */
   get unreachable(): boolean {
     return this.status === 0 || this.status === 502 || this.status === 503 || this.status === 504;
   }
@@ -104,10 +86,9 @@ export class ApiError extends Error {
 async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(apiUrl(path), {
+    response = await fetch(path, {
       method,
-      // Same-origin by default; cross-origin (Vercel -> Mac) needs cookies.
-      credentials: API_BASE ? "include" : "same-origin",
+      credentials: "same-origin",
       cache: "no-store",
       headers: {
         "X-Egant-Client": CLIENT_ID,

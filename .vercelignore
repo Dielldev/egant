@@ -1,6 +1,0 @@
-target/
-src-tauri/target/
-src-tauri/
-crates/
-dist/
-mobile/dist/

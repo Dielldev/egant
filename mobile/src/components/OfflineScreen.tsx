@@ -47,8 +47,8 @@ export function OfflineScreen({ onRetry }: { onRetry: () => Promise<void> }) {
       <WifiOff size={26} strokeWidth={1.75} className="mb-4 text-[var(--faint)]" />
       <h1 className="text-[18px] font-semibold text-[var(--ink)]">Can't reach your Mac</h1>
       <ul className="mt-3 max-w-[300px] space-y-1 text-left text-[13px] leading-relaxed text-[var(--muted)]">
-        <li>• Is the Mac awake, with egant open?</li>
-        <li>• Is Tailscale on, on this phone and on the Mac?</li>
+        <li>• Is the Mac awake and online, with egant open?</li>
+        <li>• Is Tailscale on, on the Mac? (And on this phone, unless it uses the public link.)</li>
         <li>• Is phone access still on in egant → Settings → Devices?</li>
       </ul>
       <button

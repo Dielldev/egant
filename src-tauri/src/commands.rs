@@ -1592,6 +1592,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::mobile::mobile_status,
         crate::mobile::mobile_set_enabled,
         crate::mobile::mobile_setup_tailscale,
+        crate::mobile::mobile_set_public,
         crate::mobile::mobile_create_pairing,
         crate::mobile::mobile_revoke_device,
         get_settings,

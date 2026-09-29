@@ -57,7 +57,13 @@ import {
   usePersistentState,
 } from "./SettingsKit";
 import { useNow } from "./useNow";
-import { PhoneAccess } from "./PhoneAccess";
+import {
+  ConnectDeviceRow,
+  PairedPhones,
+  PhoneAccessSettings,
+  PhoneConnectDialog,
+  usePhoneAccess,
+} from "./PhoneAccess";
 import { ProviderGlyph } from "./ProviderLogo";
 
 /** Settings: the window behind the "Local only" profile. A left rail of
@@ -255,6 +261,7 @@ function DevicesSection() {
   const deviceId = useDeviceId();
   const addedAt = useAddedAt();
   const now = useNow(30_000);
+  const phone = usePhoneAccess();
 
   const name = override || machine || "Local device";
 
@@ -275,8 +282,8 @@ function DevicesSection() {
     <div>
       <SectionHead
         title="Devices"
-        count={1}
-        sub="Manage device details stored in this local workspace."
+        count={1 + (phone.status?.devices.length ?? 0)}
+        sub="This Mac, and the phones you've connected to it."
       />
       <Card>
         <div className="flex items-center gap-3.5 px-4 py-3.5">
@@ -320,7 +327,7 @@ function DevicesSection() {
               {deviceId}
             </div>
           </div>
-          <span className="shrink-0 text-[12px] text-[var(--muted)]">Local only</span>
+          <span className="shrink-0 text-[12px] text-[var(--muted)]">This Mac</span>
           <button
             type="button"
             onClick={() => {
@@ -333,8 +340,11 @@ function DevicesSection() {
             Rename
           </button>
         </div>
+        <PairedPhones phone={phone} />
+        <ConnectDeviceRow phone={phone} />
       </Card>
-      <PhoneAccess />
+      <PhoneAccessSettings phone={phone} />
+      <PhoneConnectDialog phone={phone} />
     </div>
   );
 }

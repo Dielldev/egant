@@ -9,7 +9,6 @@
 
 import { useMobile } from "./store";
 import type { StreamMessage } from "./store";
-import { API_BASE, apiUrl } from "./api";
 
 let source: EventSource | null = null;
 let retry: number | undefined;
@@ -32,9 +31,7 @@ function open(): void {
   close();
   const { seq, epoch, setConnection } = useMobile.getState();
   const stream = new EventSource(
-    apiUrl(`/api/v1/events?since=${seq}&epoch=${encodeURIComponent(epoch)}`),
-    // Vercel (cross-origin) needs the device cookie sent; same-origin ignores it.
-    API_BASE ? { withCredentials: true } : undefined,
+    `/api/v1/events?since=${seq}&epoch=${encodeURIComponent(epoch)}`,
   );
   source = stream;
   setConnection("connecting");

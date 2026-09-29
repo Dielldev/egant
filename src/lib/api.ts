@@ -167,6 +167,8 @@ export const api = {
   /** Retries `tailscale serve`, after Tailscale was installed or HTTPS enabled. */
   mobileSetupTailscale: () =>
     traced("mobile_setup_tailscale", "", () => invoke<MobileStatus>("mobile_setup_tailscale")),
+  mobileSetPublic: (on: boolean) =>
+    traced("mobile_set_public", `on=${on}`, () => invoke<MobileStatus>("mobile_set_public", { on })),
   mobileCreatePairing: () =>
     traced("mobile_create_pairing", "", () => invoke<MobilePairing>("mobile_create_pairing")),
   mobileRevokeDevice: (id: string) =>

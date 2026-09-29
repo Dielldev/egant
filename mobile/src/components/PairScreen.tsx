@@ -69,8 +69,8 @@ export function PairScreen({ onPaired }: { onPaired: () => void }) {
       </form>
 
       <p className="mt-10 max-w-[300px] text-[12px] leading-relaxed text-[var(--faint)]">
-        Your phone reaches your Mac over Tailscale — both need it installed and signed in to the
-        same tailnet. Nothing goes through anyone else's server.
+        Your phone talks to your Mac directly, encrypted all the way to it. Only phones paired with
+        a code from the Mac get in.
       </p>
     </div>
   );

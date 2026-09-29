@@ -1,17 +1,41 @@
 // The phone app's service worker. One job: open even when the Mac can't be
-// reached (asleep, egant closed, phone off the tailnet), so the app can say
+// reached (asleep, offline, egant closed), so the app can say
 // that instead of the browser's error page. It never touches the API — every
 // session, message and answer always comes live from the Mac.
 
-const CACHE = "egant-shell-v1";
-const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/apple-touch-icon.png"];
+const CACHE = "egant-shell-v2";
+const SHELL = ["/manifest.webmanifest", "/icon-192.png", "/apple-touch-icon.png"];
+
+// Keeps the page itself and the build files it names — its script and
+// styles, named after their content. A cached page without them is a blank
+// one, and the first visit loads them before this worker is in charge, so
+// they're fetched here rather than left to be picked up later. The page is
+// stored only once its files are in, and earlier builds' files are dropped
+// so they don't pile up on the phone.
+async function keepShell(response) {
+  const cache = await caches.open(CACHE);
+  const html = await response.clone().text();
+  const wanted = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((match) => match[1]);
+  for (const path of wanted) {
+    if (!(await cache.match(path))) await cache.add(path);
+  }
+  await cache.put("/", response);
+  for (const request of await cache.keys()) {
+    const path = new URL(request.url).pathname;
+    if (path.startsWith("/assets/") && !wanted.includes(path)) await cache.delete(request);
+  }
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
-      .then(() => self.skipWaiting()),
+    (async () => {
+      const cache = await caches.open(CACHE);
+      await cache.addAll(SHELL);
+      const page = await fetch("/", { cache: "no-store" });
+      if (!page.ok) throw new Error(`the app's page answered ${page.status}`);
+      await keepShell(page);
+      await self.skipWaiting();
+    })(),
   );
 });
 
@@ -40,16 +64,20 @@ self.addEventListener("fetch", (event) => {
 
   // The page itself: the Mac's copy when it answers, so an update is picked
   // up at once; the cached one when it doesn't — including the 502 that
-  // `tailscale serve` answers with while egant is closed.
+  // Tailscale answers with while egant is closed.
   if (request.mode === "navigate") {
+    const network = fetch(request);
     event.respondWith(
-      fetch(request)
+      network
         .then((response) =>
           response.ok
-            ? remember("/", response)
+            ? response.clone()
             : caches.match("/").then((cached) => cached ?? response),
         )
         .catch(() => caches.match("/").then((cached) => cached ?? Response.error())),
+    );
+    event.waitUntil(
+      network.then((response) => (response.ok ? keepShell(response) : undefined)).catch(() => {}),
     );
     return;
   }

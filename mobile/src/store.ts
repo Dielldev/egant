@@ -316,7 +316,7 @@ export const useMobile = create<MobileStore>()((set, get) => {
           phase: "unpaired",
           pairError:
             error instanceof ApiError && error.unreachable
-              ? "Can't reach your Mac. Is Tailscale on, on both devices?"
+              ? "Can't reach your Mac. Is it awake, with egant open?"
               : message(error),
         });
         return false;

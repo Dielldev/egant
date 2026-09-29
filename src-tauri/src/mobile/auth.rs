@@ -41,6 +41,10 @@ pub struct MobileConfig {
     /// Whether egant itself put the `tailscale serve` entry in place — only
     /// then is it egant's to take down again.
     pub serve_configured: bool,
+    /// The public link is wanted: Tailscale Funnel in front of the same
+    /// server, for a phone with nothing installed. It comes back whenever
+    /// phone access is turned back on.
+    pub public: bool,
     pub devices: Vec<DeviceRecord>,
 }
 
@@ -50,6 +54,7 @@ impl Default for MobileConfig {
             enabled: false,
             port: DEFAULT_PORT,
             serve_configured: false,
+            public: false,
             devices: Vec::new(),
         }
     }
