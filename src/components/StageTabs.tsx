@@ -1,4 +1,6 @@
+import { ask } from "@tauri-apps/plugin-dialog";
 import { MessageSquare, TerminalSquare, X } from "lucide-react";
+import { dropDraft, useDirtyFiles } from "../lib/editorDrafts";
 import type { StageTab } from "../store";
 import { CHAT_TAB, diffGroupSuffix, useEgant } from "../store";
 import { ChangeStatusIcon } from "./ChangeStatus";
@@ -21,8 +23,27 @@ export function StageTabs({ sessionKey }: { sessionKey: number }) {
     s.snapshot?.sessions.find((entry) => entry.id === sessionKey),
   );
   const title = session?.title;
+  const dirtyPaths = useDirtyFiles((s) => s.paths);
 
   if (tabs.length === 0) return null;
+
+  // Closing a file with edits that never reached the disk asks first. With
+  // Autosave on there is normally nothing to ask about — the editor writes on
+  // its way out — but a save that was refused (the file changed on disk) leaves
+  // the tab dirty, and that is exactly when losing it would hurt.
+  const close = async (tab: StageTab) => {
+    if (tab.kind === "file" && dirtyPaths[tab.path]) {
+      const discard = await ask(`${tab.name} has unsaved changes.`, {
+        title: "Unsaved changes",
+        kind: "warning",
+        okLabel: "Discard changes",
+        cancelLabel: "Keep editing",
+      });
+      if (!discard) return;
+      dropDraft(tab.path);
+    }
+    closeStageTab(sessionKey, tab.key);
+  };
 
   return (
     <div className="flex w-full shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--border)] px-3 pb-1.5">
@@ -52,9 +73,10 @@ export function StageTabs({ sessionKey }: { sessionKey: number }) {
             tab.status ? <ChangeStatusIcon status={tab.status} size={13} /> : undefined
           }
           hint={tab.group ? `${tab.path} ${diffGroupSuffix(tab.group)}` : tab.path}
+          dirty={tab.kind === "file" && !!dirtyPaths[tab.path]}
           active={showing === tab.key}
           onClick={() => setStageTab(sessionKey, tab.key)}
-          onClose={() => closeStageTab(sessionKey, tab.key)}
+          onClose={() => void close(tab)}
         />
       ))}
     </div>
@@ -67,6 +89,7 @@ function Tab({
   suffix,
   status,
   hint,
+  dirty,
   active,
   onClick,
   onClose,
@@ -76,6 +99,8 @@ function Tab({
   suffix?: string;
   status?: React.ReactNode;
   hint?: string;
+  /** The file has edits that are not on disk yet. */
+  dirty?: boolean;
   active: boolean;
   onClick: () => void;
   onClose?: () => void;
@@ -110,6 +135,13 @@ function Tab({
       {/* The status gives way to the close button on hover rather than sitting
         beside it, which would make the tab wider the moment you point at it. */}
       {status && <span className="shrink-0 group-hover:hidden">{status}</span>}
+      {/* Same slot as the status, and the same give-way to the close button. */}
+      {dirty && (
+        <span
+          title="Unsaved changes"
+          className="mx-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--muted)] group-hover:hidden"
+        />
+      )}
       {onClose && (
         <button
           type="button"
@@ -119,7 +151,7 @@ function Tab({
             onClose();
           }}
           className={`shrink-0 cursor-pointer rounded-sm p-0.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
-            status ? "hidden group-hover:block" : "opacity-0 group-hover:opacity-100"
+            status || dirty ? "hidden group-hover:block" : "opacity-0 group-hover:opacity-100"
           }`}
         >
           <X size={10} strokeWidth={2.2} />

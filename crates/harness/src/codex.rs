@@ -297,8 +297,11 @@ impl TurnTranslator for CodexTranslator {
         if let Some(thread) = &self.thread {
             args.push("resume".to_string());
             args.push(thread.clone());
-        } else if let Some(model) = &self.model {
-            // A resumed thread keeps the model it started with.
+        }
+        // On a resume too: a thread otherwise keeps the model it started
+        // with, and a session switched onto another model mid-conversation
+        // is resumed on purpose to change exactly that.
+        if let Some(model) = &self.model {
             args.push("-m".to_string());
             args.push(model.clone());
         }
@@ -676,8 +679,10 @@ mod tests {
         let second = t.build("again", &[]);
         let at = second.args.iter().position(|a| a == "resume").unwrap();
         assert_eq!(second.args[at + 1], "thr_1");
-        // A resumed thread keeps its own model: no `-m` override.
-        assert!(!second.args.iter().any(|a| a == "-m"));
+        // The session's model rides along on the resume, after the thread.
+        let m = second.args.iter().position(|a| a == "-m").unwrap();
+        assert!(m > at);
+        assert_eq!(second.args[m + 1], "gpt-5");
     }
 
     #[test]

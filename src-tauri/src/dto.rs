@@ -357,6 +357,18 @@ pub struct SessionEventPayload {
     pub event: EventDto,
 }
 
+/// The payload of the `worktree-renamed` window event: a session's first turn
+/// said what it is about, and the worktree at `path` moved off its
+/// placeholder branch. Every session running there carries the new name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeRenamedPayload {
+    pub path: String,
+    pub branch: String,
+    pub name: String,
+    pub previous_branch: String,
+}
+
 // ---------------------------------------------------------------------------
 // Sessions, projects, whole-window state
 // ---------------------------------------------------------------------------
@@ -380,8 +392,10 @@ pub struct SessionDto {
     /// harnesses (`claude`, `codex`, `opencode`); a CLI session names any
     /// agent in the install catalog (`pi`, `goose`, …).
     pub agent: String,
-    /// Model override requested at creation, if any.
+    /// Model the session was started on, or last switched to, if any.
     pub model_override: Option<String>,
+    /// Reasoning effort the session runs at, if one was picked.
+    pub variant: Option<String>,
     /// Context window override requested at creation, if any.
     pub context: Option<u64>,
     /// The isolated checkout this session runs in, when it has one. `cwd`
@@ -399,9 +413,11 @@ pub struct SessionDto {
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeDto {
     pub path: String,
-    /// `egant/quiet-quartz` — what the sidebar and the header show.
+    /// `egant/quiet-quartz` until the first turn renames it after the
+    /// session's subject (`egant/fix-login-flow`).
     pub branch: String,
-    /// The generated folder name (`quiet-quartz`).
+    /// The branch without its prefix — what the sidebar shows. Not
+    /// necessarily the folder's name, which never changes.
     pub name: String,
     /// The branch it was cut from.
     pub base: String,
@@ -592,6 +608,12 @@ pub struct FileContentDto {
     pub bytes: u64,
     pub truncated: bool,
     pub binary: bool,
+    /// Whether the text survives a round trip through the editor: whole, and
+    /// genuinely UTF-8. Anything else opens read-only.
+    pub editable: bool,
+    /// The file's modification time when it was read — what a save is checked
+    /// against so it cannot clobber a newer version.
+    pub modified_ms: u64,
 }
 
 /// One row of the panel's Changed or Staged section.

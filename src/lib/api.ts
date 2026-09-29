@@ -122,6 +122,17 @@ export const api = {
     traced("set_permission_mode", `id=${id} mode=${mode}`, () =>
       invoke<string>("set_permission_mode", { id, mode }),
     ),
+  /** Moves a session onto another model and effort mid-conversation; `null`
+   * for either is the CLI's own default. */
+  setSessionModel: (
+    id: number,
+    model: string | null,
+    variant: string | null,
+    context: number | null,
+  ) =>
+    traced("set_session_model", `id=${id} model=${model ?? "(default)"} variant=${variant ?? "(default)"}`, () =>
+      invoke<void>("set_session_model", { id, model, variant, context }),
+    ),
   getTranscript: (id: number) =>
     traced("get_transcript", `id=${id}`, () => invoke<TranscriptDto>("get_transcript", { id })),
 
@@ -198,10 +209,18 @@ export const api = {
   // Workspace panel — the file tree and the file tabs it opens.
   /** One directory. The tree expands lazily, so a folder nobody opened is
    * never walked. */
-  listDir: (path: string) =>
-    traced("list_dir", path, () => invoke<FileEntry[]>("list_dir", { path })),
+  listDir: (path: string, showAll = true) =>
+    traced("list_dir", path, () => invoke<FileEntry[]>("list_dir", { path, showAll })),
   readFile: (path: string) =>
     traced("read_file", path, () => invoke<FileContent>("read_file", { path })),
+  /** Saves text over an existing file and resolves to its new modification
+   * time. `expectedModifiedMs` is the version the text was edited from; a file
+   * that has changed since rejects with a `conflict:` error. `null` skips the
+   * check ("Overwrite"). */
+  writeFile: (path: string, text: string, expectedModifiedMs: number | null) =>
+    traced("write_file", path, () =>
+      invoke<number>("write_file", { path, text, expectedModifiedMs }),
+    ),
 
   // Terminals. One real PTY per terminal tab; output arrives on `pty-output`
   // rather than as a return value, which is what makes the shell live.
@@ -223,6 +242,44 @@ export const api = {
     traced("pty_resize", `id=${id}`, () => invoke<void>("pty_resize", { id, cols, rows })),
   ptyKill: (id: number) =>
     traced("pty_kill", `id=${id}`, () => invoke<void>("pty_kill", { id })),
+
+  // The Browser panel tab: one native webview per tab, layered over the
+  // window and positioned to match a placeholder `<div>` (see
+  // `BrowserPane.tsx`). Navigation lands as `browser-nav` events rather than
+  // return values, mirroring how PTY output arrives above — a real page's
+  // own link clicks and redirects have to reach the tab the same way a typed
+  // address does.
+  /** Creates (or, for a tab reopened after the panel closed, just moves and
+   * shows) a tab's webview. Returns the address it resolved to. */
+  browserOpen: (label: string, url: string, x: number, y: number, width: number, height: number) =>
+    traced("browser_open", `${label} ${url}`, () =>
+      invoke<string>("browser_open", { label, url, x, y, width, height }),
+    ),
+  /** The address bar's Enter — resolves what was typed (a URL, a bare host,
+   * or a search) and navigates the tab to it. */
+  browserNavigate: (label: string, url: string) =>
+    traced("browser_navigate", `${label} ${url}`, () =>
+      invoke<string>("browser_navigate", { label, url }),
+    ),
+  browserReload: (label: string) =>
+    traced("browser_reload", label, () => invoke<void>("browser_reload", { label })),
+  browserGoBack: (label: string) =>
+    traced("browser_go_back", label, () => invoke<void>("browser_go_back", { label })),
+  browserGoForward: (label: string) =>
+    traced("browser_go_forward", label, () => invoke<void>("browser_go_forward", { label })),
+  /** Keeps a tab's webview lined up with its placeholder on every layout
+   * change — silent and frequent, so untraced like `ptyWrite`. */
+  browserSetBounds: (label: string, x: number, y: number, width: number, height: number) =>
+    invoke<void>("browser_set_bounds", { label, x, y, width, height }).catch((error: unknown) => {
+      log.error("ipc", `← browser_set_bounds ${label} failed: ${invokeError(error)}`, error);
+      throw error;
+    }),
+  browserSetVisible: (label: string, visible: boolean) =>
+    traced("browser_set_visible", `${label} visible=${visible}`, () =>
+      invoke<void>("browser_set_visible", { label, visible }),
+    ),
+  browserClose: (label: string) =>
+    traced("browser_close", label, () => invoke<void>("browser_close", { label })),
 
   // Git, for the panel's Changes tab. Local operations go through libgit2 and
   // are cheap enough to call on every refresh; `gitPush` shells out to the
@@ -371,6 +428,9 @@ export const api = {
   /** Hands a link to the platform browser — the PR conversation, a failed
    * check's log. */
   openUrl: (url: string) => traced("open_url", url, () => invoke<void>("open_url", { url })),
+  /** Opens the system page that decides whether egant may show banners. */
+  openNotificationSettings: () =>
+    traced("open_notification_settings", "", () => invoke<void>("open_notification_settings")),
 };
 
 /** One IPC round trip, traced to the console: debug on start/success (with

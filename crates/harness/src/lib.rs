@@ -17,6 +17,7 @@ pub mod models;
 pub mod opencode;
 pub mod protocol;
 pub mod runner;
+pub mod titles;
 pub mod transcript;
 pub mod usage_limits;
 

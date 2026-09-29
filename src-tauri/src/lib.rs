@@ -10,10 +10,12 @@
 //! see [`worktrees`] for which, and for what becomes of the checkout when the
 //! conversation is closed.
 
+mod browser;
 mod commands;
 mod dto;
 mod files;
 mod github;
+mod notifications;
 mod persist;
 mod project;
 mod pty;
@@ -32,6 +34,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(AppState::new()))
         // Terminals live beside the window state rather than inside it: the
         // reader thread behind every terminal tab must never wait on the lock

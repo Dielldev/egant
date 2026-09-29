@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, pickProjectFolder, pickWallpaperImage } from "./lib/api";
 import { log, preview } from "./lib/logger";
+import { noteInterrupt, notifySession } from "./lib/notify";
 import { isLinux } from "./lib/platform";
 import {
   applyEvent,
@@ -35,6 +36,7 @@ import type {
   TranscriptState,
   WindowState,
   WorktreeInfo,
+  WorktreeRenamedPayload,
 } from "./lib/types";
 
 export type SettingsSection =
@@ -97,14 +99,27 @@ export function checkoutPlan(
   return { kind: "currentCheckout" };
 }
 
-/** Sidebar filter popover — ORGANIZE section. */
-export type SidebarOrganize = "flat" | "byProject";
+/** Sidebar view options — ORGANIZE section. `byDevice` is zeron's default: one
+ * section per machine (egant only ever has the one), `flat` is "None". */
+export type SidebarOrganize = "byDevice" | "byProject" | "flat";
+const SIDEBAR_ORGANIZE: readonly SidebarOrganize[] = ["byDevice", "byProject", "flat"];
+
+/** The sessions the sidebar lists for a project filter — `null` is "All
+ * projects". Shared by the list itself and by ‹ › navigation, so stepping
+ * through conversations never leaves the folder the sidebar is showing. */
+export function sessionsInProject(
+  snapshot: WindowState | null,
+  project: number | null,
+): SessionInfo[] {
+  const sessions = snapshot?.sessions ?? [];
+  return project == null ? sessions : sessions.filter((s) => s.projectId === project);
+}
 /** Sidebar filter popover — SORT section. */
 export type SidebarSort = "updated" | "created";
 
 /** What a workspace-panel tab holds: the project's files, a shell, a diff of
- * the repository, or its commit graph. */
-export type PanelTabKind = "files" | "terminal" | "diffs" | "history";
+ * the repository, its commit graph, or a real web page. */
+export type PanelTabKind = "files" | "terminal" | "diffs" | "history" | "browser";
 
 /** One tab in the workspace panel on the right. The Files tab is a tree of
  * the project; a terminal tab owns one PTY for as long as it is open. */
@@ -129,6 +144,13 @@ export interface PanelTab {
   ptyId?: number;
   /** Set when that shell exits, so the tab can say so instead of looking live. */
   exited?: boolean;
+  /** Browser tabs only: the page's current address, once it has navigated
+   * anywhere — `undefined` is the tab's own "new tab" screen, before it has
+   * a webview at all. The tab's own id doubles as its webview's label. */
+  url?: string;
+  /** Browser tabs only: whether the page is between a navigation and its
+   * load finishing. */
+  loading?: boolean;
 }
 
 /** The comparisons a Diffs tab offers, in the order its menu lists them.
@@ -350,9 +372,15 @@ interface EgantStore {
    * revealed. It stays hidden until asked for, which is why the header
    * carries a filter button. */
   filterOpen: boolean;
-  /** Group sessions under their project, or keep the one flat list. */
+  /** Group sessions by machine or by project, or keep the one flat list. */
   sidebarOrganize: SidebarOrganize;
   setSidebarOrganize: (mode: SidebarOrganize) => void;
+  /** Which project the sidebar lists — `null` is "All projects". Deliberately
+   * not `snapshot.activeProject`: opening a session moves that to the
+   * session's owner, which would silently narrow an "All projects" list to one
+   * folder the moment anything was clicked. */
+  sidebarProject: number | null;
+  setSidebarProject: (project: number | null) => void;
   /** `updated` reads newest-first; `created` reads oldest-first. There is no
    * separate last-activity clock, so `updated` is `startedUnixMs` descending —
    * the closest proxy the backend tracks today. */
@@ -361,10 +389,12 @@ interface EgantStore {
   /** Whether a row's meta line also names its git branch. */
   sidebarShowBranch: boolean;
   setSidebarShowBranch: (on: boolean) => void;
-  /** Whether a row's meta line also spells out the harness name (its logo
-   * shows regardless — this only adds the text). */
+  /** Whether a row carries its harness logo beside the title. */
   sidebarShowHarness: boolean;
   setSidebarShowHarness: (on: boolean) => void;
+  /** Whether a row's first line names `project @ machine`. */
+  sidebarShowLocation: boolean;
+  setSidebarShowLocation: (on: boolean) => void;
   /** Hides every session still on its project's own checkout, leaving only
    * the ones running in a worktree of their own — just the folders, not the
    * "normal" chats sitting outside any of them. */
@@ -374,18 +404,11 @@ interface EgantStore {
    * sensible range. Persisted so a resize survives reopening the window. */
   sidebarWidth: number;
   setSidebarWidth: (width: number) => void;
-  /** Which project groups are collapsed in the "by project" sidebar, keyed
-   * by project id as a string (localStorage round-trips through JSON, which
-   * only has string keys). A project with a lot of history collapses down
-   * to just its header, the way a folder does. */
-  collapsedProjects: Record<string, boolean>;
-  toggleProjectCollapsed: (projectId: number) => void;
-  /** Which worktree folders are collapsed within a "by project" sidebar,
-   * keyed `${projectId}:${worktree.path}` — a worktree's path is unique
-   * across the whole machine, so this survives two projects happening to cut
-   * a worktree with the same generated name. */
-  collapsedWorktrees: Record<string, boolean>;
-  toggleWorktreeCollapsed: (key: string) => void;
+  /** Which sidebar sections are collapsed, keyed `device:<machine>` or
+   * `project:<id>` so switching how the list is organized never collapses a
+   * section that just happens to share a key with another grouping. */
+  collapsedGroups: Record<string, boolean>;
+  toggleGroupCollapsed: (key: string) => void;
   /** The workspace panel on the right: the project's files and its
    * terminals. Closed until asked for — the window is a conversation first. */
   panelOpen: boolean;
@@ -414,6 +437,17 @@ interface EgantStore {
    * caller can type into it. */
   openTerminalTab: (cwd?: string) => string;
   openHistoryTab: () => void;
+  /** Opens a fresh Browser tab onto its own "new tab" screen — unlike Files
+   * or Diffs, a second one is exactly the point (two pages open side by
+   * side), so this never reuses an existing tab. Returns the new tab's id. */
+  openBrowserTab: () => string;
+  /** What a Browser tab's page reports about itself, off the `browser-nav`
+   * event — the address bar and the tab strip's title are both driven from
+   * this rather than owning their own copy of it. */
+  updateBrowserTab: (
+    id: string,
+    patch: Partial<Pick<PanelTab, "url" | "loading" | "title">>,
+  ) => void;
   /** Changes which comparison a Diffs tab is showing. */
   setPanelScope: (tabId: string, scope: DiffScopeKind) => void;
   /** Changes what a branch scope measures against. */
@@ -657,6 +691,9 @@ interface EgantStore {
   cycleMode: (id: number) => Promise<void>;
   /** Jumps straight to a named mode, for the mode-info popover's rows. */
   setMode: (id: number, mode: string) => Promise<void>;
+  /** Moves a running session onto another model and/or effort, keeping the
+   * conversation. `""` for either means the CLI's own default. */
+  setSessionModel: (id: number, model: string, variant: string) => Promise<void>;
 
   chooseWallpaper: () => Promise<void>;
   clearWallpaper: () => Promise<void>;
@@ -899,6 +936,24 @@ export function selectLaunching(
   );
 }
 
+/** Whether the launch screen is what the user is looking at — `selectLaunching`
+ * with the one exception App.tsx already makes: a file or diff open on the
+ * stage takes it over, launch state or not.
+ *
+ * The workspace panel has nothing to show here (no conversation, no working
+ * tree yet), so it is not offered on this screen and is hidden if it was open.
+ * Its open/closed choice is left alone — it is derived away, not closed — so
+ * the panel returns as it was the moment a conversation is back on the stage. */
+export function selectOnLaunchScreen(
+  s: Pick<EgantStore, "snapshot" | "transcripts" | "startingNewSession" | "stageTabs" | "stageTab">,
+): boolean {
+  if (!selectLaunching(s.snapshot, s.transcripts, s.startingNewSession)) return false;
+  // The same key App.tsx files stage tabs under: `-1` before any conversation.
+  const key = s.snapshot?.activeSession ?? -1;
+  const showing = s.stageTab[key] ?? CHAT_TAB;
+  return !(s.stageTabs[key] ?? []).some((tab) => tab.key === showing);
+}
+
 /** The session on the stage, if there is one. */
 export function selectActiveSession(snapshot: WindowState | null): SessionInfo | null {
   if (!snapshot || snapshot.activeSession == null) return null;
@@ -948,6 +1003,12 @@ export function workspaceRoot(snapshot: WindowState | null): string {
 /** The first shell is just "Terminal"; the rest are numbered. */
 function terminalTitle(n: number): string {
   return n === 1 ? "Terminal" : `Terminal ${n}`;
+}
+
+/** Same numbering scheme as a terminal's, before a Browser tab has navigated
+ * anywhere to be titled after. */
+function browserTitle(n: number): string {
+  return n === 1 ? "New Tab" : `New Tab ${n}`;
 }
 
 let panelTabSeq = 0;
@@ -1056,8 +1117,53 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ transcripts: next });
     }
     if (snapshot.activeSession != null) void get().ensureTranscript(snapshot.activeSession);
+    // "All projects" stays as it is; an explicit project filter follows a
+    // folder that was just added, so the first send lands in a list that shows
+    // it instead of a filter that hides the new session.
+    const filtered = get().sidebarProject;
+    if (filtered != null) {
+      if (prev && snapshot.activeProject != null) {
+        const known = new Set(prev.projects.map((p) => p.id));
+        if (!known.has(snapshot.activeProject)) get().setSidebarProject(snapshot.activeProject);
+      } else if (!prev) {
+        // First look at the window: a filter saved last run that disagrees
+        // with the conversation the backend reopened gives way to it, so the
+        // open conversation is in the list.
+        const open = snapshot.sessions.find((s) => s.id === snapshot.activeSession);
+        if (open && open.projectId !== filtered) get().setSidebarProject(open.projectId);
+      }
+    }
     if (prev?.settings.wallpaper !== snapshot.settings.wallpaper) {
       void syncWallpaper(snapshot.settings.wallpaper);
+    }
+  }
+
+  /** Carries a worktree's new name onto every session running in it, and onto
+   * a new conversation about to join it — the sidebar groups by path, and
+   * labels the group from whichever session it meets first. */
+  function onWorktreeRenamed({ path, branch, name, previousBranch }: WorktreeRenamedPayload): void {
+    log.info("store", `worktree ${previousBranch} renamed to ${branch}`);
+    const rename = (worktree: WorktreeInfo): WorktreeInfo =>
+      worktree.path === path ? { ...worktree, branch, name } : worktree;
+    const { snapshot, startingNewSessionWorktree } = get();
+    if (snapshot) {
+      set({
+        snapshot: {
+          ...snapshot,
+          sessions: snapshot.sessions.map((session) =>
+            session.worktree?.path === path
+              ? {
+                  ...session,
+                  worktree: rename(session.worktree),
+                  branch: session.branch === previousBranch ? branch : session.branch,
+                }
+              : session,
+          ),
+        },
+      });
+    }
+    if (startingNewSessionWorktree) {
+      set({ startingNewSessionWorktree: rename(startingNewSessionWorktree) });
     }
   }
 
@@ -1094,6 +1200,16 @@ export const useEgant = create<EgantStore>()((set, get) => {
     const prev = get().transcripts[sessionId] ?? emptyTranscript();
     const next = applyEvent(prev, event);
     set({ transcripts: { ...get().transcripts, [sessionId]: next } });
+    // The sound and banner for a run that finished, stalled or failed. Reads
+    // the transcript either side of the event, so it sees what the fold made
+    // of it (a turn that ended on a question, say).
+    notifySession(
+      sessionId,
+      event,
+      prev,
+      next,
+      get().snapshot?.sessions.find((s) => s.id === sessionId)?.title ?? "",
+    );
     // The session rows derive their live Badges from the same fold.
     const patch: Partial<SessionInfo> = {
       busy: next.state !== "idle",
@@ -1120,10 +1236,22 @@ export const useEgant = create<EgantStore>()((set, get) => {
     filter: "",
     filterOpen: false,
     searchOpen: false,
-    sidebarOrganize: (loadString("egant.sidebarOrganize") as SidebarOrganize | null) ?? "byProject",
+    sidebarOrganize: (() => {
+      const saved = loadString("egant.sidebarOrganize") as SidebarOrganize | null;
+      return saved && SIDEBAR_ORGANIZE.includes(saved) ? saved : "byDevice";
+    })(),
     setSidebarOrganize: (sidebarOrganize) => {
       set({ sidebarOrganize });
       saveString("egant.sidebarOrganize", sidebarOrganize);
+    },
+    sidebarProject: (() => {
+      const raw = loadString("egant.sidebarProject");
+      const id = raw == null ? NaN : Number(raw);
+      return Number.isInteger(id) ? id : null;
+    })(),
+    setSidebarProject: (sidebarProject) => {
+      set({ sidebarProject });
+      saveString("egant.sidebarProject", sidebarProject == null ? null : String(sidebarProject));
     },
     sidebarSort: (loadString("egant.sidebarSort") as SidebarSort | null) ?? "created",
     setSidebarSort: (sidebarSort) => {
@@ -1140,6 +1268,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ sidebarShowHarness });
       saveString("egant.sidebarShowHarness", String(sidebarShowHarness));
     },
+    sidebarShowLocation: loadBool("egant.sidebarShowLocation", true),
+    setSidebarShowLocation: (sidebarShowLocation) => {
+      set({ sidebarShowLocation });
+      saveString("egant.sidebarShowLocation", String(sidebarShowLocation));
+    },
     sidebarWorktreesOnly: loadBool("egant.sidebarWorktreesOnly", false),
     setSidebarWorktreesOnly: (sidebarWorktreesOnly) => {
       set({ sidebarWorktreesOnly });
@@ -1151,24 +1284,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ sidebarWidth });
       saveString("egant.sidebarWidth", String(sidebarWidth));
     },
-    collapsedProjects: loadBoolRecord("egant.collapsedProjects", {}),
-    toggleProjectCollapsed: (projectId) => {
-      const key = String(projectId);
-      const collapsedProjects = {
-        ...get().collapsedProjects,
-        [key]: !get().collapsedProjects[key],
-      };
-      set({ collapsedProjects });
-      localStorage.setItem("egant.collapsedProjects", JSON.stringify(collapsedProjects));
-    },
-    collapsedWorktrees: loadBoolRecord("egant.collapsedWorktrees", {}),
-    toggleWorktreeCollapsed: (key) => {
-      const collapsedWorktrees = {
-        ...get().collapsedWorktrees,
-        [key]: !get().collapsedWorktrees[key],
-      };
-      set({ collapsedWorktrees });
-      localStorage.setItem("egant.collapsedWorktrees", JSON.stringify(collapsedWorktrees));
+    collapsedGroups: loadBoolRecord("egant.collapsedGroups", {}),
+    toggleGroupCollapsed: (key) => {
+      const collapsedGroups = { ...get().collapsedGroups, [key]: !get().collapsedGroups[key] };
+      set({ collapsedGroups });
+      saveString("egant.collapsedGroups", JSON.stringify(collapsedGroups));
     },
     panelOpen: loadBool("egant.panelOpen", false),
     panelWidth: loadNumber("egant.panelWidth", 320),
@@ -1186,6 +1306,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
     panelTab: null,
     setPanelTab: (panelTab) => set({ panelTab }),
     togglePanel: () => {
+      // No panel on the launch screen, so ⌘J has nothing to toggle there.
+      // Flipping the saved flag anyway would change what the *next*
+      // conversation opens with, with nothing on screen to explain it.
+      if (selectOnLaunchScreen(get())) return;
       const panelOpen = !get().panelOpen;
       // With no tabs the panel shows its two buttons — Files or Terminal — so
       // opening it never has to guess which one was meant.
@@ -1247,6 +1371,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       saveString("egant.panelOpen", "true");
     },
     togglePanelMaximized: () => {
+      if (selectOnLaunchScreen(get())) return;
       const panelMaximized = !get().panelMaximized;
       // Maximizing is also a way of opening it: the button is on the panel's
       // own header, but a keyboard path to it should not leave the window
@@ -1286,14 +1411,37 @@ export const useEgant = create<EgantStore>()((set, get) => {
       saveString("egant.panelOpen", "true");
       return tab.id;
     },
+    openBrowserTab: () => {
+      const { panelTabs } = get();
+      const taken = new Set(panelTabs.map((tab) => tab.title));
+      let n = 1;
+      while (taken.has(browserTitle(n))) n += 1;
+      const tab: PanelTab = {
+        id: `browser-${nextPanelTabId()}`,
+        kind: "browser",
+        title: browserTitle(n),
+        cwd: workspaceRoot(get().snapshot),
+      };
+      set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
+      saveString("egant.panelOpen", "true");
+      return tab.id;
+    },
+    updateBrowserTab: (id, patch) => {
+      set({
+        panelTabs: get().panelTabs.map((tab) => (tab.id === id ? { ...tab, ...patch } : tab)),
+      });
+    },
     closePanelTab: (id) => {
       const { panelTabs, panelTab } = get();
       const index = panelTabs.findIndex((tab) => tab.id === id);
       if (index < 0) return;
       // Closing a terminal tab ends its shell — the tab was the only thing
-      // holding it open.
+      // holding it open. A browser tab's webview is the same idea: the tab
+      // id doubles as its label, and this is the only thing that tears it
+      // down rather than just hiding it.
       const closing = panelTabs[index];
       if (closing.ptyId != null) void api.ptyKill(closing.ptyId).catch(() => {});
+      if (closing.kind === "browser") void api.browserClose(closing.id).catch(() => {});
       const rest = panelTabs.filter((tab) => tab.id !== id);
       // Land on the neighbour rather than jumping to the end of the strip.
       const neighbour = rest[index] ?? rest[index - 1] ?? null;
@@ -1745,7 +1893,16 @@ export const useEgant = create<EgantStore>()((set, get) => {
       // session sits in the sidebar labelled `goose` until something else
       // happens to open the agent picker.
       void get().fetchCatalog();
-      return await listen<SessionEventPayload>("session-event", (e) => onSessionEvent(e.payload));
+      const unlistenEvents = await listen<SessionEventPayload>("session-event", (e) =>
+        onSessionEvent(e.payload),
+      );
+      const unlistenRenames = await listen<WorktreeRenamedPayload>("worktree-renamed", (e) =>
+        onWorktreeRenamed(e.payload),
+      );
+      return () => {
+        unlistenEvents();
+        unlistenRenames();
+      };
     },
 
     refresh: async () => {
@@ -1794,6 +1951,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     selectProject: async (id) => {
       set({ startingNewSession: false, startingNewSessionWorktree: null });
+      // Picking a folder from the launch screen's chip while the sidebar lists
+      // another one: the list follows, or the new session would land in a
+      // folder the sidebar isn't showing.
+      if (get().sidebarProject != null) get().setSidebarProject(id);
       try {
         applySnapshot(await api.selectProject(id));
       } catch (error) {
@@ -1847,6 +2008,12 @@ export const useEgant = create<EgantStore>()((set, get) => {
           fail(set, new Error("the conversation did not switch — try again"));
         } else {
           const session = snapshot.sessions.find((s) => s.id === id);
+          // Landing on a conversation outside the listed folder (search, a
+          // deep link) moves the list to it, so the row you opened is on screen.
+          const listed = get().sidebarProject;
+          if (session && listed != null && listed !== session.projectId) {
+            get().setSidebarProject(session.projectId);
+          }
           if (session && snapshot.activeProject !== session.projectId) {
             fail(
               set,
@@ -1877,8 +2044,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
     selectPrevSession: async () => {
       const snapshot = get().snapshot;
       if (!snapshot) return;
-      const index = snapshot.sessions.findIndex((s) => s.id === snapshot.activeSession);
-      const target = index > 0 ? snapshot.sessions[index - 1] : undefined;
+      const listed = sessionsInProject(snapshot, get().sidebarProject);
+      const index = listed.findIndex((s) => s.id === snapshot.activeSession);
+      const target = index > 0 ? listed[index - 1] : undefined;
       if (!target) return;
       set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
@@ -1891,11 +2059,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
     selectNextSession: async () => {
       const snapshot = get().snapshot;
       if (!snapshot) return;
-      const index = snapshot.sessions.findIndex((s) => s.id === snapshot.activeSession);
+      const listed = sessionsInProject(snapshot, get().sidebarProject);
+      const index = listed.findIndex((s) => s.id === snapshot.activeSession);
       const target =
-        index >= 0 && index < snapshot.sessions.length - 1
-          ? snapshot.sessions[index + 1]
-          : undefined;
+        index >= 0 && index < listed.length - 1 ? listed[index + 1] : undefined;
       if (!target) return;
       set({ startingNewSession: false, startingNewSessionWorktree: null });
       try {
@@ -2026,6 +2193,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     interrupt: async (id) => {
       log.info("store", `interrupt session ${id}`);
+      // Stopping a run ends its turn as an error (or a completion); that is the
+      // user's own doing, so the notification for it is suppressed. Only when a
+      // turn is actually in flight — an idle Stop has no turn end to swallow.
+      if ((get().transcripts[id]?.state ?? "idle") !== "idle") noteInterrupt(id);
       try {
         await api.interruptSession(id);
       } catch (error) {
@@ -2113,6 +2284,27 @@ export const useEgant = create<EgantStore>()((set, get) => {
       try {
         const applied = await api.setPermissionMode(id, mode);
         patchSession(id, { permissionMode: applied });
+      } catch (error) {
+        fail(set, error);
+      }
+    },
+
+    setSessionModel: async (id, model, variant) => {
+      log.debug("store", `switch model session ${id} model=${model || "default"} variant=${variant || "default"}`);
+      const session = get().snapshot?.sessions.find((s) => s.id === id);
+      if (!session) return;
+      // Settings' context pick for this agent still applies to the new model;
+      // the old model's window might not.
+      const context = selectNextContextTokens("", get().defaultContexts, session.agent);
+      try {
+        await api.setSessionModel(id, model || null, variant || null, context);
+        patchSession(id, { modelOverride: model || null, variant: variant || null, context });
+        // Same as the backend: the badge names the pick until the agent's next
+        // turn reports the model it actually resolved to.
+        const transcript = get().transcripts[id];
+        if (transcript) {
+          set({ transcripts: { ...get().transcripts, [id]: { ...transcript, model: model || null } } });
+        }
       } catch (error) {
         fail(set, error);
       }

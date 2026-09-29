@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/* Text inside a drag strip (a session title, a project label) is still
+ * selectable by default, and WebKit's own click-drag-to-select-text gesture
+ * fights the window drag we start on mousedown — once a click is also a
+ * selection attempt, WebKit's gesture tends to win over the drag started
+ * through `startDragging`. Turning off text selection here is what lets the
+ * two stop competing. */
+[data-tauri-drag-region],
+[data-tauri-drag-region] * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 /* One palette for both screens. The launch screen and the conversation are
  * the same window in two states, so they share every tint: only the wallpaper
  * treatment changes between them. */

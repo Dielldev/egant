@@ -1,15 +1,24 @@
-import { ArrowUp, Loader2, Paperclip, Square, TerminalSquare, TriangleAlert, X } from "lucide-react";
+import {
+  ArrowUp,
+  Folder,
+  FolderTree,
+  GitBranch,
+  Loader2,
+  Paperclip,
+  Square,
+  TerminalSquare,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, pickAttachments } from "../lib/api";
 import { log } from "../lib/logger";
 import { modShortcut } from "../lib/platform";
-import { formatContext } from "../lib/types";
-import { prettyClaudeModelId } from "../lib/transcript";
 import { selectNextAgent, useEgant, usesChatUi } from "../store";
-import { AGENT_ACCENT, AGENT_PROVIDER, AgentPicker, agentName } from "./AgentPicker";
+import { AgentPicker, agentName } from "./AgentPicker";
 import { ModeInfo } from "./ModeInfo";
-import { ProviderGlyph } from "./ProviderLogo";
+import { SessionModelPicker } from "./SessionModelPicker";
 import { UsageMeter } from "./UsageMeter";
 
 /** A clipboard image between paste and send: shown as a thumbnail chip while
@@ -26,9 +35,10 @@ type PastedImage = {
 /** The one control that drives the window, in the two shapes it takes.
  *
  * `hero` is the launch screen's: a tall box with its chips on a row beneath.
- * The default is the conversation's: a single-line pill with the same chips
- * inline on the right. Same glass, same chips, same keys — only the height
- * differs, because it is the same control in both places. */
+ * The default is the conversation's, laid out the way Claude Code Desktop's
+ * is: a single-line pill — attach, text, the model badge, send — over a quiet
+ * row saying where the session runs and how full its context is. Same glass,
+ * same keys, because it is the same control in both places. */
 export function Composer({
   sessionId,
   hero,
@@ -60,22 +70,26 @@ export function Composer({
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  // Below this the picker/attach/send block and the text box are fighting
-  // over the same row — Zeron's answer is to stop sharing the row instead of
-  // letting either one lose, so the toolbar drops beneath the text once
-  // there isn't room for both. Measured on the composer's own box, not the
-  // window: a wide window with the workspace panel dragged out squeezes this
-  // exactly the way a narrow window would.
-  const [narrow, setNarrow] = useState(false);
+  // Measured on the composer's own box, not the window: a wide window with
+  // the workspace panel dragged out squeezes it exactly the way a narrow
+  // window would. Two steps down from the full row:
+  // - `compact`: the badge drops its effort label and the footer its
+  //   "Local checkout" words — the icons (and their tooltips) still say it.
+  // - `narrow`: the text box and the toolbar stop sharing a row (Zeron's
+  //   answer to the squeeze), so the text gets the full width above it
+  //   instead of either one being crushed.
+  const [width, setWidth] = useState(Infinity);
   useEffect(() => {
     const el = wrapRef.current;
     if (!el || hero) return;
     const observer = new ResizeObserver(([entry]) => {
-      if (entry) setNarrow(entry.contentRect.width < 480);
+      if (entry) setWidth(entry.contentRect.width);
     });
     observer.observe(el);
     return () => observer.disconnect();
   }, [hero]);
+  const compact = width < 560;
+  const narrow = width < 420;
 
   useEffect(() => {
     if (autoFocus) areaRef.current?.focus();
@@ -114,25 +128,10 @@ export function Composer({
   const resumable = (session?.ended ?? false) && transcript?.sessionId != null;
   const ended = (session?.ended ?? false) && !resumable;
   const hasText = text.trim().length > 0;
-  // The agent is fixed when the session starts; only Claude reports a live
-  // model and accepts mid-session permission changes.
+  // The agent is fixed when the session starts; the model and effort under
+  // it are what the badge switches.
   const agents = useEgant((s) => s.agents);
-  const models = useEgant((s) => s.models);
   const agent = session?.agent ?? null;
-  const agentDisplay = agentName(agents, agent);
-  const requestedModel = transcript?.model ?? session?.modelOverride ?? null;
-  // A live Claude session reports its fully-resolved model id (date stamp and
-  // all — "claude-haiku-4-5-20251001"), which never matches the curated
-  // catalog's short alias ("haiku"); `prettyClaudeModelId` reconstructs the
-  // same display shape the catalog uses instead of leaking the raw id.
-  const displayModel =
-    (requestedModel && models.find((m) => m.id === requestedModel)?.name) ||
-    (requestedModel && agent === "claude" ? prettyClaudeModelId(requestedModel) : requestedModel) ||
-    agentDisplay;
-  const sessionContext =
-    session?.context != null && session.context > 0
-      ? formatContext(session.context)
-      : "";
   const mode = session?.permissionMode ?? "auto";
 
   // Before a session exists, the composer already knows which agent the next
@@ -269,7 +268,7 @@ export function Composer({
       placeholder={
         cliAgent ? `${cliAgentName} runs in its own terminal` : "Do anything…"
       }
-      className="max-h-[240px] w-full resize-none bg-transparent text-sm leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--muted)] disabled:opacity-50"
+      className="block max-h-[240px] w-full resize-none bg-transparent text-[15px] leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--muted)] disabled:opacity-50"
     />
   );
 
@@ -343,91 +342,48 @@ export function Composer({
       )
     : null;
 
-  const picker =
-    sessionId == null ? (
-      // Nothing to meter before a session exists — the launch screen offers
-      // only the agent/model pick, same as Claude Code Desktop's own.
-      <AgentPicker />
-    ) : (
-      // The agent is fixed once a session starts, so this is a plain label —
-      // the mode pill and the usage meter are the only interactive controls
-      // here now.
-      <div className="flex min-w-0 max-w-[340px] items-center gap-1">
-        <span
-          title={`${agentDisplay} session`}
-          className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs"
-        >
-          <ProviderGlyph
-            provider={AGENT_PROVIDER[agent ?? ""] ?? agent ?? "claude"}
-            size={14}
-            color={agent ? AGENT_ACCENT[agent] : undefined}
-          />
-          <span className="truncate font-medium text-[var(--ink)]">{displayModel}</span>
-          {sessionContext !== "" && (
-            <span className="shrink-0 text-[var(--muted)]">· {sessionContext}</span>
-          )}
-        </span>
-        {agent != null && <ModeInfo sessionId={sessionId} agent={agent} mode={mode} />}
-        {transcript && (
-          <UsageMeter
-            usage={transcript.usage}
-            costUsd={transcript.totalCostUsd}
-            claudeUsage={claudeActive ? claudeUsage : null}
-          />
-        )}
-      </div>
-    );
-
-  const actions = (
-    <>
-      <button
-        type="button"
-        title="Attach a file or folder"
-        onClick={() => void attach()}
-        className="shrink-0 cursor-pointer rounded-full p-1.5 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-      >
-        <Paperclip size={15} strokeWidth={2} />
-      </button>
-      {busy ? (
-        <button
-          type="button"
-          title={`Stop the turn · ${modShortcut("⎋")}`}
-          onClick={() => {
-            if (sessionId != null) void interrupt(sessionId);
-          }}
-          className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#f2f2f5] text-[#0c0c0e] hover:opacity-85"
-        >
-          <Square size={12} strokeWidth={2} fill="currentColor" />
-        </button>
-      ) : (
-        // Always there, visibly inert until the message is worth sending —
-        // except in CLI mode, where it is always live, because opening the
-        // terminal needs no message.
-        <button
-          type="button"
-          title={cliAgent ? `Open the ${cliAgentName} CLI` : "Send · ⏎"}
-          onClick={submit}
-          className={`flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full hover:opacity-85 ${
-            cliAgent || (hasContent && !ended)
-              ? "bg-[#f2f2f5] text-[#0c0c0e]"
-              : "bg-[var(--bubble)] text-[var(--faint)]"
-          }`}
-        >
-          {cliAgent ? (
-            <TerminalSquare size={15} strokeWidth={2.5} />
-          ) : (
-            <ArrowUp size={16} strokeWidth={2.5} />
-          )}
-        </button>
-      )}
-    </>
+  const attachButton = (
+    <button
+      type="button"
+      title="Attach a file or folder"
+      onClick={() => void attach()}
+      className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+    >
+      <Paperclip size={17} strokeWidth={2} />
+    </button>
   );
 
-  // Hero always stacks; a threaded composer stacks too once its own box gets
-  // too narrow for the toolbar to share a row with the text — see `narrow`.
-  const stacked = hero || narrow;
+  const sendButton = busy ? (
+    <button
+      type="button"
+      title={`Stop the turn · ${modShortcut("⎋")}`}
+      onClick={() => {
+        if (sessionId != null) void interrupt(sessionId);
+      }}
+      className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#f2f2f5] text-[#0c0c0e] hover:opacity-85"
+    >
+      <Square size={12} strokeWidth={2} fill="currentColor" />
+    </button>
+  ) : (
+    // Always the same light disc, the way the reference draws it even over
+    // an empty box — `submit` is what refuses an empty or ended send. In CLI
+    // mode it opens the terminal instead, which needs no message.
+    <button
+      type="button"
+      title={cliAgent ? `Open the ${cliAgentName} CLI` : "Send · ⏎"}
+      aria-disabled={!cliAgent && (!hasContent || ended)}
+      onClick={submit}
+      className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#f2f2f5] text-[#0c0c0e] hover:opacity-85"
+    >
+      {cliAgent ? (
+        <TerminalSquare size={15} strokeWidth={2.5} />
+      ) : (
+        <ArrowUp size={16} strokeWidth={2.5} />
+      )}
+    </button>
+  );
 
-  if (stacked) {
+  if (hero || sessionId == null) {
     return (
       <div ref={wrapRef} className="composer w-full rounded-2xl px-5 py-4">
         {connectionNotice && (
@@ -447,26 +403,93 @@ export function Composer({
         )}
         {imageRow}
         {area}
-        {/* Picker left, actions right — matches the reference bar where the
-          model (`Fable 5.1 High · 200K`) sits opposite the paperclip/send. */}
+        {/* Picker left, actions right — the launch picker chooses what the
+          next session starts with (agent, model, effort). */}
         <div className="mt-3 flex min-w-0 items-center justify-between gap-2.5">
-          <div className="min-w-0">{picker}</div>
-          <div className="flex shrink-0 items-center gap-2.5">{actions}</div>
+          <div className="min-w-0">
+            <AgentPicker />
+          </div>
+          <div className="flex shrink-0 items-center gap-2.5">
+            {attachButton}
+            {sendButton}
+          </div>
         </div>
         {lightbox}
       </div>
     );
   }
 
+  // Where this session runs — fixed once it starts, so these are labels, not
+  // menus. A worktree session is named for what it is; the branch is the
+  // worktree's own, or whatever the project folder was on.
+  const worktree = session?.worktree ?? null;
+  const branch = worktree?.branch ?? session?.branch ?? null;
+
   return (
-    <div ref={wrapRef} className="composer flex w-full items-end gap-2.5 rounded-[22px] py-2 pr-2 pl-4">
-      <div className="min-w-0 flex-1 py-1">
-        {imageRow}
-        {area}
+    <div ref={wrapRef} className="w-full min-w-0">
+      {/* One DOM for both widths — only classes change — so the text box is
+        never remounted (and never loses focus or its caret) as the column is
+        dragged across the breakpoint. */}
+      <div
+        className={`composer flex w-full flex-wrap items-end gap-x-2 rounded-[26px] py-2 pr-2 pl-2 ${
+          narrow ? "gap-y-1" : ""
+        }`}
+      >
+        {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
+        <div className={narrow ? "order-2" : "order-1"}>{attachButton}</div>
+        <div
+          className={`order-1 min-w-0 py-1 ${narrow ? "w-full basis-full px-2.5" : "flex-1 pr-1"}`}
+        >
+          {area}
+        </div>
+        <div
+          className={`order-2 flex min-w-0 items-center justify-end gap-1.5 ${
+            narrow ? "flex-1" : "max-w-[46%] shrink-0"
+          }`}
+        >
+          {agent != null && (
+            <SessionModelPicker sessionId={sessionId} agent={agent} compact={compact && !narrow} />
+          )}
+          {sendButton}
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2.5 pb-0.5">
-        {picker}
-        {actions}
+      <div className="flex min-w-0 items-center justify-between gap-3 px-4 pt-2.5 text-[13px] text-[var(--muted)] select-none">
+        <div className="flex min-w-0 items-center gap-4">
+          <span
+            title={
+              worktree
+                ? `Running in its own worktree at ${worktree.path} (cut from ${worktree.base})`
+                : `Running in the project folder — ${session?.cwd ?? ""}`
+            }
+            className="flex min-w-0 shrink-0 items-center gap-1.5"
+          >
+            {worktree ? (
+              <FolderTree size={15} strokeWidth={1.8} className="shrink-0" />
+            ) : (
+              <Folder size={15} strokeWidth={1.8} className="shrink-0" />
+            )}
+            {!compact && (
+              <span className="whitespace-nowrap">{worktree ? "Worktree" : "Local checkout"}</span>
+            )}
+          </span>
+          {branch && (
+            <span title={`On ${branch}`} className="flex min-w-0 items-center gap-1.5">
+              <GitBranch size={14} strokeWidth={1.8} className="shrink-0" />
+              <span className="truncate">{branch}</span>
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {agent != null && <ModeInfo sessionId={sessionId} agent={agent} mode={mode} />}
+          {transcript && (
+            <UsageMeter
+              usage={transcript.usage}
+              costUsd={transcript.totalCostUsd}
+              claudeUsage={claudeActive ? claudeUsage : null}
+              showPercent
+            />
+          )}
+        </div>
       </div>
       {lightbox}
     </div>

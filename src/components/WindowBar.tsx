@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, PanelLeft, Plus } from "lucide-react";
 import { modShortcut, windowBarPadClass } from "../lib/platform";
-import { useEgant } from "../store";
+import { sessionsInProject, useEgant } from "../store";
 
 /** The row that shares the title bar with the traffic lights: sidebar toggle,
  * session history, new session. It rides at the top of whichever column is
@@ -14,7 +14,8 @@ export function WindowBar() {
   const selectNextSession = useEgant((s) => s.selectNextSession);
   const createSession = useEgant((s) => s.createSession);
 
-  const sessions = snapshot?.sessions ?? [];
+  const sidebarProject = useEgant((s) => s.sidebarProject);
+  const sessions = sessionsInProject(snapshot, sidebarProject);
   const index = sessions.findIndex((s) => s.id === snapshot?.activeSession);
   const canBack = index > 0;
   const canForward = index >= 0 && index < sessions.length - 1;

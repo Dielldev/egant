@@ -1,3 +1,5 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
 /** Platform helpers for chrome insets and shortcut labels.
  *
  * Detection is sync (UA / platform) so tooltips and first paint stay correct
@@ -22,6 +24,59 @@ export function isLinux(): boolean {
  * macOS; a small inset elsewhere (normal decorations own the chrome). */
 export function windowBarPadClass(): string {
   return isMac() ? "pl-[76px]" : "pl-2";
+}
+
+/** Makes every `data-tauri-drag-region` element in the app actually drag the
+ * window on macOS. The attribute alone is supposed to be enough (WRY hit-
+ * tests it natively), but that hit-test region only gets (re)computed on
+ * layout changes WRY happens to observe — content that changes size after
+ * first paint (a session title loading in, a worktree chip appearing) can
+ * end up sitting on a stale region that no longer matches what's on screen,
+ * so some drag strips work and others silently don't depending on what's
+ * rendered in them. A single capture-phase listener sidesteps that: it reads
+ * the *current* DOM on every mousedown, so it's never stale. Call once, at
+ * startup.
+ *
+ * Needs `core:window:allow-start-dragging` (and `allow-toggle-maximize` for
+ * the double-click zoom) in `src-tauri/capabilities/default.json` — without
+ * them the IPC calls are denied and only the statically-laid-out strips
+ * (the top WindowBar) keep dragging via the native hit-test.
+ *
+ * A double-click zooms (the OS default for a titlebar) instead of dragging;
+ * a mousedown on an interactive child (a button, a link, an input) is left
+ * alone so those keep working normally. */
+export function installTitlebarDragHandler(): void {
+  // Guarded: `main.tsx` runs once, but HMR / remounts must never stack a
+  // second identical capture listener (two `startDragging` calls per click).
+  if ((window as unknown as { __egantDragInstalled?: boolean }).__egantDragInstalled)
+    return;
+  (window as unknown as { __egantDragInstalled?: boolean }).__egantDragInstalled = true;
+  window.addEventListener(
+    "mousedown",
+    (e) => {
+      if (e.button !== 0) return;
+      // `e.target` is an SVGElement inside inline glyphs (ProviderGlyph) —
+      // still an Element, so `closest` works — but be defensive anyway.
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      if (target.closest("button, a, input, textarea, select, [contenteditable]")) return;
+      if (target.closest("[data-tauri-no-drag]")) return;
+      if (!target.closest("[data-tauri-drag-region]")) return;
+      const win = getCurrentWindow();
+      if (e.detail === 2) {
+        e.preventDefault();
+        win.toggleMaximize().catch(() => {});
+        return;
+      }
+      // Must stay synchronous in the mousedown tick: yielding first (await)
+      // would lose the user-gesture window Tauri/WRY needs to grab the move.
+      // `preventDefault` stops WebKit's text/image drag gesture from racing
+      // the window move we just asked for.
+      e.preventDefault();
+      win.startDragging().catch(() => {});
+    },
+    { capture: true },
+  );
 }
 
 /**

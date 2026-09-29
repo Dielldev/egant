@@ -586,6 +586,27 @@ fn set_permission_mode(state: BackendState<'_>, id: u64, mode: String) -> Result
     sessions::set_permission_mode(&mut guard, id, parsed).map(str::to_owned)
 }
 
+/// Moves a chat session onto another model and effort mid-conversation — the
+/// composer's model badge. See [`sessions::set_model`].
+#[tauri::command]
+fn set_session_model(
+    app: AppHandle,
+    state: BackendState<'_>,
+    id: u64,
+    model: Option<String>,
+    variant: Option<String>,
+    context: Option<u64>,
+) -> Result<(), String> {
+    let model = model.filter(|model| !model.trim().is_empty());
+    let variant = variant.filter(|variant| !variant.trim().is_empty());
+    let context = context.filter(|n| *n > 0);
+    let mut guard = state.lock().unwrap();
+    sessions::set_model(&app, &mut guard, id, model, variant, context).map_err(|error| {
+        log::error!("set_session_model session {id} failed: {error}");
+        error
+    })
+}
+
 #[tauri::command]
 fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, String> {
     let guard = state.lock().unwrap();
@@ -1467,6 +1488,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         answer_permission,
         cycle_permission_mode,
         set_permission_mode,
+        set_session_model,
         get_transcript,
         get_settings,
         set_wallpaper,
@@ -1491,12 +1513,22 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::github::pr_create,
         crate::github::pr_merge,
         crate::github::open_url,
+        crate::notifications::open_notification_settings,
         crate::files::read_file,
+        crate::files::write_file,
         crate::pty::pty_spawn,
         crate::pty::pty_spawn_agent,
         crate::pty::pty_write,
         crate::pty::pty_resize,
         crate::pty::pty_kill,
+        crate::browser::browser_open,
+        crate::browser::browser_navigate,
+        crate::browser::browser_reload,
+        crate::browser::browser_go_back,
+        crate::browser::browser_go_forward,
+        crate::browser::browser_set_bounds,
+        crate::browser::browser_set_visible,
+        crate::browser::browser_close,
         changes_list,
         repo_status,
         repo_refs,

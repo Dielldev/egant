@@ -23,6 +23,7 @@ import {
   CHAT_TAB,
   selectActiveSession,
   selectLaunching,
+  selectOnLaunchScreen,
   useEgant,
 } from "./store";
 
@@ -50,8 +51,11 @@ export default function App() {
   const transcripts = useEgant((s) => s.transcripts);
   const settingsOpen = useEgant((s) => s.settingsOpen);
   const startingNewSession = useEgant((s) => s.startingNewSession);
-  const panelOpen = useEgant((s) => s.panelOpen);
   const panelMaximized = useEgant((s) => s.panelMaximized);
+  // The launch screen has no workspace to show, so the panel is derived away
+  // there — whatever `panelOpen` was persisted as, including at startup and
+  // after "+" from a session that had it open.
+  const panelVisible = useEgant((s) => s.panelOpen && !selectOnLaunchScreen(s));
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -277,7 +281,7 @@ export default function App() {
               // Only while there is a panel to have taken the room: the
               // maximized flag outlives closing the panel, and a stage slid
               // out from under nothing is an empty window.
-              panelMaximized && panelOpen
+              panelMaximized && panelVisible
                 ? "pointer-events-none min-w-0 -translate-x-10 opacity-0"
                 : "min-w-0 translate-x-0 opacity-100"
             }`}
@@ -295,7 +299,7 @@ export default function App() {
               ) : openTab?.kind === "diff" ? (
                 <DiffTabView tab={openTab} />
               ) : openTab ? (
-                <FileView path={openTab.path} name={openTab.name} />
+                <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
               ) : cli ? (
                 <CliStage session={cli} />
               ) : (
@@ -321,7 +325,7 @@ export default function App() {
               )}
             </div>
           </div>
-          {panelOpen && <WorkspacePanel />}
+          {panelVisible && <WorkspacePanel />}
         </>
       )}
       {/* Outside the settings branch: the dialog is reachable both from the

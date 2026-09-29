@@ -4,6 +4,7 @@ import {
   Archive,
   ArrowUpDown,
   Bell,
+  BellRing,
   Box,
   Check,
   ChevronLeft,
@@ -18,7 +19,9 @@ import {
   LayoutGrid,
   MessageCircle,
   Monitor,
+  Music,
   Pencil,
+  Play,
   RefreshCw,
   SlidersHorizontal,
   Volume2,
@@ -27,9 +30,18 @@ import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
-import { modShortcut, windowBarPadClass } from "../lib/platform";
+import {
+  DEFAULT_SOUND_THEME,
+  NOTIFY_KEYS,
+  SOUND_THEMES,
+  playCue,
+  sendBanner,
+} from "../lib/notify";
+import type { NotifyKind } from "../lib/notify";
+import { isMac, modShortcut, windowBarPadClass } from "../lib/platform";
 import { shouldOpenUpward } from "../lib/popover";
 import type { AgentStatus } from "../lib/types";
+import type { ThemeName } from "cuelume";
 import { useEgant } from "../store";
 import type { BgEffect, GlassMode, SettingsSection } from "../store";
 import { AgentsSection } from "./AgentsSettings";
@@ -37,7 +49,7 @@ import {
   Card,
   DevicePill,
   Dot,
-  EDITOR_FONT_SIZE_EVENT,
+  FILES_SETTINGS_EVENT,
   Pills,
   Row,
   SectionHead,
@@ -1085,11 +1097,13 @@ function FilesSection() {
   const [wordWrap, setWordWrap] = usePersistentState("egant.files.wordWrap", true);
   const [showAll, setShowAll] = usePersistentState("egant.files.showAll", true);
 
-  // The pills persist on their own; this tells already-open file and diff
-  // viewers to re-read the new size — same-window `storage` events don't fire.
+  // The controls persist on their own; this tells already-open editors, diff
+  // viewers and file trees to re-read them — same-window `storage` events
+  // don't fire. Declared after the state above, so each hook's own
+  // localStorage write has already run by the time this does.
   useEffect(() => {
-    window.dispatchEvent(new Event(EDITOR_FONT_SIZE_EVENT));
-  }, [fontSize]);
+    window.dispatchEvent(new Event(FILES_SETTINGS_EVENT));
+  }, [autosave, fontSize, wordWrap, showAll]);
 
   return (
     <div>
@@ -1143,61 +1157,178 @@ function FilesSection() {
 // Notifications
 // ---------------------------------------------------------------------------
 
+/** Plays one event's cue so the user can hear what they are switching on. */
+function PreviewButton({ kind, label }: { kind: NotifyKind; label: string }) {
+  return (
+    <button
+      type="button"
+      title={`Preview: ${label}`}
+      aria-label={`Preview: ${label}`}
+      onClick={() => playCue(kind)}
+      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border border-[var(--border)] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+    >
+      <Play size={12} strokeWidth={2.25} />
+    </button>
+  );
+}
+
+const SOUND_THEME_LABELS: Record<ThemeName, string> = {
+  default: "Default",
+  mech: "Mech",
+  bubble: "Bubble",
+  press: "Press",
+};
+
+/** How long the test banner waits, so there is time to switch to another app:
+ * egant stays quiet while it is the window in use, and macOS itself does not
+ * present a banner for the app in front. */
+const TEST_BANNER_DELAY_MS = 5000;
+
+type BannerCheck = "waiting" | "sent" | "blocked";
+
 function NotificationsSection() {
-  const [sounds, setSounds] = usePersistentState("egant.notify.sounds", true);
-  const [completed, setCompleted] = usePersistentState("egant.notify.completed", true);
-  const [input, setInput] = usePersistentState("egant.notify.input", true);
-  const [errors, setErrors] = usePersistentState("egant.notify.errors", true);
-  const [desktop, setDesktop] = usePersistentState("egant.notify.desktop", true);
-  const [background, setBackground] = usePersistentState("egant.notify.background", true);
+  const [sounds, setSounds] = usePersistentState(NOTIFY_KEYS.sounds, true);
+  const [theme, setTheme] = usePersistentState<ThemeName>(NOTIFY_KEYS.theme, DEFAULT_SOUND_THEME);
+  const [completed, setCompleted] = usePersistentState(NOTIFY_KEYS.completed, true);
+  const [input, setInput] = usePersistentState(NOTIFY_KEYS.input, true);
+  const [errors, setErrors] = usePersistentState(NOTIFY_KEYS.errors, true);
+  const [desktop, setDesktop] = usePersistentState(NOTIFY_KEYS.desktop, true);
+  const [check, setCheck] = useState<BannerCheck | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  const testBanner = () => {
+    if (check === "waiting") return;
+    setCheck("waiting");
+    window.setTimeout(() => {
+      sendBanner("egant", "Desktop notifications are working.")
+        .then((sent) => setCheck(sent ? "sent" : "blocked"))
+        .catch(() => setCheck("blocked"));
+    }, TEST_BANNER_DELAY_MS);
+  };
+
+  const openSettings = () => {
+    setSettingsError(null);
+    api.openNotificationSettings().catch((error: unknown) => {
+      setSettingsError(error instanceof Error ? error.message : String(error));
+    });
+  };
+
+  const permissionSub =
+    settingsError ??
+    (check === "waiting"
+      ? "egant stays quiet while it's your active window, so switch to another app. A test banner arrives in a few seconds."
+      : check === "sent"
+        ? `Test sent. If no banner appeared, open the settings, allow egant to send notifications, and turn off Focus or Do Not Disturb.${
+            import.meta.env.DEV && isMac()
+              ? " In a dev build macOS lists the banner under Terminal, not egant."
+              : ""
+          }`
+        : check === "blocked"
+          ? "The system refused the banner. Open the settings and allow notifications for egant."
+          : "Banners only appear if your system allows egant to send them. Send a test, or open the settings to allow it.");
 
   return (
     <div>
       <SectionHead
         title="Notifications"
-        sub="Choose which session events can play a sound, and when desktop notifications appear."
+        sub="egant notifies you only while you're away from it, when it isn't the window you're using. Choose which events do, and whether by sound, banner, or both."
       />
       <Card>
         <Row
           icon={Volume2}
           title="Session sounds"
-          sub="Allow sounds for the selected session events below."
+          sub="Play a sound for the events below while you're away. Sounds are synthesized live, so nothing is downloaded."
           control={<Toggle on={sounds} onChange={setSounds} label="Session sounds" />}
+        />
+        <Row
+          icon={Music}
+          title="Sound theme"
+          sub="Default is warm and calm for all-day use. Mech is dry and precise, Bubble is playful, Press feels like a clicky switch."
+          control={
+            <Pills
+              options={SOUND_THEMES.map((value) => ({ value, label: SOUND_THEME_LABELS[value] }))}
+              value={theme}
+              onChange={(next) => {
+                setTheme(next);
+                // Hear the choice on the spot; the saved theme catches up a
+                // render later, so this one is told which material to use.
+                playCue("completed", next);
+              }}
+            />
+          }
         />
         <Row
           icon={Check}
           title="Task completed"
-          sub="Play a sound when an agent finishes a run."
-          control={<Toggle on={completed} onChange={setCompleted} label="Task completed" />}
+          sub="When an agent finishes a run."
+          control={
+            <div className="flex items-center gap-2">
+              <PreviewButton kind="completed" label="Task completed" />
+              <Toggle on={completed} onChange={setCompleted} label="Task completed" />
+            </div>
+          }
         />
         <Row
           icon={MessageCircle}
           title="Input required"
-          sub="Play a sound when an agent needs your response."
-          control={<Toggle on={input} onChange={setInput} label="Input required" />}
+          sub="When an agent needs your approval or asks you a question."
+          control={
+            <div className="flex items-center gap-2">
+              <PreviewButton kind="input" label="Input required" />
+              <Toggle on={input} onChange={setInput} label="Input required" />
+            </div>
+          }
         />
         <Row
           icon={AlertTriangle}
           title="Errors and disconnections"
-          sub="Play a sound when a run fails or the connection remains unavailable."
-          control={<Toggle on={errors} onChange={setErrors} label="Errors and disconnections" />}
+          sub="When a run fails or the agent exits unexpectedly. Stopping a run yourself stays quiet."
+          control={
+            <div className="flex items-center gap-2">
+              <PreviewButton kind="errors" label="Errors and disconnections" />
+              <Toggle on={errors} onChange={setErrors} label="Errors and disconnections" />
+            </div>
+          }
         />
         <Row
           icon={Bell}
           title="Desktop notifications"
-          sub="Show a system banner on the same events, so pings reach you while egant is in the background."
-          control={<Toggle on={desktop} onChange={setDesktop} label="Desktop notifications" />}
-        />
-        <Row
-          icon={AppWindow}
-          title="Only when in the background"
-          sub="Skip the banner while an egant window is focused."
+          sub="Show a system banner on the same events while you're away from egant."
           control={
             <Toggle
-              on={background}
-              onChange={setBackground}
-              label="Only when in the background"
+              on={desktop}
+              onChange={(next) => {
+                setDesktop(next);
+                // Turning banners on walks through allowing them, rather than
+                // leaving the user to find out on the first missed ping.
+                if (next) testBanner();
+              }}
+              label="Desktop notifications"
             />
+          }
+        />
+        <Row
+          icon={BellRing}
+          title="System permission"
+          sub={permissionSub}
+          control={
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={check === "waiting"}
+                onClick={testBanner}
+                className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-[12px] whitespace-nowrap text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] disabled:cursor-default disabled:opacity-50"
+              >
+                {check === "waiting" ? "Sending…" : "Send test"}
+              </button>
+              <button
+                type="button"
+                onClick={openSettings}
+                className="cursor-pointer rounded-lg border border-[var(--border)] px-2.5 py-1 text-[12px] whitespace-nowrap text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+              >
+                Open settings
+              </button>
+            </div>
           }
         />
       </Card>

@@ -25,7 +25,7 @@ pub use conflict::{
 pub use history::{Commit, CommitRef, HistoryPage, RefKind};
 pub use repo::{BlobSource, DiffHunk, FileChange, FileStatus, Repo, RepoSnapshot};
 pub use watcher::{RepoWatcher, WatchEvent};
-pub use worktree::{RepoRef, Worktree, WorktreeState, WorktreeStore};
+pub use worktree::{RepoRef, Worktree, WorktreeState, WorktreeStore, branch_slug};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VcsError {

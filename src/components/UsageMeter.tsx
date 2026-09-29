@@ -32,11 +32,15 @@ export function UsageMeter({
   usage,
   costUsd,
   claudeUsage,
+  showPercent,
 }: {
   usage: SessionUsage;
   costUsd: number;
   /** `null` for a non-Claude session, or before the first fetch lands. */
   claudeUsage: ClaudeUsage | null;
+  /** Prints the ring's figure beside it — the composer's footer, where the
+   * meter sits alone and has the room to say what it's showing. */
+  showPercent?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [openUpward, setOpenUpward] = useState(true);
@@ -121,9 +125,18 @@ export function UsageMeter({
           }
           setOpen((o) => !o);
         }}
-        className="flex cursor-pointer items-center rounded-full px-1 py-0.5 text-[11px] text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+        className={`flex cursor-pointer items-center rounded-full py-0.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
+          showPercent
+            ? "gap-1.5 px-1.5 text-[13px] text-[var(--muted)]"
+            : "px-1 text-[11px] text-[var(--faint)]"
+        }`}
       >
-        <svg width="13" height="13" viewBox="0 0 13 13" className="shrink-0">
+        <svg
+          width={showPercent ? 15 : 13}
+          height={showPercent ? 15 : 13}
+          viewBox="0 0 13 13"
+          className="shrink-0"
+        >
           <circle
             cx="6.5"
             cy="6.5"
@@ -146,6 +159,7 @@ export function UsageMeter({
             transform="rotate(-90 6.5 6.5)"
           />
         </svg>
+        {showPercent && <span className="tabular-nums">{ringPercent}%</span>}
       </button>
       {open &&
         anchor &&

@@ -40,6 +40,8 @@ gpui-kit = "0.6"
 tauri = "2"
 tauri-build = "2"
 tauri-plugin-dialog = "2"
+# Desktop banners for session events that land while egant is in the background.
+tauri-plugin-notification = "2"
 base64 = "0.22"
 # Real PTYs for the workspace panel's terminal tabs.
 portable-pty = "0.9"

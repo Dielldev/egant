@@ -46,10 +46,28 @@ export function usePersistentState<T>(
 /** localStorage key behind Settings > Files > Editor font size. */
 export const EDITOR_FONT_SIZE_KEY = "egant.files.fontSize";
 
-/** Dispatched on `window` after this window saves a new editor font size —
+/** Dispatched on `window` after this window saves any Files setting —
  * `storage` events only fire in *other* documents, so without this an open
- * file viewer would keep the old size until reload. */
-export const EDITOR_FONT_SIZE_EVENT = "egant:editor-font-size";
+ * editor or file tree would keep the old value until reload. */
+export const FILES_SETTINGS_EVENT = "egant:files-settings";
+
+const AUTOSAVE_KEY = "egant.files.autosave";
+const WORD_WRAP_KEY = "egant.files.wordWrap";
+const SHOW_ALL_KEY = "egant.files.showAll";
+
+/** A boolean the settings toggles wrote (`true`/`false` as JSON), or the
+ * toggle's default when nothing parseable is stored. */
+function readFilesBool(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "boolean" ? parsed : fallback;
+  } catch {
+    // Corrupt or unavailable storage: fall through to the default.
+    return fallback;
+  }
+}
 
 /** The saved editor font size in px. Parses what the settings pills wrote
  * (`"13"`), clamps hand-edited values into a sane range, and falls back to
@@ -65,19 +83,63 @@ export function readEditorFontSize(): number {
   return 13;
 }
 
-function subscribeEditorFontSize(onChange: () => void): () => void {
+/** Everything Settings > Files controls, as the rest of the app reads it. */
+export interface FilesSettings {
+  /** Save edits to disk on their own, shortly after typing stops. */
+  autosave: boolean;
+  /** Editor text size in px. */
+  fontSize: number;
+  /** Wrap long lines instead of scrolling sideways. */
+  wordWrap: boolean;
+  /** List hidden and git-ignored entries in file trees. */
+  showAll: boolean;
+}
+
+let cachedFilesSettings: FilesSettings | null = null;
+
+/** Read fresh from storage but handed back as the *same object* while nothing
+ * changed — `useSyncExternalStore` compares snapshots by identity, and a new
+ * object per call would re-render its subscribers forever. */
+export function readFilesSettings(): FilesSettings {
+  const next: FilesSettings = {
+    autosave: readFilesBool(AUTOSAVE_KEY, true),
+    fontSize: readEditorFontSize(),
+    wordWrap: readFilesBool(WORD_WRAP_KEY, true),
+    showAll: readFilesBool(SHOW_ALL_KEY, true),
+  };
+  const prev = cachedFilesSettings;
+  if (
+    prev &&
+    prev.autosave === next.autosave &&
+    prev.fontSize === next.fontSize &&
+    prev.wordWrap === next.wordWrap &&
+    prev.showAll === next.showAll
+  ) {
+    return prev;
+  }
+  cachedFilesSettings = next;
+  return next;
+}
+
+function subscribeFilesSettings(onChange: () => void): () => void {
   window.addEventListener("storage", onChange);
-  window.addEventListener(EDITOR_FONT_SIZE_EVENT, onChange);
+  window.addEventListener(FILES_SETTINGS_EVENT, onChange);
   return () => {
     window.removeEventListener("storage", onChange);
-    window.removeEventListener(EDITOR_FONT_SIZE_EVENT, onChange);
+    window.removeEventListener(FILES_SETTINGS_EVENT, onChange);
   };
 }
 
-/** The editor font size in px, live: file and diff viewers re-render on the
- * next paint after Settings saves a new one, here or in another window. */
+/** The Files settings, live: editors and file trees re-render on the next
+ * paint after Settings saves a change, here or in another window. */
+export function useFilesSettings(): FilesSettings {
+  return useSyncExternalStore(subscribeFilesSettings, readFilesSettings);
+}
+
+/** The editor font size in px, live — for the viewers that only need this one
+ * (the diff tab). */
 export function useEditorFontSize(): number {
-  return useSyncExternalStore(subscribeEditorFontSize, readEditorFontSize);
+  return useFilesSettings().fontSize;
 }
 
 export function SectionHead({

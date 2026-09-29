@@ -15,9 +15,12 @@ egant-harness.workspace = true
 egant-vcs.workspace = true
 # `macos-private-api` is required whenever `macOSPrivateApi` is set in
 # tauri.conf.json (tauri-build matches the feature name in this file on every
-# OS). On Linux/Windows the feature is a compile-time no-op.
-tauri = { workspace = true, features = ["macos-private-api"] }
+# OS). On Linux/Windows the feature is a compile-time no-op. `unstable` is
+# needed for `Window::add_child` — the multiwebview API the Browser panel tab
+# uses to layer a real webview per tab over the window (see `src/browser.rs`).
+tauri = { workspace = true, features = ["macos-private-api", "unstable"] }
 tauri-plugin-dialog.workspace = true
+tauri-plugin-notification.workspace = true
 
 anyhow.workspace = true
 async-channel.workspace = true

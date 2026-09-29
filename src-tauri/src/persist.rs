@@ -115,6 +115,10 @@ pub struct PersistedMeta {
     #[serde(default)]
     pub cli_agent: Option<String>,
     pub model: Option<String>,
+    /// Reasoning effort the session runs at. `#[serde(default)]` so sessions
+    /// written before it was recorded still load, at the model's default.
+    #[serde(default)]
+    pub variant: Option<String>,
     pub context: Option<u64>,
     pub permission_mode: PermissionMode,
     /// The isolated checkout this session runs in, when it has one. `cwd` is
@@ -258,6 +262,7 @@ mod tests {
             agent: AgentId::Claude,
             cli_agent: None,
             model: Some("sonnet".into()),
+            variant: None,
             context: None,
             permission_mode: PermissionMode::Auto,
             worktree: None,
@@ -291,6 +296,7 @@ mod tests {
             agent: AgentId::Claude,
             cli_agent: None,
             model: None,
+            variant: None,
             context: None,
             permission_mode: PermissionMode::Auto,
             worktree: None,

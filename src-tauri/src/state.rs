@@ -43,6 +43,11 @@ pub struct SessionMeta {
     /// Model override requested at creation (`--model`/`-m`). `None` keeps
     /// the CLI default.
     pub model: Option<String>,
+    /// Reasoning effort (`--effort`, `model_reasoning_effort`, `--variant`).
+    /// `None` keeps the model's own default. Kept beside `model` because the
+    /// two are picked together and a revived session must come back at the
+    /// effort it was running, not quietly at the default.
+    pub variant: Option<String>,
     /// Context window override requested at creation (Codex:
     /// `-c model_context_window=N`). `None` keeps the CLI default.
     pub context: Option<u64>,
@@ -199,6 +204,7 @@ impl AppState {
                 agent: persisted.meta.agent,
                 cli_agent: persisted.meta.cli_agent,
                 model: persisted.meta.model,
+                variant: persisted.meta.variant,
                 context: persisted.meta.context,
                 permission_mode: persisted.meta.permission_mode,
                 worktree,
@@ -293,6 +299,7 @@ impl AppState {
             agent: session.meta.agent,
             cli_agent: session.meta.cli_agent.clone(),
             model: session.meta.model.clone(),
+            variant: session.meta.variant.clone(),
             context: session.meta.context,
             permission_mode: session.meta.permission_mode,
             worktree: session.meta.worktree.clone(),
@@ -475,6 +482,7 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
             .clone()
             .unwrap_or_else(|| meta.agent.as_str().to_string()),
         model_override: meta.model.clone(),
+        variant: meta.variant.clone(),
         context: meta.context,
         worktree: meta
             .worktree
@@ -519,6 +527,7 @@ mod tests {
                     agent: AgentId::Claude,
                     cli_agent: None,
                     model: None,
+                    variant: None,
                     context: None,
                     permission_mode: PermissionMode::Auto,
                     worktree: None,
@@ -585,6 +594,7 @@ mod tests {
                     agent: AgentId::Claude,
                     cli_agent: None,
                     model: None,
+                    variant: None,
                     context: None,
                     permission_mode: PermissionMode::Auto,
                     worktree: None,

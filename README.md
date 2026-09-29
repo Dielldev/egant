@@ -9,10 +9,10 @@ Egant is a Tauri (Rust + React) desktop app that runs coding agents — starting
 ## Features
 
 - **Agent chat, natively** — drives the `claude` CLI as a subprocess, streams tokens into the transcript. Interrupt mid-turn, switch permission modes mid-conversation.
-- **Sidebar for everything** — every conversation on this machine, grouped by `project @ machine`. Filter with `⌘K`, new session with `⌘N`.
+- **Sidebar for everything** — a project dropdown ("All projects" or one folder) over that folder's conversations as cards, grouped by device, by project or not at all. Filter with `⌘K`, new session with `⌘N`.
 - **Composer** — glass composer on launch, docked pill once the thread starts. `@path` file mentions, model/permission chip, context-window meter.
 - **Workspace panel (`⌘J`)** — optional third column, per-window (not per-chat):
-  - **Files** — lazy tree, syntax-highlighted read-only viewer with stage tabs
+  - **Files** — lazy tree, and a syntax-highlighted editor on stage tabs with autosave, word wrap and editor font size (Settings → Files); saves are refused if the agent changed the file meanwhile
   - **Changes** — git status, stage/unstage/discard, diff (unified/split), Commit & Push
   - **Pull requests** — via your own `gh`, with checks/commits/files/comments
   - **Terminals** — real PTYs (`$SHELL -l`) that survive panel hide / session switch

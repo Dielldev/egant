@@ -180,6 +180,16 @@ export interface SessionEventPayload {
   event: HarnessEvent;
 }
 
+/** The `worktree-renamed` event: a session's first turn said what it is
+ * about, and the worktree at `path` moved off its placeholder branch
+ * (`egant/quiet-quartz` → `egant/fix-login-flow`). The folder doesn't move. */
+export interface WorktreeRenamedPayload {
+  path: string;
+  branch: string;
+  name: string;
+  previousBranch: string;
+}
+
 export type SessionKind = "chat" | "cli";
 
 export interface SessionInfo {
@@ -198,8 +208,10 @@ export interface SessionInfo {
    * (`claude` | `codex` | `opencode`); a CLI session names any agent in the
    * install catalog (`pi`, `goose`, …). */
   agent: string;
-  /** Model override requested at creation, if any. */
+  /** Model the session was started on, or last switched to, if any. */
   modelOverride: string | null;
+  /** Reasoning effort the session runs at, if one was picked. */
+  variant: string | null;
   /** Context window override requested at creation, if any. */
   context: number | null;
   /** The isolated checkout this session runs in, when it has one. `cwd` names
@@ -266,9 +278,11 @@ export type CheckoutPlan =
 /** A session's own checkout of its repository, on a branch egant made for it. */
 export interface WorktreeInfo {
   path: string;
-  /** `egant/quiet-quartz`. */
+  /** `egant/quiet-quartz` until the first turn renames it after the
+   * session's subject (`egant/fix-login-flow`). */
   branch: string;
-  /** The generated folder name (`quiet-quartz`). */
+  /** The branch without its prefix — what the sidebar shows. Not necessarily
+   * the folder's name, which keeps its generated one. */
   name: string;
   /** The branch it was cut from. */
   base: string;
@@ -459,6 +473,12 @@ export interface FileContent {
   bytes: number;
   truncated: boolean;
   binary: boolean;
+  /** Whether the text survives being edited and written back byte for byte:
+   * whole (not the head of a big file) and genuinely UTF-8. */
+  editable: boolean;
+  /** The file's modification time when it was read. A save is made against it
+   * and refused if the file has moved on. */
+  modifiedMs: number;
 }
 
 /** How git describes one changed path. Drives the row's status icon. */
@@ -637,6 +657,14 @@ export interface PtyOutput {
 /** The shell behind a terminal tab has exited (`pty-exit`). */
 export interface PtyExit {
   id: number;
+}
+
+/** A Browser tab's page changed — navigated, or finished loading — as
+ * emitted on `browser-nav`. Drives the address bar and the tab's title. */
+export interface BrowserNav {
+  label: string;
+  url: string;
+  loading: boolean;
 }
 
 export interface WindowState {

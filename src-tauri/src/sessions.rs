@@ -20,12 +20,13 @@ use egant_harness::{
     AgentId, ClaudeCode, ClaudeOptions, CodexExec, CodexOptions, Harness, HarnessEvent,
     OpencodeOptions, OpencodeRun, PermissionDecision, PermissionMode, Transcript, TranscriptEntry,
 };
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::dto::{EventDto, SessionEventPayload};
+use crate::dto::{EventDto, SessionEventPayload, WorktreeRenamedPayload};
 use crate::state::{AppState, SessionMeta};
 use crate::worktrees::SessionWorktree;
 
@@ -151,6 +152,7 @@ pub fn spawn_session(
         agent,
         cli_agent: None,
         model: model.clone(),
+        variant: variant.clone(),
         context,
         permission_mode: PermissionMode::Auto,
         worktree,
@@ -314,6 +316,7 @@ pub fn spawn_cli_session(
         agent: AgentId::from_str(launch.id).unwrap_or(AgentId::Claude),
         cli_agent: Some(launch.id.to_string()),
         model: None,
+        variant: None,
         context: None,
         permission_mode: PermissionMode::Auto,
         worktree,
@@ -358,6 +361,9 @@ pub fn spawn_cli_session(
 fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<SessionCommand> {
     let events = harness.events();
     let (command_tx, command_rx) = async_channel::unbounded::<SessionCommand>();
+    // Weak, so the listener never keeps its own driver alive: the session's
+    // sender is what decides that.
+    let wire = command_tx.downgrade();
 
     // 1. Own the harness and serialize writes to it.
     tauri::async_runtime::spawn(async move {
@@ -426,12 +432,32 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 event,
                 HarnessEvent::AssistantDelta { .. } | HarnessEvent::ThinkingDelta { .. }
             );
+            let turn_succeeded = matches!(
+                event,
+                HarnessEvent::TurnEnded {
+                    is_error: false,
+                    ..
+                }
+            );
             {
                 let app_state = listener_app.state::<Mutex<AppState>>();
                 let mut guard = app_state.lock().unwrap();
                 let Some(session) = guard.sessions.get_mut(&id) else {
                     break; // the session is gone
                 };
+                // A model switch hands the session a new process (see
+                // [`set_model`]). This one is being shut down, and nothing it
+                // says now — its exit least of all — belongs in the transcript.
+                let replaced = session.commands.as_ref().is_some_and(|current| {
+                    wire.upgrade()
+                        .is_none_or(|mine| !mine.same_channel(current))
+                });
+                if replaced {
+                    log::debug!(
+                        "session {id} listener retired: the session moved to a new process"
+                    );
+                    break;
+                }
                 // An "Allow always" answer remembers patterns for the run. A
                 // live-channel request (Claude) matching one is approved
                 // without ever reaching the table — otherwise "always" would
@@ -508,10 +534,148 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                     event: dto,
                 },
             );
+            if turn_succeeded {
+                name_worktree(&listener_app, id);
+            }
         }
     });
 
     command_tx
+}
+
+/// Sessions whose worktree is being named right now, so a turn that ends
+/// while the title is still generating doesn't start a second one.
+static NAMING: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
+
+/// Renames a session's worktree after what the session is about, once a turn
+/// has finished: the placeholder `egant/quiet-quartz` becomes
+/// `egant/fix-login-flow`.
+///
+/// zeron's approach (`engine/src/titles.rs`): a throwaway, tool-less run of a
+/// small model titles the first prompt, and the prompt's own opening words
+/// stand in when that run fails. Off the listener and best-effort — a
+/// worktree that keeps its placeholder has only a less helpful name.
+///
+/// Every turn calls this. After the first it returns at the first check, since
+/// a renamed branch is no longer a placeholder — and that same check is what
+/// retries a session whose first attempt was declined or failed.
+fn name_worktree(app: &AppHandle, id: u64) {
+    let job = {
+        let state = app.state::<Mutex<AppState>>();
+        let guard = state.lock().unwrap();
+        guard.sessions.get(&id).and_then(|session| {
+            let worktree = session
+                .meta
+                .worktree
+                .clone()
+                .filter(SessionWorktree::has_placeholder_name)?;
+            let prompt = session
+                .transcript
+                .entries
+                .iter()
+                .find_map(|entry| match entry {
+                    TranscriptEntry::User { text } => Some(text.clone()),
+                    _ => None,
+                })?;
+            Some((
+                worktree,
+                prompt,
+                session.meta.agent,
+                session.meta.model.clone(),
+            ))
+        })
+    };
+    let Some((worktree, prompt, agent, model)) = job else {
+        return;
+    };
+    if !NAMING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(id)
+    {
+        return;
+    }
+    log::info!("session {id} naming worktree {}", worktree.branch);
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let previous = worktree.clone();
+        let outcome = tauri::async_runtime::spawn_blocking(move || {
+            let title = egant_harness::titles::generate(agent, model.as_deref(), &prompt)
+                .unwrap_or_else(|| opening_words(&prompt));
+            crate::worktrees::rename(&worktree, &title)
+        })
+        .await;
+        match outcome {
+            Ok(Ok(Some(renamed))) => apply_worktree_rename(&app, &previous, &renamed),
+            Ok(Ok(None)) => log::info!("session {id} worktree {} left as is", previous.branch),
+            Ok(Err(error)) => log::warn!("session {id} worktree not renamed: {error}"),
+            Err(error) => log::error!("session {id} worktree naming task failed: {error}"),
+        }
+        // Released only once the new name is in state, so a turn ending in
+        // between cannot see the old placeholder and start over.
+        NAMING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+    });
+}
+
+/// Puts a renamed worktree into every session running in it — the one that
+/// named it, and any that joined it — and tells the window.
+fn apply_worktree_rename(app: &AppHandle, previous: &SessionWorktree, renamed: &SessionWorktree) {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().unwrap();
+    let ids: Vec<u64> = guard
+        .sessions
+        .iter()
+        .filter(|(_, session)| {
+            session
+                .meta
+                .worktree
+                .as_ref()
+                .is_some_and(|worktree| worktree.path == previous.path)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    for id in &ids {
+        let Some(session) = guard.sessions.get_mut(id) else {
+            continue;
+        };
+        if let Some(worktree) = session.meta.worktree.as_mut() {
+            worktree.branch = renamed.branch.clone();
+            worktree.name = renamed.name.clone();
+        }
+        if session.meta.branch.as_deref() == Some(previous.branch.as_str()) {
+            session.meta.branch = Some(renamed.branch.clone());
+        }
+    }
+    for id in ids {
+        guard.persist_session(id);
+    }
+    drop(guard);
+    let _ = app.emit(
+        "worktree-renamed",
+        WorktreeRenamedPayload {
+            path: renamed.path.display().to_string(),
+            branch: renamed.branch.clone(),
+            name: renamed.name.clone(),
+            previous_branch: previous.branch.clone(),
+        },
+    );
+}
+
+/// The fallback title: the first line's opening words, which still say more
+/// about the session than `quiet-quartz` does.
+fn opening_words(prompt: &str) -> String {
+    prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .split_whitespace()
+        .take(5)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One line per meaningful harness event: lifecycle at info, tool traffic at
@@ -606,6 +770,7 @@ fn revive(app: &AppHandle, state: &mut AppState, id: u64) -> Result<(), String> 
     let agent = session.meta.agent;
     let cwd = session.meta.cwd.clone();
     let context = session.meta.context;
+    let variant = session.meta.variant.clone();
     let saved_mode = session.meta.permission_mode;
     log::info!(
         "reviving session {id} agent={} resume={}",
@@ -648,7 +813,7 @@ fn revive(app: &AppHandle, state: &mut AppState, id: u64) -> Result<(), String> 
         &cwd,
         &project_name,
         model,
-        None,
+        variant,
         context,
         Some(resume_id),
         saved_mode,
@@ -683,6 +848,99 @@ fn revive(app: &AppHandle, state: &mut AppState, id: u64) -> Result<(), String> 
         // id cannot be picked again by hand.
         state.mark_model_bad(agent, stale);
     }
+    Ok(())
+}
+
+/// Moves a chat session onto another model and/or effort without leaving the
+/// conversation — what the composer's model badge does once a session exists.
+///
+/// None of the wires can change the model under a process already running
+/// it: Claude's is a launch flag on a persistent process, and Codex's and
+/// opencode's are fixed into a translator built at spawn. So a live session
+/// gets a fresh harness that resumes the same conversation on the new model,
+/// the way [`revive`] brings an ended one back. The new one is started before
+/// the old one is let go, so a switch that fails leaves the session running
+/// exactly as it was.
+///
+/// A session with nothing running behind it (ended, or restored from disk)
+/// only records the pick: its next send revives it onto the new model.
+pub fn set_model(
+    app: &AppHandle,
+    state: &mut AppState,
+    id: u64,
+    model: Option<String>,
+    variant: Option<String>,
+    context: Option<u64>,
+) -> Result<(), String> {
+    let Some(session) = state.sessions.get(&id) else {
+        return Err("unknown session".to_string());
+    };
+    if session.meta.cli_agent.is_some() {
+        return Err("this session runs its own CLI — switch models from its terminal".to_string());
+    }
+    // A turn in flight belongs to the process running it; restarting under
+    // it would drop the reply halfway.
+    if session.transcript.is_busy() {
+        return Err("wait for this turn to finish before switching models".to_string());
+    }
+    let agent = session.meta.agent;
+    log::info!(
+        "session {id} switching model agent={} model={model:?} variant={variant:?}",
+        agent.as_str()
+    );
+
+    if session.commands.is_some() {
+        let cwd = session.meta.cwd.clone();
+        let resume = session.transcript.session_id.clone();
+        let mode = session.meta.permission_mode;
+        let project_name = state
+            .project(session.meta.project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| egant_harness::project_display_name(&cwd));
+        let harness = match start_harness(
+            agent,
+            &cwd,
+            &project_name,
+            model.clone(),
+            variant.clone(),
+            context,
+            resume,
+            mode,
+        ) {
+            Ok(harness) => harness,
+            Err(error) => {
+                log::error!("session {id} model switch failed: {error}");
+                if let Some(model) = &model {
+                    if looks_like_a_bad_model_error(&error) {
+                        state.mark_model_bad(agent, model.clone());
+                    }
+                }
+                return Err(error);
+            }
+        };
+        let command_tx = wire_harness(app, id, harness);
+        let Some(session) = state.sessions.get_mut(&id) else {
+            return Err("unknown session".to_string());
+        };
+        // Swapping the sender is what retires the old listener; the old
+        // driver still gets a clean shutdown so its process exits now rather
+        // than whenever the channel happens to drop.
+        if let Some(previous) = session.commands.replace(command_tx) {
+            let _ = previous.try_send(SessionCommand::Shutdown);
+        }
+    }
+
+    let Some(session) = state.sessions.get_mut(&id) else {
+        return Err("unknown session".to_string());
+    };
+    session.meta.model = model.clone();
+    session.meta.variant = variant;
+    session.meta.context = context;
+    // The badge reads the model the agent last reported. Until the next turn
+    // reports the new one, it should name what was just picked rather than
+    // the model this session is no longer running.
+    session.transcript.model = model;
+    state.persist_session(id);
     Ok(())
 }
 

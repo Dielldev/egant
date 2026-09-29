@@ -15,6 +15,11 @@
 //! path cannot be, so naming the folder after the title would mean either a
 //! rename the user's open terminals don't follow, or a folder called
 //! `new-session-3` forever.
+//!
+//! The *branch* has no such problem, so the generated name is only a
+//! placeholder there: once the session's first turn says what it is about,
+//! [`WorktreeStore::rename_branch`] moves `egant/quiet-quartz` to
+//! `egant/fix-login-flow`. The folder keeps its generated name for good.
 
 use crate::VcsError;
 use crate::remote::run;
@@ -240,12 +245,73 @@ impl WorktreeStore {
     /// A worktree removed from a terminal (or pruned) is stale here, and the
     /// session holding it has to fall back to its project folder.
     pub fn is_registered(&self, path: &Path) -> bool {
-        let Ok(worktrees) = self.list() else {
-            return false;
-        };
-        worktrees
-            .iter()
-            .any(|worktree| same_path(&worktree.path, path))
+        self.find(path).is_some()
+    }
+
+    /// The worktree git has checked out at `path`, as git sees it right now —
+    /// its branch included, which may no longer be the one it was created on.
+    pub fn find(&self, path: &Path) -> Option<Worktree> {
+        self.list()
+            .ok()?
+            .into_iter()
+            .find(|worktree| same_path(&worktree.path, path))
+    }
+
+    /// Renames a worktree's generated branch after what its session turned out
+    /// to be about: `egant/quiet-quartz` → `egant/<slug>`, or `egant/<slug>-2`
+    /// when that is taken. The folder is not moved (see the module doc).
+    ///
+    /// Returns `None`, touching nothing, when the branch is no longer the
+    /// placeholder egant cut: the user checked something else out in there,
+    /// or it was already renamed. A branch that has been pushed is left alone
+    /// too — renaming it locally would split it from its upstream, and any
+    /// pull request open against the old name.
+    pub fn rename_branch(
+        &self,
+        worktree: &Worktree,
+        slug: &str,
+    ) -> Result<Option<Worktree>, VcsError> {
+        let folder = worktree
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if worktree.branch != format!("{BRANCH_PREFIX}{folder}") {
+            return Ok(None);
+        }
+        let current = run(&worktree.path, &["branch", "--show-current"])?;
+        if current.stdout.trim() != worktree.branch {
+            return Ok(None);
+        }
+        if run(
+            &worktree.path,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ],
+        )
+        .is_ok()
+        {
+            return Ok(None);
+        }
+
+        let taken = self.branch_names()?;
+        let name = std::iter::once(slug.to_owned())
+            .chain((2..100).map(|n| format!("{slug}-{n}")))
+            .find(|name| !taken.contains(&format!("{BRANCH_PREFIX}{name}")))
+            .ok_or_else(|| VcsError::GitFailed {
+                status: -1,
+                stderr: format!("every {BRANCH_PREFIX}{slug} branch name is taken"),
+            })?;
+        let branch = format!("{BRANCH_PREFIX}{name}");
+        run(&worktree.path, &["branch", "-m", &worktree.branch, &branch])?;
+        Ok(Some(Worktree {
+            path: worktree.path.clone(),
+            branch,
+            name,
+        }))
     }
 
     /// Worktrees git knows about, parsed from `git worktree list --porcelain`.
@@ -361,6 +427,35 @@ impl WorktreeStore {
             stderr: "could not find an unused worktree name".to_owned(),
         })
     }
+}
+
+/// A title as a branch name segment: `Fix Login Flow` → `fix-login-flow`.
+///
+/// ASCII letters and digits only, everything else a single separator, so the
+/// result is valid in a ref and a path on every platform. Apostrophes vanish
+/// rather than split a word (`user's` → `users`). Capped at a word boundary,
+/// since `fix-the-sidebar-overlapping-the-compos` reads worse than stopping a
+/// word early. `None` when nothing usable is left — a title in a script
+/// without ASCII letters, say — and the caller keeps its generated name.
+pub fn branch_slug(title: &str) -> Option<String> {
+    const MAX: usize = 40;
+    let mut slug = String::new();
+    for c in title.chars() {
+        if matches!(c, '\'' | '’' | '"' | '`') {
+            continue;
+        }
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    if slug.len() > MAX {
+        let cut = slug[..=MAX].rfind('-').unwrap_or(MAX);
+        slug.truncate(cut);
+    }
+    let slug = slug.trim_matches('-');
+    (!slug.is_empty()).then(|| slug.to_owned())
 }
 
 /// `~/.egant/worktrees`, matching where the app keeps the rest of its state.
@@ -605,6 +700,87 @@ mod tests {
         // And removing it is still what reconciles git's own bookkeeping.
         store.discard(&worktree, true).unwrap();
         assert!(!store.is_registered(&worktree.path));
+    }
+
+    #[test]
+    fn titles_become_branch_safe_slugs() {
+        assert_eq!(
+            branch_slug("Fix Login Flow").as_deref(),
+            Some("fix-login-flow")
+        );
+        assert_eq!(
+            branch_slug("  \"Add dark-mode (v2)!\"  ").as_deref(),
+            Some("add-dark-mode-v2")
+        );
+        assert_eq!(
+            branch_slug("Fix the user's avatar").as_deref(),
+            Some("fix-the-users-avatar")
+        );
+        assert_eq!(branch_slug("日本語のタイトル"), None);
+        assert_eq!(branch_slug("   "), None);
+
+        let long =
+            branch_slug("Stop the sidebar overlapping the composer at narrow widths").unwrap();
+        assert!(long.len() <= 40, "{long}");
+        assert!(!long.ends_with('-'), "{long}");
+        assert_eq!(long, "stop-the-sidebar-overlapping-the");
+    }
+
+    #[test]
+    fn a_placeholder_branch_is_renamed_in_place() {
+        let (_dir, _repo, store) = repo_with_store();
+        let base = store.head_branch().unwrap();
+        let worktree = store.create(&base).unwrap();
+
+        let renamed = store
+            .rename_branch(&worktree, "fix-login-flow")
+            .unwrap()
+            .expect("a placeholder branch is renamed");
+        assert_eq!(renamed.branch, "egant/fix-login-flow");
+        assert_eq!(renamed.name, "fix-login-flow");
+        assert_eq!(renamed.path, worktree.path, "the folder never moves");
+
+        let live = store.find(&worktree.path).expect("still a worktree");
+        assert_eq!(live.branch, renamed.branch);
+        assert!(!store.branch_names().unwrap().contains(&worktree.branch));
+
+        // Once renamed, it is no longer a placeholder: a later turn leaves it.
+        assert_eq!(
+            store.rename_branch(&renamed, "something-else").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_taken_name_gets_a_number() {
+        let (_dir, _repo, store) = repo_with_store();
+        let base = store.head_branch().unwrap();
+        let first = store.create(&base).unwrap();
+        let second = store.create(&base).unwrap();
+
+        store
+            .rename_branch(&first, "fix-login-flow")
+            .unwrap()
+            .unwrap();
+        let renamed = store
+            .rename_branch(&second, "fix-login-flow")
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed.branch, "egant/fix-login-flow-2");
+    }
+
+    #[test]
+    fn a_branch_the_user_switched_to_is_not_renamed() {
+        let (_dir, _repo, store) = repo_with_store();
+        let base = store.head_branch().unwrap();
+        let worktree = store.create(&base).unwrap();
+        run(&worktree.path, &["checkout", "--quiet", "-b", "mine"]).unwrap();
+
+        assert_eq!(
+            store.rename_branch(&worktree, "fix-login-flow").unwrap(),
+            None
+        );
+        assert!(store.branch_names().unwrap().contains("mine"));
     }
 
     #[test]

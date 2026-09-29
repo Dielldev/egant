@@ -1,9 +1,10 @@
 import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { FileEntry } from "../lib/types";
 import { CHAT_TAB, useEgant } from "../store";
 import { FileIcon } from "./FileIcon";
+import { useFilesSettings } from "./SettingsKit";
 
 /** One visible row: an entry plus how deep it sits. The tree is flattened for
  * rendering so the list is one scrollable column rather than nested scroll
@@ -24,33 +25,64 @@ export function FileTree({ root }: { root: string }) {
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
+  // Settings > Files > Show all files. Off, hidden and git-ignored entries are
+  // left out of every listing, so flipping it re-reads the tree.
+  const { showAll } = useFilesSettings();
+
   const openFile = useEgant((s) => s.openFile);
   const stageKey = useEgant((s) => s.snapshot?.activeSession ?? -1);
   const showing = useEgant((s) => s.stageTab[s.snapshot?.activeSession ?? -1] ?? CHAT_TAB);
 
-  const load = useCallback(async (path: string) => {
-    setLoading((prev) => new Set(prev).add(path));
-    try {
-      const rows = await api.listDir(path);
-      setChildren((prev) => ({ ...prev, [path]: rows }));
-      setError(null);
-    } catch (problem) {
-      setError(problem instanceof Error ? problem.message : String(problem));
-    } finally {
-      setLoading((prev) => {
-        const next = new Set(prev);
-        next.delete(path);
-        return next;
-      });
-    }
-  }, []);
+  // What the newest listing was asked with: a reply to an older question (the
+  // filter flipped while it was in flight) must not land in the new tree.
+  const asked = useRef(showAll);
+  asked.current = showAll;
+
+  const load = useCallback(
+    async (path: string) => {
+      setLoading((prev) => new Set(prev).add(path));
+      try {
+        const rows = await api.listDir(path, showAll);
+        if (asked.current !== showAll) return;
+        setChildren((prev) => ({ ...prev, [path]: rows }));
+        setError(null);
+      } catch (problem) {
+        if (asked.current !== showAll) return;
+        setError(problem instanceof Error ? problem.message : String(problem));
+      } finally {
+        setLoading((prev) => {
+          const next = new Set(prev);
+          next.delete(path);
+          return next;
+        });
+      }
+    },
+    [showAll],
+  );
 
   // A new root is a new tree: everything expanded under the old one is gone.
   useEffect(() => {
     setChildren({});
     setExpanded(new Set());
     if (root) void load(root);
-  }, [root, load]);
+    // Only when the root changes; the filter has its own effect below, which
+    // keeps open folders open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root]);
+
+  // Show all files flipped: re-read the root and everything open under it, so
+  // the tree comes back the way it was, minus (or plus) the hidden entries.
+  const firstFilter = useRef(true);
+  useEffect(() => {
+    if (firstFilter.current) {
+      firstFilter.current = false;
+      return;
+    }
+    setChildren({});
+    if (root) void load(root);
+    for (const path of expanded) void load(path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAll]);
 
   const toggle = (entry: FileEntry) => {
     const next = new Set(expanded);

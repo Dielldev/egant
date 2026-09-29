@@ -1,6 +1,6 @@
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { modShortcut } from "../lib/platform";
-import { useEgant } from "../store";
+import { selectOnLaunchScreen, useEgant } from "../store";
 import { log } from "../lib/logger";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
@@ -55,7 +55,9 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
         // The strip still has to exist with the sidebar open: it is the only
         // drag region up here, and it holds the stage clear of the traffic
         // lights the sidebar would otherwise be under.
-        sidebarVisible && <div data-tauri-drag-region className="h-[38px] w-full" />
+        sidebarVisible && (
+          <div data-tauri-drag-region className="h-[38px] w-full" />
+        )
       ) : (
         <div
           data-tauri-drag-region
@@ -70,7 +72,10 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
             {active?.title ?? "No conversation"}
           </span>
           {project && (
-            <span className="min-w-0 flex-1 truncate text-xs text-[var(--faint)]">
+            <span
+              data-tauri-drag-region
+              className="min-w-0 flex-1 truncate text-xs text-[var(--faint)]"
+            >
               {project.name} @ {snapshot?.machineName ?? ""}
               {agentLabel !== "" &&
                 ` · ${agentLabel}${active?.kind === "cli" ? " CLI" : ""}`}
@@ -82,15 +87,26 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
           {active?.busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
           {/* Stops short of the panel button so the title can't run under it. */}
           <div data-tauri-drag-region className="h-full flex-1" />
-          <div className="w-7 shrink-0" />
+          <div data-tauri-drag-region className="h-full w-7 shrink-0" />
         </div>
       )}
       {/* Pinned to the stage's top-right corner rather than placed in a row:
-        it has to be reachable in all four combinations of launch screen and
-        hidden sidebar, and those rows are not all the same row. */}
-      <div className="absolute top-[7px] right-3 z-20">
-        <PanelButton />
-      </div>
+        it has to be reachable with the sidebar shown or hidden, and those
+        rows are not the same row. Absent on the launch screen. */}
+      <PanelButtonSlot />
+    </div>
+  );
+}
+
+/** Where `PanelButton` sits, or nothing at all on the launch screen: there is
+ * no workspace to browse before a conversation exists, so the panel is not
+ * offered there (and App.tsx hides it if it was open). */
+function PanelButtonSlot() {
+  const onLaunchScreen = useEgant(selectOnLaunchScreen);
+  if (onLaunchScreen) return null;
+  return (
+    <div className="absolute top-[7px] right-3 z-20">
+      <PanelButton />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import {
   FolderTree,
   GitBranch,
   GitCompare,
+  Globe,
   Maximize2,
   Minimize2,
   Plus,
@@ -12,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { modShortcut } from "../lib/platform";
 import type { PanelTabKind } from "../store";
 import { useEgant, workspaceRoot } from "../store";
+import { BrowserPane } from "./BrowserPane";
 import { DiffsPanel } from "./DiffsPanel";
 import { FileTree } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
@@ -35,6 +37,7 @@ export function WorkspacePanel() {
   const openTerminalTab = useEgant((s) => s.openTerminalTab);
   const openDiffsTab = useEgant((s) => s.openDiffsTab);
   const openHistoryTab = useEgant((s) => s.openHistoryTab);
+  const openBrowserTab = useEgant((s) => s.openBrowserTab);
   const togglePanel = useEgant((s) => s.togglePanel);
   const snapshot = useEgant((s) => s.snapshot);
   const maximized = useEgant((s) => s.panelMaximized);
@@ -166,6 +169,15 @@ export function WorkspacePanel() {
                 >
                   New terminal
                 </MenuRow>
+                <MenuRow
+                  icon={<Globe size={13} strokeWidth={2} />}
+                  onClick={() => {
+                    openBrowserTab();
+                    setAdding(false);
+                  }}
+                >
+                  New browser tab
+                </MenuRow>
               </div>
             </>
           )}
@@ -213,6 +225,8 @@ export function WorkspacePanel() {
               <DiffsPanel root={root} tabId={tab.id} scope={tab.scope} />
             ) : tab.kind === "history" ? (
               <HistoryPanel root={root} />
+            ) : tab.kind === "browser" ? (
+              <BrowserPane tab={tab} active={tab.id === activeTab} />
             ) : (
               <TerminalPane tabId={tab.id} cwd={tab.cwd} active={tab.id === activeTab} />
             )}
@@ -247,6 +261,12 @@ export function WorkspacePanel() {
               detail="Every commit, newest first"
               onClick={openHistoryTab}
             />
+            <ChooserButton
+              icon={<Globe size={15} strokeWidth={1.9} />}
+              label="Browser"
+              detail="A real page, side by side with the chat"
+              onClick={openBrowserTab}
+            />
           </div>
         )}
       </div>
@@ -279,6 +299,7 @@ function TabIcon({ kind, size = 12 }: { kind: PanelTabKind; size?: number }) {
   if (kind === "files") return <FolderTree {...props} />;
   if (kind === "diffs") return <GitCompare {...props} />;
   if (kind === "history") return <GitBranch {...props} />;
+  if (kind === "browser") return <Globe {...props} />;
   return <TerminalIcon {...props} />;
 }
 

@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use egant_vcs::worktree::BRANCH_PREFIX;
 use egant_vcs::{Worktree, WorktreeState, WorktreeStore};
 
 /// One session's isolated checkout. Persisted with the session, so a relaunch
@@ -28,9 +29,11 @@ pub struct SessionWorktree {
     pub repo_root: PathBuf,
     /// Where the agent runs. Also the session's `cwd`.
     pub path: PathBuf,
-    /// The branch egant created for it (`egant/quiet-quartz`).
+    /// The branch egant created for it: `egant/quiet-quartz` until the
+    /// session's first turn renames it after what it is about (see [`rename`]).
     pub branch: String,
-    /// The generated folder name (`quiet-quartz`).
+    /// What the sidebar calls it — the branch without its prefix. The folder
+    /// keeps its generated name (`quiet-quartz`) even after this changes.
     pub name: String,
     /// The branch it was cut from. Kept so "is there anything in here" has an
     /// answer later, when the repository may be on something else entirely.
@@ -59,8 +62,10 @@ pub enum CheckoutPlan {
     /// Run in the project folder, on whatever branch it is on.
     CurrentCheckout,
     /// Run in a worktree that already exists — the picked ref was already
-    /// materialized in one. No git runs: this is a working directory, borrowed.
-    ReuseWorktree { path: String, branch: String },
+    /// materialized in one. Borrowed as a working directory; nothing is
+    /// created. The frontend sends the branch it picked too, but it is read
+    /// back from git instead (see [`adopt`]), so it is not taken here.
+    ReuseWorktree { path: String },
     /// Cut a fresh worktree off `base` (the repository's own branch when
     /// `None`).
     NewWorktree { base: Option<String> },
@@ -78,6 +83,43 @@ impl SessionWorktree {
             name: self.name.clone(),
         }
     }
+
+    /// Whether this is still the placeholder egant cut — its own worktree, on
+    /// the `egant/<folder>` branch it was created with — and so should be
+    /// renamed once the session says what it is about.
+    pub fn has_placeholder_name(&self) -> bool {
+        self.owned
+            && self.path.file_name().is_some_and(|folder| {
+                self.branch == format!("{BRANCH_PREFIX}{}", folder.to_string_lossy())
+            })
+    }
+}
+
+/// Renames a worktree's placeholder branch after `title`: `egant/quiet-quartz`
+/// becomes `egant/fix-login-flow`, and the folder stays where it is — the agent
+/// is running in it, and its resume history is keyed to the path.
+///
+/// `None` when nothing was renamed: the title had nothing branch-safe in it,
+/// or git says the branch is no longer the placeholder (the user checked out
+/// something else there, or pushed it) — see [`WorktreeStore::rename_branch`].
+///
+/// Blocking: shells out to git.
+pub fn rename(worktree: &SessionWorktree, title: &str) -> Result<Option<SessionWorktree>, String> {
+    let Some(slug) = egant_vcs::branch_slug(title) else {
+        return Ok(None);
+    };
+    let renamed = worktree
+        .store()
+        .rename_branch(&worktree.as_vcs(), &slug)
+        .map_err(|error| format!("could not rename {}: {error}", worktree.branch))?;
+    Ok(renamed.map(|renamed| {
+        log::info!("worktree {} renamed to {}", worktree.branch, renamed.branch);
+        SessionWorktree {
+            branch: renamed.branch,
+            name: renamed.name,
+            ..worktree.clone()
+        }
+    }))
 }
 
 /// What [`release`] did, in the words the UI shows.
@@ -155,9 +197,7 @@ pub fn prepare(
     match plan {
         CheckoutPlan::CurrentCheckout => Ok(None),
         CheckoutPlan::NewWorktree { base } => create(project_path, base.as_deref()).map(Some),
-        CheckoutPlan::ReuseWorktree { path, branch } => {
-            adopt(project_path, Path::new(path), branch).map(Some)
-        }
+        CheckoutPlan::ReuseWorktree { path } => adopt(project_path, Path::new(path)).map(Some),
     }
 }
 
@@ -166,31 +206,39 @@ pub fn prepare(
 ///
 /// Verified against git rather than trusted: the picker's list can be a moment
 /// stale, and running an agent in a directory that has stopped being a checkout
-/// is the failure this is here to prevent.
-fn adopt(project_path: &Path, path: &Path, branch: &str) -> Result<SessionWorktree, String> {
+/// is the failure this is here to prevent. The branch is git's too, for the
+/// same reason — the placeholder the picker saw may have been renamed since.
+fn adopt(project_path: &Path, path: &Path) -> Result<SessionWorktree, String> {
     let repo = egant_vcs::Repo::discover(project_path)
         .map_err(|_| format!("{} is not inside a git repository", project_path.display()))?;
     let repo_root = repo.root().to_path_buf();
     let store = WorktreeStore::with_default_base(&repo_root);
-    if !store.is_registered(path) {
+    let Some(live) = store.find(path) else {
         return Err(format!(
             "{} is no longer one of this repository's worktrees",
             path.display()
         ));
-    }
+    };
     // The base is only ever read to ask "is there work in here that nothing
     // else has" — and a borrowed worktree is never removed anyway, so the
     // repository's own branch is a fair reading.
-    let base = store.head_branch().unwrap_or_else(|_| branch.to_owned());
-    log::info!("session borrowing worktree {} on {branch}", path.display());
+    let base = store.head_branch().unwrap_or_else(|_| live.branch.clone());
+    log::info!(
+        "session borrowing worktree {} on {}",
+        path.display(),
+        live.branch
+    );
     Ok(SessionWorktree {
         repo_root,
-        name: path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        // Named after the branch where egant cut it, so a conversation that
+        // joins a renamed worktree groups under the same name as its owner.
+        name: live
+            .branch
+            .strip_prefix(BRANCH_PREFIX)
+            .map(str::to_owned)
+            .unwrap_or(live.name),
         path: path.to_path_buf(),
-        branch: branch.to_owned(),
+        branch: live.branch,
         base,
         owned: false,
     })
@@ -417,6 +465,33 @@ mod tests {
             is_live(&worktree),
             "git stopped listing a borrowed worktree"
         );
+    }
+
+    #[test]
+    fn the_first_title_replaces_the_placeholder_and_only_the_first() {
+        let (_dir, worktree) = session_worktree();
+        assert!(worktree.has_placeholder_name());
+
+        let renamed = rename(&worktree, "Fix Login Flow")
+            .unwrap()
+            .expect("a placeholder is renamed");
+        assert_eq!(renamed.branch, "egant/fix-login-flow");
+        assert_eq!(renamed.name, "fix-login-flow");
+        assert_eq!(renamed.path, worktree.path);
+        assert!(
+            !renamed.has_placeholder_name(),
+            "a second turn must not rename it again"
+        );
+
+        // And closing the session afterwards still recognizes it as egant's.
+        assert!(matches!(release(&renamed, false), Released::Removed { .. }));
+    }
+
+    #[test]
+    fn a_borrowed_worktree_is_never_renamed() {
+        let (_dir, mut worktree) = session_worktree();
+        worktree.owned = false;
+        assert!(!worktree.has_placeholder_name());
     }
 
     #[test]

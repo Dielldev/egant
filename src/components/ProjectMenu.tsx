@@ -28,11 +28,16 @@ export function ProjectMenu({
   const selectProject = useEgant((s) => s.selectProject);
   const selectAllProjects = useEgant((s) => s.selectAllProjects);
   const openFolderDialog = useEgant((s) => s.openFolderDialog);
+  const sidebarProject = useEgant((s) => s.sidebarProject);
+  const setSidebarProject = useEgant((s) => s.setSidebarProject);
 
   const projects = snapshot?.projects ?? [];
-  const activeProject = snapshot?.activeProject ?? null;
-  const current = projects.find((p) => p.id === activeProject);
   const header = variant === "header";
+  // The sidebar's header names the folder the list is filtered to; the chip
+  // over the launch composer names the one the next turn will run in. They
+  // usually agree, but "All projects" only means something to the first.
+  const activeProject = header ? sidebarProject : (snapshot?.activeProject ?? null);
+  const current = projects.find((p) => p.id === activeProject);
   const machineLabel = machine ?? snapshot?.machineName ?? "";
 
   const needle = query.trim().toLowerCase();
@@ -64,12 +69,16 @@ export function ProjectMenu({
         type="button"
         title={current?.path}
         onClick={toggle}
-        className={`flex cursor-pointer items-center gap-1.5 rounded-md text-xs hover:text-[var(--ink)] ${
-          header ? "w-full min-w-0 py-0.5" : "max-w-[220px]"
+        className={`flex cursor-pointer items-center hover:text-[var(--ink)] ${
+          header
+            ? `h-[29px] w-full min-w-0 gap-2 rounded-lg px-2 text-[13px] hover:bg-[var(--hover)] ${
+                open ? "bg-[var(--hover)]" : ""
+              }`
+            : "max-w-[220px] gap-1.5 rounded-md text-xs"
         }`}
       >
         <Folder
-          size={13}
+          size={header ? 16 : 13}
           strokeWidth={2}
           className={`shrink-0 ${header ? "text-[var(--muted)]" : "text-white"}`}
         />
@@ -81,18 +90,21 @@ export function ProjectMenu({
           panel-tuned muted tones, which get lost against a busy photo. */}
         <span
           className={`min-w-0 truncate ${
-            header ? "flex-1 text-left font-semibold text-[var(--ink)]" : "font-semibold text-white"
+            header
+              ? "text-left font-medium text-[var(--ink)]"
+              : "font-semibold text-white"
           }`}
         >
           {current?.name ?? "All projects"}
         </span>
-        {header && machineLabel && (
-          <span className="max-w-[62%] shrink-0 truncate text-[var(--faint)]">
+        {header && current && machineLabel && (
+          <span className="min-w-0 flex-1 truncate text-left text-[10px] text-[var(--faint)]">
             @ {machineLabel}
           </span>
         )}
+        {header && !(current && machineLabel) && <span className="flex-1" />}
         <ChevronDown
-          size={13}
+          size={header ? 14 : 13}
           strokeWidth={2}
           className={`shrink-0 ${header ? "text-[var(--faint)]" : "text-white/90"}`}
         />
@@ -102,7 +114,7 @@ export function ProjectMenu({
           <div className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} />
           <div
             style={{ transformOrigin: openUpward ? "bottom left" : "top left" }}
-            className={`menu absolute z-50 flex max-h-[min(420px,65vh)] w-[264px] flex-col overflow-hidden rounded-xl text-xs ${
+            className={`menu absolute z-50 flex max-h-[min(420px,65vh)] w-[264px] flex-col overflow-hidden rounded-xl text-[13px] ${
               openUpward ? "menu-pop-up bottom-full mb-1.5" : "menu-pop top-full mt-1.5"
             } ${header ? "left-0" : "right-0"}`}
           >
@@ -125,6 +137,7 @@ export function ProjectMenu({
                 active={activeProject == null}
                 onClick={() => {
                   setOpen(false);
+                  if (header) setSidebarProject(null);
                   void selectAllProjects();
                 }}
               >
@@ -139,6 +152,7 @@ export function ProjectMenu({
                   active={project.id === activeProject}
                   onClick={() => {
                     setOpen(false);
+                    if (header) setSidebarProject(project.id);
                     void selectProject(project.id);
                   }}
                 >
@@ -148,7 +162,7 @@ export function ProjectMenu({
                   />
                   <span className="min-w-0 flex-1 truncate">{project.name}</span>
                   {machineLabel && (
-                    <span className="max-w-[40%] shrink-0 truncate text-[var(--faint)]">
+                    <span className="max-w-[40%] shrink-0 truncate text-[10px] text-[var(--faint)]">
                       @ {machineLabel}
                     </span>
                   )}
