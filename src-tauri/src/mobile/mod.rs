@@ -449,9 +449,9 @@ pub struct MobileStatusDto {
     pub port: u16,
     pub error: Option<String>,
     pub tailscale: TailscaleStatus,
-    /// Where a pairing QR code sends a phone: the public link while it is
-    /// live, else this Mac's tailnet address once `tailscale serve` points at
-    /// the server.
+    /// Where a pairing QR code sends a phone: the public link, while it is
+    /// live. Never the tailnet address — a phone without Tailscale can't even
+    /// look that name up.
     pub url: Option<String>,
     /// This Mac's tailnet-only address, once `tailscale serve` is up.
     pub tailnet_url: Option<String>,
@@ -490,7 +490,7 @@ async fn status(app: &AppHandle, fresh: bool) -> MobileStatusDto {
     let service = app.state::<MobileService>();
     let public_url = funnel_url(&tailscale);
     let tailnet = tailnet_url(&service, &tailscale);
-    let url = public_url.clone().or_else(|| tailnet.clone());
+    let url = public_url.clone();
     let running = lock(&service.server).is_some();
     let connections = lock(&service.shared.connections).clone();
     let config = lock(&service.shared.config).clone();
@@ -623,8 +623,7 @@ pub async fn mobile_set_public(app: AppHandle, on: bool) -> MobileStatusDto {
 pub struct PairingDto {
     /// `ABCDE-FGHJK`, for typing into a phone that can't scan.
     pub code: String,
-    /// The link the QR code carries: the public link while it is live, else
-    /// the tailnet address when that is up.
+    /// The link the QR code carries: the public link, while it is live.
     pub url: Option<String>,
     /// `url` is the public link — a phone needs nothing installed.
     pub public: bool,
@@ -643,11 +642,10 @@ pub async fn mobile_create_pairing(app: AppHandle) -> Result<PairingDto, String>
     }
     let (code, expires_at_ms) = lock(&service.shared.pairings).issue(now_ms());
     let tailscale = tailscale_status(&app, false).await;
+    // Only ever the public link: the tailnet name doesn't resolve on a phone
+    // without Tailscale, which is the phone this is for.
     let public = funnel_url(&tailscale);
-    let url = public
-        .clone()
-        .or_else(|| tailnet_url(&service, &tailscale))
-        .map(|base| format!("{base}/#pair={code}"));
+    let url = public.as_ref().map(|base| format!("{base}/#pair={code}"));
     let qr_svg = url.as_deref().and_then(qr_svg);
     log::info!("mobile: new pairing code (valid 5 minutes)");
     Ok(PairingDto {

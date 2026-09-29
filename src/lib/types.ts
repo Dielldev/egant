@@ -754,8 +754,7 @@ export interface MobileStatus {
   port: number;
   error: string | null;
   tailscale: TailscaleStatus;
-  /** Where a QR code sends a phone: the public link while it is live, else
-   * the tailnet address once `tailscale serve` is up. */
+  /** Where a QR code sends a phone: the public link, while it is live. */
   url: string | null;
   /** This Mac's tailnet-only address, once `tailscale serve` is up. */
   tailnetUrl: string | null;

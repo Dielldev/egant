@@ -524,10 +524,6 @@ function ConnectDialog({
     }
   }, []);
 
-  useEffect(() => {
-    void issue();
-  }, [issue]);
-
   // A phone that pairs shows up as a device this dialog hadn't seen.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -564,8 +560,9 @@ function ConnectDialog({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  // Opening the public link is a deliberate step, never a side effect of
-  // asking for a code: it puts this Mac's address on the internet.
+  // The code only ever travels with the public link: it's the one address a
+  // phone reaches with nothing installed. So connecting a phone opens it,
+  // and a refusal (Funnel not turned on yet, say) shows here with its fix.
   const openPublic = async () => {
     setOpening(true);
     setOpenError(null);
@@ -583,6 +580,16 @@ function ConnectDialog({
 
   const ts = status.tailscale;
   const tailscaleReady = ts.installed && ts.running && ts.httpsEnabled;
+
+  // On open: a code at once when the public link is up, else open it first.
+  // Without Tailscale ready on this Mac there's nothing to open yet — the
+  // dialog names that step instead.
+  useEffect(() => {
+    if (status.public.live) void issue();
+    else if (tailscaleReady && !ts.funnelBlocked) void openPublic();
+    // Once, when the dialog opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const remaining = pairing ? Math.max(0, pairing.expiresAtMs - now) : 0;
   const expired = pairing != null && remaining === 0;
   const clock = `${Math.floor(remaining / 60_000)}:${String(Math.floor((remaining % 60_000) / 1000)).padStart(2, "0")}`;
@@ -616,11 +623,8 @@ function ConnectDialog({
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold text-[var(--ink)]">Connect a device</div>
             <div className="mt-0.5 text-[12px] leading-[1.45] text-[var(--muted)]">
-              {pairing?.url && pairing.public
-                ? "Scan with your phone's camera. It opens egant over the public link — nothing to install on the phone."
-                : pairing?.url
-                  ? "Scan with your phone's camera. Your phone needs Tailscale, signed in to the same tailnet as this Mac."
-                  : "Your phone reaches this Mac through Tailscale on this Mac."}
+              Scan with your phone's camera. Nothing to install on the phone — it opens egant
+              over this Mac's public link.
             </div>
           </div>
           <button
@@ -643,28 +647,17 @@ function ConnectDialog({
             </div>
           ) : error ? (
             <div className="py-10 text-center text-[12px] text-[var(--danger)]">{error}</div>
-          ) : !pairing || opening ? (
+          ) : opening || (status.public.live && !pairing) ? (
             <div className="flex h-[232px] flex-col items-center justify-center gap-2 text-[12px] text-[var(--muted)]">
               <Loader2 size={18} strokeWidth={2} className="animate-spin text-[var(--faint)]" />
               {opening && "Opening the public link…"}
             </div>
-          ) : pairing.qrSvg && !expired ? (
-            <>
-              <img
-                alt="Pairing QR code"
-                src={`data:image/svg+xml;utf8,${encodeURIComponent(pairing.qrSvg)}`}
-                className="h-[232px] w-[232px] rounded-xl"
-              />
-              {!pairing.public && tailscaleReady && !ts.funnelBlocked && (
-                <button
-                  type="button"
-                  onClick={() => void openPublic()}
-                  className="mt-2 cursor-pointer text-[11.5px] text-[var(--muted)] underline decoration-[var(--border)] underline-offset-2 hover:text-[var(--ink)]"
-                >
-                  No Tailscale on your phone? Use the public link
-                </button>
-              )}
-            </>
+          ) : pairing?.qrSvg && !expired ? (
+            <img
+              alt="Pairing QR code"
+              src={`data:image/svg+xml;utf8,${encodeURIComponent(pairing.qrSvg)}`}
+              className="h-[232px] w-[232px] rounded-xl"
+            />
           ) : (
             <div className="flex h-[232px] w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[var(--border)] px-5 text-center text-[12px] leading-[1.5] text-[var(--muted)]">
               {expired ? (
@@ -743,8 +736,8 @@ function ConnectDialog({
           </button>
           <button
             type="button"
-            onClick={() => void issue()}
-            disabled={paired != null || opening}
+            onClick={() => void (status.public.live ? issue() : openPublic())}
+            disabled={paired != null || opening || !tailscaleReady}
             className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--ink)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--stage)] hover:opacity-90 disabled:cursor-default disabled:opacity-45"
           >
             <RefreshCw size={12} strokeWidth={2.5} />
