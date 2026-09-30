@@ -20,6 +20,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod checkouts;
 pub mod dto;
 pub mod preview;
 pub mod run;

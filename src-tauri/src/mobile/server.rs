@@ -3,7 +3,8 @@
 //!
 //! Reads: the session and project lists, the chat agents and their models, a
 //! window of one transcript, what a session's "Run website" pill offers, the
-//! Mac's wallpaper, and the live event stream.
+//! Mac's wallpaper, Claude's plan usage, a project's checkouts (its folder
+//! and the worktrees that exist), and the live event stream.
 //! Writes: start a chat in a project the Mac already has open, send a
 //! message, stop a turn, switch a session's model or permission mode, answer
 //! a permission request, answer a decision prompt. Each write goes through
@@ -19,8 +20,11 @@
 //! the agent, which runs the command under the session's own permission mode),
 //! nothing reads or writes a file beyond the one wallpaper the user picked (and
 //! the project's own manifests, read only to name that command and never
-//! sent), installs an agent, opens a folder or touches git on its own — a new
-//! chat's worktree follows the Mac's own default. And a website is never served
+//! sent), installs an agent or opens a folder, and git is touched twice only:
+//! a fetch to read how far a checkout is behind, and a fast-forward-only pull
+//! of the project folder, which the phone asks for and which refuses when
+//! anything there would be touched. A new chat runs in the project folder or
+//! a worktree that already exists; the phone never makes one. And a website is never served
 //! from here: it gets an origin of its own, so nothing in it can act as the
 //! phone.
 //!
@@ -55,7 +59,7 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::broadcast;
 
 use super::auth::PairError;
-use super::{Device, MobileShared, assets, dto, preview, run};
+use super::{Device, MobileShared, assets, checkouts, dto, preview, run};
 use crate::service::{self, DecisionOutcome};
 use crate::sessions::PermissionAnswer;
 use crate::state::AppState;
@@ -98,6 +102,9 @@ pub fn router(ctx: Ctx) -> Router {
         .route("/api/v1/events", get(events))
         .route("/api/v1/agents", get(agents))
         .route("/api/v1/agents/{agent}/models", get(models))
+        .route("/api/v1/usage", get(usage))
+        .route("/api/v1/projects/{id}/checkouts", get(project_checkouts))
+        .route("/api/v1/projects/{id}/pull", post(project_pull))
         .route("/api/v1/sessions", post(create_session))
         .route("/api/v1/sessions/{id}/transcript", get(transcript))
         .route("/api/v1/sessions/{id}/run", get(run_info))
@@ -546,6 +553,98 @@ async fn agents(_device: Device) -> Result<Json<Value>, ApiError> {
     )))
 }
 
+/// Claude's 5-hour and weekly plan usage, the numbers the desktop's meter
+/// shows. Only percentages and reset times leave the Mac: the OAuth token the
+/// lookup needs is read, used for the one request, and dropped
+/// (`egant_harness::usage_limits`). `claude` is `null` when Claude isn't
+/// signed in on this Mac; the other agents report no plan quota to show.
+async fn usage(_device: Device) -> Result<Json<Value>, ApiError> {
+    let fetched = tauri::async_runtime::spawn_blocking(egant_harness::usage_limits::fetch)
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| {
+            log::warn!("phone usage fetch failed: {error}");
+            ApiError::new(StatusCode::BAD_GATEWAY, "Claude's usage could not be read.")
+        })?;
+    Ok(Json(json!({
+        "claude": fetched.map(crate::dto::ClaudeUsageDto::from),
+    })))
+}
+
+#[derive(Deserialize)]
+struct CheckoutsQuery {
+    #[serde(default)]
+    fetch: bool,
+}
+
+/// The project folder and its existing worktrees, each with its branch,
+/// uncommitted files and distance from the main branch. `?fetch=1` brings
+/// the remote up to date first (when it has been a couple of minutes), so
+/// "behind" is current.
+async fn project_checkouts(
+    State(ctx): State<Ctx>,
+    _device: Device,
+    Path(id): Path<usize>,
+    Query(query): Query<CheckoutsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let path = project_folder(&ctx, id).await?;
+    let list = tauri::async_runtime::spawn_blocking(move || checkouts::list(&path, query.fetch))
+        .await
+        .map_err(|_| ApiError::internal())?;
+    Ok(Json(list))
+}
+
+/// Fast-forwards the project folder to its remote branch — the phone's one
+/// git write. Refused, with the reason, when a chat is working in that folder
+/// or the folder has changes of its own (see [`checkouts::pull`]).
+async fn project_pull(
+    State(ctx): State<Ctx>,
+    device: Device,
+    _client: Client,
+    Path(id): Path<usize>,
+) -> Result<Json<Value>, ApiError> {
+    let path = with_state(&ctx, move |_, state| {
+        let project = state.project(id).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "That project isn't open on your Mac any more.",
+            )
+        })?;
+        let working = state.sessions.values().any(|session| {
+            session.meta.project_id == id
+                && session.meta.worktree.is_none()
+                && !session.meta.ended
+                && session.transcript.is_busy()
+        });
+        if working {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "A chat is working in that folder right now. Wait for it to finish.",
+            ));
+        }
+        Ok(project.fs_path())
+    })
+    .await?;
+    log::info!("mobile: {} pulls project {id}", device.name);
+    let list = tauri::async_runtime::spawn_blocking(move || checkouts::pull(&path))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| ApiError::new(StatusCode::CONFLICT, error))?;
+    Ok(Json(list))
+}
+
+async fn project_folder(ctx: &Ctx, id: usize) -> Result<PathBuf, ApiError> {
+    with_state(ctx, move |_, state| {
+        state.project(id).map(|project| project.fs_path()).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "That project isn't open on your Mac any more.",
+            )
+        })
+    })
+    .await
+}
+
 /// One agent's models — the desktop picker's own catalog, cached the same
 /// way (see `egant_harness::models::list_models`).
 async fn models(
@@ -873,13 +972,26 @@ struct NewSessionBody {
     variant: Option<String>,
     #[serde(default)]
     mode: Option<String>,
+    /// Where it runs. Absent is the project folder.
+    #[serde(default)]
+    checkout: Option<CheckoutBody>,
     text: String,
 }
 
+/// The project folder, or a worktree that already exists, named by its
+/// branch. The phone can't make a new worktree, and never sends a path.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum CheckoutBody {
+    Project,
+    Worktree { branch: String },
+}
+
 /// A new chat: a session in one of the projects the Mac already has open,
-/// with the phone's first message sent into it. The checkout follows the
-/// Mac's own default for new sessions (a fresh worktree or the project
-/// folder), cut off the state lock the way the window's own start is.
+/// with the phone's first message sent into it — in the project folder or in
+/// a worktree the phone picked from the ones that exist. Never in a new one,
+/// whatever the Mac's own default for new sessions is. Cut off the state
+/// lock the way the window's own start is.
 async fn create_session(
     State(ctx): State<Ctx>,
     device: Device,
@@ -898,25 +1010,32 @@ async fn create_session(
     check_message(&text)?;
     let project_id = body.project_id;
 
-    let (new_worktree, project_path) = with_state(&ctx, move |_, state| {
+    let project_path = with_state(&ctx, move |_, state| {
         let project = state.project(project_id).ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
                 "That project isn't open on your Mac any more.",
             )
         })?;
-        Ok((state.settings.worktree_default, project.fs_path()))
+        Ok(project.fs_path())
     })
     .await?;
-    let worktree = if new_worktree {
-        tauri::async_runtime::spawn_blocking(move || {
-            worktrees::prepare(&CheckoutPlan::NewWorktree { base: None }, &project_path)
-        })
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(|error| ApiError::new(StatusCode::CONFLICT, error))?
-    } else {
-        None
+    let worktree = match body.checkout {
+        None | Some(CheckoutBody::Project) => None,
+        Some(CheckoutBody::Worktree { branch }) => {
+            tauri::async_runtime::spawn_blocking(move || {
+                let path = checkouts::worktree_path(&project_path, &branch)?;
+                worktrees::prepare(
+                    &CheckoutPlan::ReuseWorktree {
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                    &project_path,
+                )
+            })
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(|error| ApiError::new(StatusCode::CONFLICT, error))?
+        }
     };
 
     log::info!(
