@@ -28,11 +28,29 @@ import type {
   TranscriptState,
 } from "@egant/lib/types";
 import { ApiError, MY_ORIGIN, api } from "./api";
-import type { MobileAgent, MobileProject, MobileSession, TranscriptWindow } from "./api";
+import type {
+  MobileAgent,
+  MobileProject,
+  MobileSession,
+  PreviewTarget,
+  TranscriptWindow,
+} from "./api";
 import { usePrefs } from "./prefs";
 
 /** The agents egant drives itself — the only ones a phone can chat with. */
 export const CHAT_AGENTS = ["claude", "codex", "opencode"] as const;
+
+/** A website being shown inside the app, in a frame: the phone's preview pane. */
+export interface PreviewView {
+  sessionId: number;
+  /** The one-time link the frame is pointed at. */
+  url: string;
+  port: number;
+  /** What was asked for, so a reload asks for the same. */
+  target: PreviewTarget;
+  /** A new key redraws the frame. */
+  key: number;
+}
 
 /** A chat the phone has asked the Mac to start, before it has an id. */
 export interface StartingChat {
@@ -91,6 +109,9 @@ interface MobileStore {
   openSession: number | null;
   /** A passing problem, shown briefly (a send that failed, say). */
   toast: string | null;
+  /** The website on show, if any — and whether a link for one is on its way. */
+  preview: PreviewView | null;
+  previewBusy: boolean;
 
   setConnection: (connection: Connection) => void;
   /** Loads everything from the Mac. False when it could not. */
@@ -120,6 +141,11 @@ interface MobileStore {
   setSessionMode: (id: number, mode: string) => Promise<void>;
   openSettings: () => void;
   closeSettings: () => void;
+  /** Shows a chat's running website (or the page a tapped link named) in the app. */
+  openPreview: (sessionId: number, target?: PreviewTarget) => Promise<void>;
+  /** Asks for a fresh link to the same page: the old one was good once. */
+  reloadPreview: () => Promise<void>;
+  closePreview: () => void;
 }
 
 /** The project a new chat runs in: the phone's pick while the Mac still has
@@ -339,6 +365,8 @@ export const useMobile = create<MobileStore>()((set, get) => {
     decisionResponses: {},
     openSession: sessionFromHash(),
     toast: null,
+    preview: null,
+    previewBusy: false,
 
     setConnection: (connection) => {
       if (get().connection !== connection) set({ connection });
@@ -700,6 +728,47 @@ export const useMobile = create<MobileStore>()((set, get) => {
       if (window.history.state?.egantSettings === true) window.history.back();
       else set({ settingsOpen: false });
     },
+
+    openPreview: async (sessionId, target = {}) => {
+      if (get().previewBusy) return;
+      set({ previewBusy: true });
+      try {
+        const { url, port } = await api.openPreview(sessionId, target);
+        // An entry in the phone's history, like Settings: back closes the
+        // preview (after the site's own pages, which the frame keeps in the
+        // same history) and lands where it was opened from.
+        if (get().preview == null) {
+          window.history.pushState(
+            { ...(window.history.state ?? {}), egantPreview: true },
+            "",
+            window.location.hash || "#/",
+          );
+        }
+        set({ preview: { sessionId, url, port, target, key: Date.now() }, previewBusy: false });
+      } catch (error) {
+        set({ previewBusy: false });
+        get().showToast(message(error));
+      }
+    },
+
+    reloadPreview: async () => {
+      const current = get().preview;
+      if (!current || get().previewBusy) return;
+      set({ previewBusy: true });
+      try {
+        const { url, port } = await api.openPreview(current.sessionId, current.target);
+        set({ preview: { ...current, url, port, key: Date.now() }, previewBusy: false });
+      } catch (error) {
+        set({ previewBusy: false });
+        get().showToast(message(error));
+      }
+    },
+
+    closePreview: () => {
+      if (get().preview == null) return;
+      if (window.history.state?.egantPreview === true) window.history.back();
+      else set({ preview: null });
+    },
   };
 });
 
@@ -711,8 +780,11 @@ function sessionFromHash(): number | null {
 // The phone's back gesture (and the browser's back button) walks the same
 // history `navigate` writes.
 window.addEventListener("popstate", () => {
-  useMobile.setState({
+  useMobile.setState((state) => ({
     openSession: sessionFromHash(),
     settingsOpen: window.history.state?.egantSettings === true,
-  });
+    // Forward to a preview that was closed shows nothing: its link was good
+    // once, and is long spent.
+    preview: window.history.state?.egantPreview === true ? state.preview : null,
+  }));
 });

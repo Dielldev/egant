@@ -37,19 +37,25 @@ export function IconButton({
   onClick,
   children,
   badge,
+  pressed,
 }: {
   label: string;
   onClick: () => void;
   children: ReactNode;
   /** A dot in the corner — something in the drawer needs you. */
   badge?: boolean;
+  /** A toggle, and whether it is on. */
+  pressed?: boolean;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
+      aria-pressed={pressed}
       onClick={onClick}
-      className="press relative flex h-11 w-11 items-center justify-center rounded-full text-[var(--ink)] active:bg-[var(--hover)]"
+      className={`press relative flex h-11 w-11 items-center justify-center rounded-full text-[var(--ink)] active:bg-[var(--hover)] ${
+        pressed ? "bg-[var(--raised-2)]" : ""
+      }`}
     >
       {children}
       {badge && (

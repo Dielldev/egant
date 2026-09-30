@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, Play } from "lucide-react";
+import { Eye, Loader2, Play } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { MobileSession, RunInfo } from "../api";
@@ -8,9 +8,6 @@ import { useMobile } from "../store";
  * turn can end while the server is still compiling. */
 const WAIT_MS = 30_000;
 const POLL_MS = 2_500;
-/** A link the browser refused to open on its own stays offered this long —
- * the Mac's is good for a minute. */
-const LINK_MS = 50_000;
 
 type Run = NonNullable<RunInfo["run"]>;
 
@@ -28,8 +25,8 @@ const PILL =
 
 /** What a finished task offers next when the project says how to run itself:
  * "Run website · npm run dev" under the reply, like the desktop's pill — and
- * once the site is up on the Mac, "Open website", which shows it in a browser
- * tab.
+ * once the site is up on the Mac, "Preview website", which shows it inside the
+ * app, over the chat, like a preview pane.
  *
  * Running is a message to the agent, which starts it with its own tools under
  * the chat's own permission mode: nothing here runs anything on the Mac. Which
@@ -48,10 +45,9 @@ export function RunPill({
   lastUserText: string | null;
 }) {
   const send = useMobile((s) => s.send);
-  const showToast = useMobile((s) => s.showToast);
+  const openPreview = useMobile((s) => s.openPreview);
+  const opening = useMobile((s) => s.previewBusy);
   const [info, setInfo] = useState<RunInfo | null>(null);
-  const [opening, setOpening] = useState(false);
-  const [link, setLink] = useState<string | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const id = session.id;
 
@@ -72,7 +68,6 @@ export function RunPill({
   // whenever the phone comes back to this page from the website or another app.
   useEffect(() => {
     setInfo(null);
-    setLink(null);
     setGaveUp(false);
     void load();
     const onVisible = () => {
@@ -99,66 +94,21 @@ export function RunPill({
     };
   }, [starting, load]);
 
-  useEffect(() => {
-    if (!link) return;
-    const timer = setTimeout(() => setLink(null), LINK_MS);
-    return () => clearTimeout(timer);
-  }, [link]);
-
-  const open = async () => {
-    setOpening(true);
-    setLink(null);
-    try {
-      const { url } = await api.openPreview(id);
-      const tab = window.open(url, "_blank");
-      if (tab) {
-        try {
-          // The site is another origin; it has no business steering this page.
-          tab.opener = null;
-        } catch {
-          // Already navigated away from ours: nothing left to cut.
-        }
-      } else {
-        // A tap that waited on the network can be taken for a pop-up and
-        // refused. The same link, as a link, never is.
-        setLink(url);
-      }
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error));
-      void load();
-    } finally {
-      setOpening(false);
-    }
-  };
-
   if (site) {
-    const primary = `${PILL} bg-[var(--ink)] text-[var(--stage)]`;
-    const port = <span className="font-mono text-[12.5px] font-normal opacity-60">:{site.port}</span>;
-    return link ? (
-      <a
-        href={link}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={`${primary} self-start`}
-      >
-        <ExternalLink size={15} strokeWidth={2.2} className="shrink-0" />
-        Tap to open the website
-        {port}
-      </a>
-    ) : (
+    return (
       <button
         type="button"
         disabled={opening}
-        onClick={() => void open()}
-        className={`${primary} self-start disabled:opacity-70`}
+        onClick={() => void openPreview(id)}
+        className={`${PILL} self-start bg-[var(--ink)] text-[var(--stage)] disabled:opacity-70`}
       >
         {opening ? (
           <Loader2 size={15} strokeWidth={2.2} className="shrink-0 animate-spin" />
         ) : (
-          <ExternalLink size={15} strokeWidth={2.2} className="shrink-0" />
+          <Eye size={16} strokeWidth={2.2} className="shrink-0" />
         )}
-        Open website
-        {port}
+        Preview website
+        <span className="font-mono text-[12.5px] font-normal opacity-60">:{site.port}</span>
       </button>
     );
   }

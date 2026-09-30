@@ -34,6 +34,13 @@
 //! cookie in the answer that names `localhost:PORT` is made relative. A
 //! WebSocket is handed through as bytes, and stays open only while its
 //! grant is valid.
+//!
+//! **In the app.** The phone shows the site in a frame of its own app, like a
+//! preview pane, so the answers say who may frame them: the site's own
+//! `X-Frame-Options` and `frame-ancestors` are replaced by a `frame-ancestors`
+//! naming this host alone — where the phone app is. Another page can't frame a
+//! site it has no cookie for in any case (the cookie is `SameSite=Lax`), and
+//! now it can't try.
 
 use axum::Router;
 use axum::body::Body;
@@ -52,7 +59,7 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use super::run::Site;
-use super::{MobileShared, auth, server};
+use super::{MobileShared, assets, auth, server};
 
 /// The cookie that lets a browser into the preview.
 pub const COOKIE: &str = "egant_preview";
@@ -87,42 +94,70 @@ pub struct Grant {
     expires_ms: u64,
 }
 
+/// A link waiting to be opened: what it grants, and where in the site it
+/// lands.
+struct Ticket {
+    grant: Grant,
+    next: String,
+}
+
+/// What spending a ticket gives the browser that holds it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Redeemed {
+    /// The cookie value the rest of the visit runs on.
+    pub token: String,
+    /// How many seconds that cookie lasts.
+    pub max_age_secs: u64,
+    /// Where the browser goes: a path on the site, with its query and
+    /// fragment — the front page unless a link into the site was tapped.
+    pub next: String,
+}
+
 /// Links waiting to be opened, and the browsers that opened one. Both are
 /// kept by the hash of their secret — like device tokens — and in memory
 /// only: a restart of egant ends every preview.
 #[derive(Default)]
 pub struct Previews {
-    tickets: HashMap<String, Grant>,
+    tickets: HashMap<String, Ticket>,
     grants: HashMap<String, Grant>,
 }
 
 impl Previews {
-    /// A one-time link secret for `site`.
-    pub fn issue(&mut self, device: &str, site: Site, now_ms: u64) -> String {
+    /// A one-time link secret for `site`, landing on `next` (a path on it).
+    pub fn issue(&mut self, device: &str, site: Site, next: &str, now_ms: u64) -> String {
         self.prune(now_ms);
-        evict_oldest(&mut self.tickets, MAX_TICKETS);
-        let ticket = auth::new_token();
+        evict_oldest(&mut self.tickets, MAX_TICKETS, |ticket| {
+            ticket.grant.expires_ms
+        });
+        let secret = auth::new_token();
         self.tickets.insert(
-            auth::hash_token(&ticket),
-            Grant {
-                device: device.to_string(),
-                site,
-                expires_ms: now_ms + TICKET_TTL_MS,
+            auth::hash_token(&secret),
+            Ticket {
+                grant: Grant {
+                    device: device.to_string(),
+                    site,
+                    expires_ms: now_ms + TICKET_TTL_MS,
+                },
+                next: next.to_string(),
             },
         );
-        ticket
+        secret
     }
 
-    /// Spends a ticket: the cookie value for the browser that holds it, and
-    /// how many seconds that cookie lasts. A ticket works once.
-    pub fn redeem(&mut self, ticket: &str, now_ms: u64) -> Option<(String, u64)> {
+    /// Spends a ticket for the cookie the browser that holds it keeps. A
+    /// ticket works once.
+    pub fn redeem(&mut self, ticket: &str, now_ms: u64) -> Option<Redeemed> {
         self.prune(now_ms);
-        let mut grant = self.tickets.remove(&auth::hash_token(ticket))?;
+        let Ticket { mut grant, next } = self.tickets.remove(&auth::hash_token(ticket))?;
         grant.expires_ms = now_ms + GRANT_TTL_MS;
-        evict_oldest(&mut self.grants, MAX_GRANTS);
+        evict_oldest(&mut self.grants, MAX_GRANTS, |grant| grant.expires_ms);
         let token = auth::new_token();
         self.grants.insert(auth::hash_token(&token), grant);
-        Some((token, GRANT_TTL_MS / 1000))
+        Some(Redeemed {
+            token,
+            max_age_secs: GRANT_TTL_MS / 1000,
+            next,
+        })
     }
 
     /// The grant a cookie value holds, unless it has run out.
@@ -138,7 +173,8 @@ impl Previews {
 
     /// Everything a device holds, links and browsers alike.
     pub fn revoke_device(&mut self, device: &str) {
-        self.tickets.retain(|_, grant| grant.device != device);
+        self.tickets
+            .retain(|_, ticket| ticket.grant.device != device);
         self.grants.retain(|_, grant| grant.device != device);
     }
 
@@ -148,16 +184,17 @@ impl Previews {
     }
 
     fn prune(&mut self, now_ms: u64) {
-        self.tickets.retain(|_, grant| grant.expires_ms > now_ms);
+        self.tickets
+            .retain(|_, ticket| ticket.grant.expires_ms > now_ms);
         self.grants.retain(|_, grant| grant.expires_ms > now_ms);
     }
 }
 
-fn evict_oldest(map: &mut HashMap<String, Grant>, capacity: usize) {
+fn evict_oldest<T>(map: &mut HashMap<String, T>, capacity: usize, expires: impl Fn(&T) -> u64) {
     while map.len() >= capacity {
         let Some(oldest) = map
             .iter()
-            .min_by_key(|(_, grant)| grant.expires_ms)
+            .min_by_key(|(_, entry)| expires(entry))
             .map(|(key, _)| key.clone())
         else {
             break;
@@ -206,14 +243,15 @@ struct EnterQuery {
     t: Option<String>,
 }
 
-/// Spends a link's ticket and sends the browser to the site's front page,
-/// carrying the cookie the rest of the visit runs on.
+/// Spends a link's ticket and sends the browser into the site — its front
+/// page, or the page a tapped link named — carrying the cookie the rest of
+/// the visit runs on.
 async fn enter(
     State(ctx): State<Ctx>,
     headers: HeaderMap,
     Query(query): Query<EnterQuery>,
 ) -> Response {
-    let Some((token, max_age)) = query
+    let Some(redeemed) = query
         .t
         .as_deref()
         .and_then(|ticket| ctx.shared.redeem_preview_ticket(ticket))
@@ -227,7 +265,9 @@ async fn enter(
     // Lax, not Strict: a site that signs in through another domain comes back
     // by a top-level redirect, which must still arrive with the cookie.
     let cookie = format!(
-        "{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
+        "{COOKIE}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+        redeemed.token,
+        redeemed.max_age_secs,
         if server::is_https(&headers) {
             "; Secure"
         } else {
@@ -237,7 +277,12 @@ async fn enter(
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::SEE_OTHER;
     let out = response.headers_mut();
-    out.insert(header::LOCATION, HeaderValue::from_static("/"));
+    // A path the Mac already checked (see `server::preview_path`); a value
+    // that is somehow not a header is the front page, never a failure.
+    out.insert(
+        header::LOCATION,
+        HeaderValue::from_str(&redeemed.next).unwrap_or_else(|_| HeaderValue::from_static("/")),
+    );
     if let Ok(cookie) = HeaderValue::from_str(&cookie) {
         out.insert(header::SET_COOKIE, cookie);
     }
@@ -347,8 +392,21 @@ async fn forward(ctx: Ctx, token: String, site: Site, mut request: Request) -> R
         Body::new(answer_body)
     });
     *response.status_mut() = answer_parts.status;
-    *response.headers_mut() = downstream_headers(&answer_parts.headers, site.port, switching);
+    *response.headers_mut() = downstream_headers(
+        &answer_parts.headers,
+        site.port,
+        switching,
+        &framing_policy(&parts.headers),
+    );
     response
+}
+
+/// The one thing that may frame the site: the phone app, which is served from
+/// this same host. Anything else — an odd host included — may not.
+fn framing_policy(request: &HeaderMap) -> HeaderValue {
+    assets::same_host_sources(request)
+        .and_then(|sources| HeaderValue::from_str(&format!("frame-ancestors {sources}")).ok())
+        .unwrap_or_else(|| HeaderValue::from_static("frame-ancestors 'none'"))
 }
 
 /// A connection to the site: the family it was found on, then the other —
@@ -525,9 +583,15 @@ fn strip_own_cookies(headers: &HeaderMap) -> Option<String> {
 
 /// The answer as the phone should see it: no hop-by-hop headers (unless the
 /// protocol is being switched, when they are the point), a `Location` or
-/// cookie that names the dev server made relative to this origin, and the
-/// page kept apart from whatever opened it.
-fn downstream_headers(answer: &HeaderMap, port: u16, switching: bool) -> HeaderMap {
+/// cookie that names the dev server made relative to this origin, the page
+/// kept apart from whatever opened it, and who may frame it — `framing`, in
+/// place of whatever the site said.
+fn downstream_headers(
+    answer: &HeaderMap,
+    port: u16,
+    switching: bool,
+    framing: &HeaderValue,
+) -> HeaderMap {
     let listed = connection_tokens(answer);
     let mut out = HeaderMap::with_capacity(answer.len() + 1);
     for (name, value) in answer {
@@ -547,11 +611,24 @@ fn downstream_headers(answer: &HeaderMap, port: u16, switching: bool) -> HeaderM
                 .ok()
                 .and_then(clean_set_cookie)
                 .and_then(|text| HeaderValue::from_str(&text).ok()),
+            // Who may frame the site is decided below, not by the site: a
+            // dev server's defaults (Django says DENY) would blank the preview.
+            "x-frame-options" => None,
+            "content-security-policy" => value
+                .to_str()
+                .ok()
+                .and_then(without_frame_ancestors)
+                .and_then(|text| HeaderValue::from_str(&text).ok()),
             _ => Some(value.clone()),
         };
         if let Some(value) = value {
             out.append(name.clone(), value);
         }
+    }
+    if !switching {
+        // Added beside the site's own policy, not in place of it: browsers
+        // enforce every `Content-Security-Policy` header they are sent.
+        out.append("content-security-policy", framing.clone());
     }
     // Cuts the link to the page that opened this one (egant's phone app), so
     // the site can't steer it — without touching popups the site opens itself
@@ -563,6 +640,21 @@ fn downstream_headers(answer: &HeaderMap, port: u16, switching: bool) -> HeaderM
         );
     }
     out
+}
+
+/// A policy without its `frame-ancestors` directive — the rest is the site's
+/// own business — or `None` when that was all it said.
+fn without_frame_ancestors(policy: &str) -> Option<String> {
+    let kept: Vec<&str> = policy
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| {
+            let name = directive.split_whitespace().next();
+            !directive.is_empty()
+                && !name.is_some_and(|n| n.eq_ignore_ascii_case("frame-ancestors"))
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("; "))
 }
 
 /// A redirect to the dev server's own address, as a redirect within this
@@ -722,11 +814,16 @@ mod tests {
     #[test]
     fn a_ticket_is_spent_once_for_a_grant_that_names_the_site() {
         let mut previews = Previews::default();
-        let ticket = previews.issue("dev1", site(5173), 1_000);
-        let (token, seconds) = previews.redeem(&ticket, 2_000).unwrap();
-        assert_eq!(seconds, GRANT_TTL_MS / 1000);
+        let ticket = previews.issue("dev1", site(5173), "/docs?x=1#top", 1_000);
+        let redeemed = previews.redeem(&ticket, 2_000).unwrap();
+        assert_eq!(redeemed.max_age_secs, GRANT_TTL_MS / 1000);
+        assert_eq!(
+            redeemed.next, "/docs?x=1#top",
+            "the link lands where it named"
+        );
         assert!(previews.redeem(&ticket, 2_001).is_none(), "one use");
 
+        let token = redeemed.token;
         let grant = previews.lookup(&token, 3_000).unwrap();
         assert_eq!((grant.device.as_str(), grant.site.port), ("dev1", 5173));
         // The ticket and the cookie are different secrets.
@@ -737,11 +834,11 @@ mod tests {
     #[test]
     fn a_ticket_is_good_for_a_minute_and_a_grant_for_half_a_day() {
         let mut previews = Previews::default();
-        let late = previews.issue("d", site(5173), 0);
+        let late = previews.issue("d", site(5173), "/", 0);
         assert!(previews.redeem(&late, TICKET_TTL_MS + 1).is_none());
 
-        let ticket = previews.issue("d", site(5173), 0);
-        let (token, _) = previews.redeem(&ticket, TICKET_TTL_MS - 1).unwrap();
+        let ticket = previews.issue("d", site(5173), "/", 0);
+        let token = previews.redeem(&ticket, TICKET_TTL_MS - 1).unwrap().token;
         assert!(
             previews
                 .lookup(&token, TICKET_TTL_MS + GRANT_TTL_MS - 2)
@@ -761,11 +858,11 @@ mod tests {
     #[test]
     fn revoking_a_device_takes_back_its_links_and_its_browsers() {
         let mut previews = Previews::default();
-        let mine = previews.issue("mine", site(5173), 0);
-        let (mine_token, _) = previews.redeem(&mine, 1).unwrap();
-        let pending = previews.issue("mine", site(5173), 0);
-        let theirs = previews.issue("theirs", site(3000), 0);
-        let (theirs_token, _) = previews.redeem(&theirs, 1).unwrap();
+        let mine = previews.issue("mine", site(5173), "/", 0);
+        let mine_token = previews.redeem(&mine, 1).unwrap().token;
+        let pending = previews.issue("mine", site(5173), "/", 0);
+        let theirs = previews.issue("theirs", site(3000), "/", 0);
+        let theirs_token = previews.redeem(&theirs, 1).unwrap().token;
 
         previews.revoke_device("mine");
         assert!(previews.lookup(&mine_token, 2).is_none());
@@ -779,17 +876,17 @@ mod tests {
     #[test]
     fn outstanding_links_and_grants_are_bounded_and_the_oldest_go_first() {
         let mut previews = Previews::default();
-        let first = previews.issue("d", site(5173), 0);
+        let first = previews.issue("d", site(5173), "/", 0);
         for n in 1..=MAX_TICKETS as u64 {
-            previews.issue("d", site(5173), n);
+            previews.issue("d", site(5173), "/", n);
         }
         assert!(previews.tickets.len() <= MAX_TICKETS);
         assert!(previews.redeem(&first, MAX_TICKETS as u64 + 1).is_none());
 
         let mut tokens = Vec::new();
         for n in 0..(MAX_GRANTS as u64 + 5) {
-            let ticket = previews.issue("d", site(5173), n);
-            tokens.push(previews.redeem(&ticket, n).unwrap().0);
+            let ticket = previews.issue("d", site(5173), "/", n);
+            tokens.push(previews.redeem(&ticket, n).unwrap().token);
         }
         assert!(previews.grants.len() <= MAX_GRANTS);
         assert!(previews.lookup(&tokens[0], 100).is_none());
@@ -807,6 +904,10 @@ mod tests {
             );
         }
         map
+    }
+
+    fn framing() -> HeaderValue {
+        HeaderValue::from_static("frame-ancestors https://mac.ts.net https://mac.ts.net:*")
     }
 
     fn text(map: &HeaderMap, name: &str) -> Option<String> {
@@ -931,6 +1032,87 @@ mod tests {
     }
 
     #[test]
+    fn only_the_frame_ancestors_directive_is_taken_out_of_a_sites_policy() {
+        let strip = |policy: &str| without_frame_ancestors(policy);
+        assert_eq!(
+            strip("default-src 'self'; frame-ancestors 'none'; img-src *").as_deref(),
+            Some("default-src 'self'; img-src *")
+        );
+        assert_eq!(strip("Frame-Ancestors https://a.example"), None);
+        assert_eq!(strip("frame-ancestors 'self'; "), None);
+        assert_eq!(
+            strip("default-src 'self'").as_deref(),
+            Some("default-src 'self'")
+        );
+        // `frame-src` is what the site itself may frame: not ours to touch.
+        assert_eq!(
+            strip("script-src 'self'; frame-src https://x.example").as_deref(),
+            Some("script-src 'self'; frame-src https://x.example")
+        );
+    }
+
+    #[test]
+    fn a_sites_own_framing_rules_give_way_to_egants() {
+        let answer = headers(&[
+            ("x-frame-options", "DENY"),
+            (
+                "content-security-policy",
+                "default-src 'self'; frame-ancestors 'none'",
+            ),
+            ("content-security-policy", "frame-ancestors 'self'"),
+            ("content-type", "text/html"),
+        ]);
+        let out = downstream_headers(&answer, 5173, false, &framing());
+        assert!(!out.contains_key("x-frame-options"));
+        let policies: Vec<&str> = out
+            .get_all("content-security-policy")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect();
+        assert_eq!(
+            policies,
+            vec![
+                "default-src 'self'",
+                "frame-ancestors https://mac.ts.net https://mac.ts.net:*"
+            ]
+        );
+        assert_eq!(text(&out, "content-type").as_deref(), Some("text/html"));
+        // A protocol switch is not a page: nothing is added to it.
+        let switching = headers(&[("connection", "Upgrade"), ("upgrade", "websocket")]);
+        let out = downstream_headers(&switching, 5173, true, &framing());
+        assert!(!out.contains_key("content-security-policy"));
+    }
+
+    #[test]
+    fn the_site_may_be_framed_by_the_phone_app_on_this_host_and_by_nothing_else() {
+        let policy = |host: &str, proto: Option<&str>| {
+            let mut request = headers(&[("host", host)]);
+            if let Some(proto) = proto {
+                request.insert("x-forwarded-proto", HeaderValue::from_str(proto).unwrap());
+            }
+            framing_policy(&request).to_str().unwrap().to_string()
+        };
+        assert_eq!(
+            policy("mac.tail1234.ts.net:8443", None),
+            "frame-ancestors https://mac.tail1234.ts.net https://mac.tail1234.ts.net:*"
+        );
+        assert_eq!(
+            policy("127.0.0.1:47248", None),
+            "frame-ancestors http://127.0.0.1 http://127.0.0.1:*"
+        );
+        assert_eq!(
+            policy("localhost:47248", Some("https")),
+            "frame-ancestors https://localhost https://localhost:*"
+        );
+        // An address that isn't plainly a host name frames with no one.
+        assert_eq!(policy("weird host", None), "frame-ancestors 'none'");
+        assert_eq!(
+            framing_policy(&HeaderMap::new()).to_str().unwrap(),
+            "frame-ancestors 'none'"
+        );
+    }
+
+    #[test]
     fn a_sites_cookies_lose_their_domain_and_egants_names_are_refused() {
         assert_eq!(
             clean_set_cookie("sid=1; Domain=localhost; Path=/; HttpOnly").as_deref(),
@@ -948,7 +1130,7 @@ mod tests {
             ("transfer-encoding", "chunked"),
             ("content-type", "text/html"),
         ]);
-        let out = downstream_headers(&answer, 5173, false);
+        let out = downstream_headers(&answer, 5173, false, &framing());
         assert_eq!(out.get_all("set-cookie").iter().count(), 1);
         assert_eq!(text(&out, "set-cookie").as_deref(), Some("sid=1"));
         assert_eq!(text(&out, "location").as_deref(), Some("/next"));
@@ -963,7 +1145,7 @@ mod tests {
         let own = headers(&[("cross-origin-opener-policy", "same-origin")]);
         assert_eq!(
             text(
-                &downstream_headers(&own, 5173, false),
+                &downstream_headers(&own, 5173, false, &framing()),
                 "cross-origin-opener-policy"
             )
             .as_deref(),
@@ -971,7 +1153,7 @@ mod tests {
         );
         // A protocol switch keeps the headers that carry it.
         let switching = headers(&[("connection", "Upgrade"), ("upgrade", "websocket")]);
-        let out = downstream_headers(&switching, 5173, true);
+        let out = downstream_headers(&switching, 5173, true, &framing());
         assert!(out.contains_key("connection") && out.contains_key("upgrade"));
     }
 
@@ -1026,6 +1208,11 @@ mod tests {
                                        Set-Cookie: egant_device=evil; Path=/\r\nContent-Length: 0\r\n\
                                        Connection: close\r\n\r\n"
                             .to_string(),
+                        // What Django says by default, and a strict policy.
+                        "/framed" => "HTTP/1.1 200 OK\r\nX-Frame-Options: DENY\r\n\
+                                      Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; img-src *\r\n\
+                                      Content-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string(),
                         _ => {
                             // Echo the headers the site received.
                             let seen: String = head
@@ -1077,8 +1264,8 @@ mod tests {
 
         /// A browser that came in through a link to `site`: its cookie.
         fn browser(&self, site: Site) -> String {
-            let ticket = self.shared.issue_preview_ticket(&self.device, site);
-            self.shared.redeem_preview_ticket(&ticket).unwrap().0
+            let ticket = self.shared.issue_preview_ticket(&self.device, site, "/");
+            self.shared.redeem_preview_ticket(&ticket).unwrap().token
         }
 
         /// One request, answered in full: (status, headers, body).
@@ -1139,7 +1326,7 @@ mod tests {
     async fn a_link_is_spent_once_and_leaves_a_cookie_that_works() {
         let dev = dev_server("127.0.0.1:0").await.unwrap();
         let rig = Rig::new().await;
-        let ticket = rig.shared.issue_preview_ticket(&rig.device, site(dev));
+        let ticket = rig.shared.issue_preview_ticket(&rig.device, site(dev), "/");
 
         let (status, head, _) = rig.get(&format!("{ENTER_PATH}?t={ticket}"), &[]).await;
         assert_eq!(status, 303);
@@ -1278,10 +1465,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_site_that_forbids_framing_can_still_be_framed_by_the_phone_app() {
+        let dev = dev_server("127.0.0.1:0").await.unwrap();
+        let rig = Rig::new().await;
+        let cookie = format!("egant_preview={}", rig.browser(site(dev)));
+        let (status, head, _) = rig.get("/framed", &[("Cookie", &cookie)]).await;
+        assert_eq!(status, 200);
+        let lower = head.to_ascii_lowercase();
+        assert!(!lower.contains("x-frame-options"), "{head}");
+        assert!(!lower.contains("frame-ancestors 'none'"), "{head}");
+        // The rest of the site's policy is left as it wrote it.
+        assert!(
+            lower.contains("content-security-policy: default-src 'self'; img-src *\r\n"),
+            "{head}"
+        );
+        // And the phone app — this host, whatever its port — may frame it.
+        assert!(
+            lower.contains(
+                "content-security-policy: frame-ancestors http://127.0.0.1 http://127.0.0.1:*\r\n"
+            ),
+            "{head}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_lands_on_the_page_it_named() {
+        let dev = dev_server("127.0.0.1:0").await.unwrap();
+        let rig = Rig::new().await;
+        let ticket = rig
+            .shared
+            .issue_preview_ticket(&rig.device, site(dev), "/docs?tab=2#intro");
+        let (status, head, _) = rig.get(&format!("{ENTER_PATH}?t={ticket}"), &[]).await;
+        assert_eq!(status, 303);
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("location: /docs?tab=2#intro\r\n"),
+            "{head}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_site_that_is_gone_says_so_instead_of_hanging() {
-        let free = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = free.local_addr().unwrap().port();
-        drop(free);
+        // Nothing listens on port 1, and no test can be handed it by the OS
+        // (it is below the range `bind(0)` draws from). A port bound and let
+        // go is not safe: a test running at the same moment may be given it.
+        let port = 1;
         let rig = Rig::new().await;
         let cookie = format!("egant_preview={}", rig.browser(site(port)));
         let (status, _, body) = rig
@@ -1392,19 +1620,34 @@ mod tests {
             listening.contains(&port),
             "lsof should tie :{port} to this folder: {listening:?}"
         );
-        let by_folder = run::find_site(root.clone(), vec![], vec![]).await;
+        let by_folder = run::find_site(root.clone(), vec![], vec![], None).await;
         assert_eq!(by_folder.map(|found| found.port), Some(port));
         // Another folder's session does not claim it — unless its own words
         // said so, which is the fallback for a server lsof can't tie down.
         let elsewhere = tempfile::tempdir().unwrap();
         assert!(run::listening_in(elsewhere.path()).is_empty());
-        let unrelated = run::find_site(elsewhere.path().to_path_buf(), vec![], vec![]).await;
+        let unrelated = run::find_site(elsewhere.path().to_path_buf(), vec![], vec![], None).await;
         assert_eq!(unrelated.map(|found| found.port), None);
-        let announced = run::find_site(elsewhere.path().to_path_buf(), vec![port], vec![]).await;
+        let announced =
+            run::find_site(elsewhere.path().to_path_buf(), vec![port], vec![], None).await;
         assert_eq!(announced.map(|found| found.port), Some(port));
+        // A tapped link may ask for a port — but only one this session could be
+        // serving on. Its folder has it listening; another folder's session
+        // has no such claim on it, whatever the phone says.
+        let asked = |dir: std::path::PathBuf, announced: Vec<u16>| async move {
+            run::find_site(dir, announced, vec![], Some(port))
+                .await
+                .map(|found| found.port)
+        };
+        assert_eq!(asked(root.clone(), vec![]).await, Some(port));
+        assert_eq!(asked(elsewhere.path().to_path_buf(), vec![]).await, None);
+        assert_eq!(
+            asked(elsewhere.path().to_path_buf(), vec![port]).await,
+            Some(port)
+        );
         // Never one of egant's own ports.
         assert!(
-            run::find_site(root.clone(), vec![], vec![port])
+            run::find_site(root.clone(), vec![], vec![port], None)
                 .await
                 .is_none()
         );

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { LogoLoader } from "@egant/components/Logo";
 import { OfflineScreen } from "./components/OfflineScreen";
 import { PairScreen } from "./components/PairScreen";
+import { PreviewSheet } from "./components/PreviewSheet";
 import { Shell } from "./components/Shell";
 import { useMobile } from "./store";
 import { startStream, stopStream } from "./stream";
@@ -25,7 +26,14 @@ export function App() {
     case "offline":
       return <OfflineScreen onRetry={boot} />;
     case "ready":
-      return <Shell />;
+      return (
+        <>
+          <Shell />
+          {/* Beside the shell, not in it: a touch on the preview's own bar
+            must not read as a swipe for the drawer. */}
+          <PreviewSheet />
+        </>
+      );
   }
 }
 

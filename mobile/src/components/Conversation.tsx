@@ -22,6 +22,7 @@ import { fallbackName } from "@egant/lib/agents";
 import { modeLabel, permissionSummary, timeLabel, truncate } from "@egant/lib/transcript";
 import type { AgentRequest, Entry, PendingPermission } from "@egant/lib/types";
 import type { MobileSession } from "../api";
+import { localLink } from "../localLink";
 import { usePrefs } from "../prefs";
 import { useMobile } from "../store";
 import type { LoadedTranscript, StartingChat } from "../store";
@@ -395,12 +396,25 @@ function UserBubble({ text }: { text: string }) {
 }
 
 function EntryView({ entry, sessionId, last }: { entry: Entry; sessionId: number; last: boolean }) {
+  const openPreview = useMobile((s) => s.openPreview);
   switch (entry.kind) {
     case "user":
       return <UserBubble text={entry.text} />;
     case "assistant":
       return (
-        <div className="phone-md flex w-full min-w-0 flex-col gap-2">
+        <div
+          className="phone-md flex w-full min-w-0 flex-col gap-2"
+          onClick={(event) => {
+            // "It's running at http://localhost:5173" — on a phone, that link
+            // opens the phone's own localhost, which is nothing. Ask the Mac
+            // for the site instead, and show it in the app.
+            const anchor = (event.target as HTMLElement).closest("a");
+            const target = localLink(anchor?.getAttribute("href"));
+            if (!target) return;
+            event.preventDefault();
+            void openPreview(sessionId, target);
+          }}
+        >
           <Markdown text={entry.streaming ? `${entry.text}▌` : entry.text} />
           {!entry.streaming && (
             <div

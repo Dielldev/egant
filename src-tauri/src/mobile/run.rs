@@ -594,10 +594,10 @@ fn classify(head: &[u8], waited_out: bool) -> Option<Reply> {
     Some(if html { Reply::Page } else { Reply::Data })
 }
 
-/// Which ports to probe, best hunch first: what the session announced *and*
-/// something started in its folder is listening on; then what is listening
-/// there; then what it announced.
-fn candidates(announced: &[u16], listening: &[u16], skip: &[u16]) -> Vec<u16> {
+/// Every port this session could be serving on, best hunch first: what it
+/// announced *and* something started in its folder is listening on; then what
+/// is listening there; then what it announced.
+fn ordered_candidates(announced: &[u16], listening: &[u16], skip: &[u16]) -> Vec<u16> {
     let mut ordered: Vec<u16> = Vec::new();
     let both = announced.iter().filter(|port| listening.contains(port));
     for port in both.chain(listening).chain(announced) {
@@ -605,17 +605,37 @@ fn candidates(announced: &[u16], listening: &[u16], skip: &[u16]) -> Vec<u16> {
             ordered.push(*port);
         }
     }
-    ordered.truncate(MAX_CANDIDATES);
+    ordered
+}
+
+/// The ports to probe: the best few, or — when one was asked for — that one,
+/// and only if it is among the ports this session could be serving on. A
+/// phone picks from what the Mac found; it never names a port of its own.
+fn to_probe(announced: &[u16], listening: &[u16], skip: &[u16], wanted: Option<u16>) -> Vec<u16> {
+    let mut ordered = ordered_candidates(announced, listening, skip);
+    match wanted {
+        Some(port) => ordered.retain(|candidate| *candidate == port),
+        None => ordered.truncate(MAX_CANDIDATES),
+    }
     ordered
 }
 
 /// The site `session_dir`'s session is serving right now, if any. `skip` is
 /// egant's own ports: never a site, and proxying to them would loop.
-pub async fn find_site(session_dir: PathBuf, announced: Vec<u16>, skip: Vec<u16>) -> Option<Site> {
+///
+/// `wanted` asks for one port in particular — a link the agent's own reply
+/// held, tapped on the phone — and gets it only if it answers *and* is one of
+/// this session's candidates.
+pub async fn find_site(
+    session_dir: PathBuf,
+    announced: Vec<u16>,
+    skip: Vec<u16>,
+    wanted: Option<u16>,
+) -> Option<Site> {
     let listening = tokio::task::spawn_blocking(move || listening_in(&session_dir))
         .await
         .unwrap_or_default();
-    find_among(candidates(&announced, &listening, &skip)).await
+    find_among(to_probe(&announced, &listening, &skip, wanted)).await
 }
 
 /// Probes `ports` together and takes the best answer: a page over a slow
@@ -860,21 +880,42 @@ mod tests {
     #[test]
     fn a_port_both_announced_and_listening_in_the_folder_goes_first() {
         assert_eq!(
-            candidates(&[3001, 5173], &[5174, 5173], &[]),
+            to_probe(&[3001, 5173], &[5174, 5173], &[], None),
             vec![5173, 5174, 3001]
         );
-        assert_eq!(candidates(&[3001], &[], &[]), vec![3001]);
-        assert_eq!(candidates(&[], &[5174], &[]), vec![5174]);
+        assert_eq!(to_probe(&[3001], &[], &[], None), vec![3001]);
+        assert_eq!(to_probe(&[], &[5174], &[], None), vec![5174]);
     }
 
     #[test]
     fn egants_own_ports_are_never_candidates_and_the_list_is_bounded() {
         assert_eq!(
-            candidates(&[47247, 5173], &[47248], &[47247, 47248]),
+            to_probe(&[47247, 5173], &[47248], &[47247, 47248], None),
             vec![5173]
         );
         let many: Vec<u16> = (4000..4100).collect();
-        assert_eq!(candidates(&many, &[], &[]).len(), MAX_CANDIDATES);
+        assert_eq!(to_probe(&many, &[], &[], None).len(), MAX_CANDIDATES);
+    }
+
+    #[test]
+    fn a_port_asked_for_is_probed_only_if_the_session_could_be_serving_on_it() {
+        // A link the agent wrote, or a listener in the session's folder.
+        assert_eq!(to_probe(&[3001, 5173], &[], &[], Some(3001)), vec![3001]);
+        assert_eq!(to_probe(&[], &[5174], &[], Some(5174)), vec![5174]);
+        // A port nothing about this session points at is never reached for.
+        assert_eq!(
+            to_probe(&[5173], &[5174], &[], Some(6379)),
+            Vec::<u16>::new()
+        );
+        assert_eq!(to_probe(&[], &[], &[], Some(5173)), Vec::<u16>::new());
+        // Not egant's own, whoever asks.
+        assert_eq!(
+            to_probe(&[47247], &[47248], &[47247, 47248], Some(47247)),
+            Vec::<u16>::new()
+        );
+        // The bound on the plain list is not a bound on what can be asked for.
+        let many: Vec<u16> = (4000..4100).collect();
+        assert_eq!(to_probe(&many, &[], &[], Some(4099)), vec![4099]);
     }
 
     // -- probing -------------------------------------------------------------
@@ -933,11 +974,10 @@ mod tests {
         assert!(probe(redis).await.is_none());
         let hangs_up = serve("127.0.0.1:0", Some("")).await.unwrap();
         assert!(probe(hangs_up).await.is_none());
-        // Nothing listening: bind one to learn a free port, then let it go.
-        let free = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = free.local_addr().unwrap().port();
-        drop(free);
-        assert!(probe(port).await.is_none());
+        // Nothing listening: port 1, which no test can be handed by the OS (it
+        // is below the range `bind(0)` draws from). A port bound and let go is
+        // not safe — a test running at the same moment may be given it.
+        assert!(probe(1).await.is_none());
     }
 
     #[tokio::test]

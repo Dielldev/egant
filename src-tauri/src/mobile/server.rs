@@ -516,7 +516,7 @@ async fn run_info(
     let command = tokio::task::spawn_blocking(move || run::detect_run_command(&dir))
         .await
         .map_err(|_| ApiError::internal())?;
-    let site = run::find_site(target.dir, target.announced, ctx.own_ports()).await;
+    let site = run::find_site(target.dir, target.announced, ctx.own_ports(), None).await;
     Ok(Json(json!({
         "run": command,
         "site": site.map(|site| json!({ "port": site.port })),
@@ -780,29 +780,67 @@ async fn interrupt(
     .await
 }
 
+/// What a tapped link asks of [`open_preview`]. Both parts are optional: with
+/// neither, it is the session's own site, at its front page.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct PreviewBody {
+    /// A port the agent's own reply named (`http://localhost:5173/…`), tapped
+    /// on the phone. Honoured only if it is one of this session's candidates
+    /// (see [`run::find_site`]): the phone chooses among what the Mac found.
+    port: Option<u16>,
+    /// Where on the site to land: a path with its query and fragment.
+    path: Option<String>,
+}
+
+/// Where on a site a link may land: a path — with its query and fragment — as
+/// a browser writes one. Never anything that could name another host, or
+/// carry a character a header could not.
+fn preview_path(path: Option<String>) -> Result<String, ApiError> {
+    let Some(path) = path.filter(|path| !path.is_empty()) else {
+        return Ok("/".to_string());
+    };
+    let plain = path.len() <= 2048
+        && path.starts_with('/')
+        && !path.starts_with("//")
+        && !path.contains('\\')
+        && path.bytes().all(|byte| (0x21..=0x7e).contains(&byte));
+    if plain {
+        Ok(path)
+    } else {
+        Err(ApiError::new(StatusCode::BAD_REQUEST, "bad path"))
+    }
+}
+
 /// Opens a session's website on the phone: finds it, and answers with a link
-/// on the preview listener that works once — the phone opens it in a browser
-/// tab of its own. See [`super::preview`] for why the site is not served from
-/// here.
+/// on the preview listener that works once — which the phone's own app shows
+/// in a frame, like a preview pane, or opens in a browser tab of its own. See
+/// [`super::preview`] for why the site is not served from here.
 async fn open_preview(
     State(ctx): State<Ctx>,
     device: Device,
     _client: Client,
     headers: HeaderMap,
     Path(id): Path<u64>,
+    Json(body): Json<PreviewBody>,
 ) -> Result<Json<Value>, ApiError> {
+    let next = preview_path(body.path)?;
     let Some(target) = site_target(&ctx, id).await? else {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "A terminal session has no website to open from the phone.",
         ));
     };
-    let site = run::find_site(target.dir, target.announced, ctx.own_ports())
+    let site = run::find_site(target.dir, target.announced, ctx.own_ports(), body.port)
         .await
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::CONFLICT,
-                "Nothing is serving on your Mac for this chat right now. Tap Run website first.",
+                if body.port.is_some() {
+                    "That address isn't running on your Mac for this chat right now."
+                } else {
+                    "Nothing is serving on your Mac for this chat right now. Tap Run website first."
+                },
             )
         })?;
     let host = headers
@@ -812,7 +850,7 @@ async fn open_preview(
     let origin = super::preview_origin(&ctx.app, host)
         .await
         .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
-    let ticket = ctx.shared.issue_preview_ticket(&device.id, site);
+    let ticket = ctx.shared.issue_preview_ticket(&device.id, site, &next);
     log::info!(
         "mobile: {} opened the website on port {} of session {id}",
         device.name,
@@ -1095,11 +1133,11 @@ async fn answer_decision(
     .await
 }
 
-async fn fallback(uri: Uri) -> Response {
+async fn fallback(headers: HeaderMap, uri: Uri) -> Response {
     if uri.path().starts_with("/api/") {
         return ApiError::new(StatusCode::NOT_FOUND, "no such endpoint").into_response();
     }
-    assets::serve(uri).await
+    assets::serve(uri, &headers).await
 }
 
 #[cfg(test)]
@@ -1124,6 +1162,34 @@ mod tests {
         assert!(cli_value(Some("opus; rm -rf ~".into()), "model").is_err());
         assert!(cli_value(Some("opus\n--flag".into()), "model").is_err());
         assert!(cli_value(Some("x".repeat(201)), "model").is_err());
+    }
+
+    #[test]
+    fn a_link_may_land_only_on_a_path_of_the_site() {
+        let ok = |path: &str| preview_path(Some(path.to_string())).ok();
+        assert_eq!(preview_path(None).unwrap(), "/");
+        assert_eq!(preview_path(Some(String::new())).unwrap(), "/");
+        assert_eq!(ok("/").as_deref(), Some("/"));
+        assert_eq!(
+            ok("/docs/intro?tab=2&q=a%20b#section-3").as_deref(),
+            Some("/docs/intro?tab=2&q=a%20b#section-3")
+        );
+        // Anything that could name another place, or break a header.
+        for bad in [
+            "//evil.example/x",
+            "/\\evil.example",
+            "https://evil.example/",
+            "evil.example",
+            "relative/path",
+            "/a b",
+            "/a\r\nSet-Cookie: x=1",
+            "/caf\u{e9}",
+            "/\u{0}",
+        ] {
+            assert!(ok(bad).is_none(), "{bad:?} must be refused");
+        }
+        assert!(ok(&format!("/{}", "a".repeat(2048))).is_none(), "too long");
+        assert!(ok(&format!("/{}", "a".repeat(2047))).is_some());
     }
 
     #[test]

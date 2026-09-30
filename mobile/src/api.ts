@@ -61,6 +61,35 @@ export interface RunInfo {
   site: { port: number } | null;
 }
 
+/** What a tapped link asks the Mac to open: a port the chat's own reply named
+ * (the Mac only agrees to ports it found for that chat) and where on the site
+ * to land. Neither means the chat's site, at its front page. */
+export interface PreviewTarget {
+  port?: number;
+  path?: string;
+}
+
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+/** The link on the host this page was opened at, when both are this Mac's
+ * own loopback name — trying the phone app in a desktop browser through a dev
+ * server, say. The frame and the app must be one site for the frame's cookie
+ * to be sent, and a cookie for `127.0.0.1` is not sent to `localhost`. Over
+ * Tailscale both are the same name already, and nothing changes. */
+export function onThisHost(link: string): string {
+  try {
+    const url = new URL(link);
+    const here = window.location.hostname;
+    if (LOOPBACK_HOSTS.includes(url.hostname) && LOOPBACK_HOSTS.includes(here) && url.hostname !== here) {
+      url.hostname = here;
+      return url.toString();
+    }
+  } catch {
+    // Not a link this can read: the frame will say so.
+  }
+  return link;
+}
+
 /** A project a new chat can run in — `ProjectRowDto`. */
 export interface MobileProject {
   id: number;
@@ -172,10 +201,17 @@ export const api = {
     request<{ title: string | null }>("POST", `/api/v1/sessions/${id}/messages`, { text }),
   interrupt: (id: number) => request<{ ok: boolean }>("POST", `/api/v1/sessions/${id}/interrupt`),
   runInfo: (id: number) => request<RunInfo>("GET", `/api/v1/sessions/${id}/run`),
-  /** A link, good once and for a minute, that opens the chat's running site
-   * in a browser tab — on a port of its own, not this page's origin. */
-  openPreview: (id: number) =>
-    request<{ url: string; port: number }>("POST", `/api/v1/sessions/${id}/preview`),
+  /** A link, good once and for a minute, that opens the chat's running site —
+   * or the page a link in the chat named — on a port of its own, not this
+   * page's origin. The app shows it in a frame; a browser tab can take it too. */
+  openPreview: async (id: number, target: PreviewTarget = {}) => {
+    const link = await request<{ url: string; port: number }>(
+      "POST",
+      `/api/v1/sessions/${id}/preview`,
+      target,
+    );
+    return { ...link, url: onThisHost(link.url) };
+  },
   agents: () => request<MobileAgent[]>("GET", "/api/v1/agents"),
   models: (agent: string) =>
     request<AgentModel[]>("GET", `/api/v1/agents/${encodeURIComponent(agent)}/models`),

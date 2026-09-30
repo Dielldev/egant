@@ -170,14 +170,14 @@ impl MobileShared {
     }
 
     /// A one-time link secret that opens `site` — a session's running website
-    /// — in a browser (see [`preview`]).
-    pub fn issue_preview_ticket(&self, device: &str, site: run::Site) -> String {
-        lock(&self.previews).issue(device, site, now_ms())
+    /// — in a browser, landing on `next`, a path on it (see [`preview`]).
+    pub fn issue_preview_ticket(&self, device: &str, site: run::Site, next: &str) -> String {
+        lock(&self.previews).issue(device, site, next, now_ms())
     }
 
     /// Spends a link secret for the cookie the browser that opened it keeps,
-    /// and how many seconds it lasts.
-    pub fn redeem_preview_ticket(&self, ticket: &str) -> Option<(String, u64)> {
+    /// and where it goes next.
+    pub fn redeem_preview_ticket(&self, ticket: &str) -> Option<preview::Redeemed> {
         lock(&self.previews).redeem(ticket, now_ms())
     }
 
