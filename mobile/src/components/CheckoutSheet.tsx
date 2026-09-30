@@ -12,18 +12,15 @@ export function checkoutName(checkout: Checkout): string {
   return checkout.kind === "project" ? "Project folder" : (checkout.name ?? checkout.branch ?? "worktree");
 }
 
-/** "3 behind main", "1 uncommitted" — the counts worth a glance. */
-function facts(checkout: Checkout, mainRef: string | null | undefined): string[] {
+/** The counts worth a glance: what the folder is behind its remote by, and
+ * uncommitted files. Only the folder can be behind — it is the one a pull
+ * can fix — so a worktree row stays as quiet as its branch. */
+function facts(checkout: Checkout): string[] {
   const parts: string[] = [];
   if (checkout.dirty > 0) parts.push(`${checkout.dirty} uncommitted`);
-  if (checkout.behind) {
-    parts.push(
-      checkout.kind === "project"
-        ? `${checkout.behind} behind ${checkout.upstream ?? "remote"}`
-        : `${checkout.behind} behind ${mainRef ?? "main"}`,
-    );
+  if (checkout.kind === "project" && checkout.behind) {
+    parts.push(`${checkout.behind} behind ${checkout.upstream ?? "remote"}`);
   }
-  if (checkout.ahead) parts.push(`${checkout.ahead} ahead`);
   return parts;
 }
 
@@ -117,7 +114,7 @@ export function CheckoutSheet({
 
         <div className="overflow-hidden rounded-[18px] bg-[var(--raised-2)]/60">
           {(list?.checkouts ?? []).map((checkout) => {
-            const details = facts(checkout, list?.mainRef);
+            const details = facts(checkout);
             return (
               <Choice
                 key={`${checkout.kind}:${checkout.branch}`}
@@ -136,7 +133,7 @@ export function CheckoutSheet({
                       {checkout.branch ?? "detached"}
                     </span>
                     {details.length > 0 && (
-                      <span className={checkout.behind ? "text-amber-600 dark:text-amber-300" : ""}>
+                      <span className={checkout.kind === "project" && checkout.behind ? "text-amber-600 dark:text-amber-300" : ""}>
                         {" · "}
                         {details.join(" · ")}
                       </span>
@@ -161,7 +158,8 @@ export function CheckoutSheet({
         <div className="flex items-start gap-2 px-2 pt-3 text-[12.5px] leading-snug text-[var(--faint)]">
           <span className="min-w-0 flex-1">
             {list?.fetchError ? `${list.fetchError} Showing what ${machine || "your Mac"} last saw. ` : ""}
-            New chats run in one of these. To make a new worktree, do it on {machine || "your Mac"}.
+            New chats run in the project folder or a worktree inside it. To make a new worktree, do it on{" "}
+            {machine || "your Mac"}.
           </span>
           <button
             type="button"

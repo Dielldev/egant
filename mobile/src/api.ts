@@ -132,18 +132,16 @@ export interface Checkout {
   name?: string;
   /** Files with uncommitted changes. */
   dirty: number;
-  /** Commits it has that the main branch doesn't. `null` when unknown. */
-  ahead: number | null;
-  /** Commits on the main branch it doesn't have yet. */
-  behind: number | null;
+  /** The project folder only: commits it has that its remote branch doesn't,
+   * and the other way round. `null` when there is no remote branch. */
+  ahead?: number | null;
+  behind?: number | null;
   /** The project folder's remote branch, when it has one. */
   upstream?: string | null;
 }
 
 export interface CheckoutList {
   isRepo: boolean;
-  /** What "behind" is measured against, e.g. `origin/main`. */
-  mainRef?: string | null;
   lastFetchedUnix?: number | null;
   /** The remote could not be reached for a fresh reading. */
   fetchError?: string | null;

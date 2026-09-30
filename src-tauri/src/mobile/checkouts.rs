@@ -1,6 +1,7 @@
 //! Where a chat started from the phone can run: the project's own folder, or
-//! a worktree that already exists — never a new one — and how far each of
-//! them is from the branch they came from.
+//! a worktree that already exists inside it — never a new one. Worktrees
+//! elsewhere on the disk (another tool's, an unrelated checkout of the same
+//! repository) are not the project's and are left out.
 //!
 //! Everything here is read from git on the Mac; the phone names a worktree by
 //! its branch (git allows a branch to be checked out in one place only) and
@@ -35,22 +36,12 @@ fn dirty_count(path: &Path) -> usize {
         .unwrap_or(1)
 }
 
-/// Commits `branch` is (behind, ahead of) `reference`.
-fn behind_ahead(root: &Path, reference: &str, branch: &str) -> Option<(usize, usize)> {
-    let out = run(
-        root,
-        &[
-            "rev-list",
-            "--left-right",
-            "--count",
-            &format!("{reference}...{branch}"),
-        ],
-    )
-    .ok()?;
-    let mut parts = out.stdout.split_whitespace();
-    let behind = parts.next()?.parse().ok()?;
-    let ahead = parts.next()?.parse().ok()?;
-    Some((behind, ahead))
+/// Whether `path` is the project's folder or inside it. Compared resolved, so
+/// a symlinked home or `/private/var` doesn't hide a worktree that is there.
+fn inside(project: &Path, path: &Path) -> bool {
+    let project = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    path.starts_with(project)
 }
 
 /// The remote a fetch goes to: the upstream's own, else `origin`, else the
@@ -67,9 +58,10 @@ fn remote_name(root: &Path, upstream: Option<&str>) -> Option<String> {
         .cloned()
 }
 
-/// The project folder and the repository's worktrees, with how far each is
-/// from the main branch. `fetch` first brings the remote up to date when the
-/// last fetch is stale — the only way "behind" can mean anything.
+/// The project folder, and the worktrees inside it, with their branches and
+/// uncommitted files. The folder also says how far it is behind its remote
+/// branch — `fetch` first brings the remote up to date when the last fetch is
+/// stale, the only way "behind" can mean anything.
 pub fn list(project_path: &Path, fetch: bool) -> Value {
     let Ok(mut repo) = Repo::discover(project_path) else {
         return json!({ "isRepo": false, "checkouts": [] });
@@ -109,17 +101,14 @@ pub fn list(project_path: &Path, fetch: bool) -> Value {
         "upstream": upstream,
     })];
 
-    // What a worktree is measured against: the folder's remote branch when it
-    // has one (that is where "main moved" shows up), else its own branch.
-    let main_ref = upstream.clone().or_else(|| branch.clone());
     if let Ok(worktrees) = WorktreeStore::with_default_base(&root).list() {
         for worktree in worktrees {
-            if worktree.path == root || !worktree.path.is_dir() {
+            if worktree.path == root
+                || !worktree.path.is_dir()
+                || !inside(project_path, &worktree.path)
+            {
                 continue;
             }
-            let counts = main_ref
-                .as_deref()
-                .and_then(|reference| behind_ahead(&root, reference, &worktree.branch));
             checkouts.push(json!({
                 "kind": "worktree",
                 "branch": worktree.branch,
@@ -128,22 +117,20 @@ pub fn list(project_path: &Path, fetch: bool) -> Value {
                     .strip_prefix(egant_vcs::worktree::BRANCH_PREFIX)
                     .unwrap_or(&worktree.name),
                 "dirty": dirty_count(&worktree.path),
-                "ahead": counts.map(|(_, a)| a),
-                "behind": counts.map(|(b, _)| b),
             }));
         }
     }
 
     json!({
         "isRepo": true,
-        "mainRef": main_ref,
         "lastFetchedUnix": repo.last_fetch_unix(),
         "fetchError": fetch_error,
         "checkouts": checkouts,
     })
 }
 
-/// The path of the existing worktree on `branch`, for a chat to run in.
+/// The path of the existing worktree on `branch` inside the project, for a
+/// chat to run in.
 pub fn worktree_path(project_path: &Path, branch: &str) -> Result<PathBuf, String> {
     let repo = Repo::discover(project_path)
         .map_err(|_| "That project isn't a git repository.".to_owned())?;
@@ -152,7 +139,12 @@ pub fn worktree_path(project_path: &Path, branch: &str) -> Result<PathBuf, Strin
         .list()
         .map_err(|error| error.to_string())?
         .into_iter()
-        .find(|worktree| worktree.branch == branch && worktree.path != root && worktree.path.is_dir())
+        .find(|worktree| {
+            worktree.branch == branch
+                && worktree.path != root
+                && worktree.path.is_dir()
+                && inside(project_path, &worktree.path)
+        })
         .map(|worktree| worktree.path)
         .ok_or_else(|| "That worktree isn't on your Mac any more.".to_owned())
 }
@@ -216,22 +208,25 @@ mod tests {
     }
 
     #[test]
-    fn lists_folder_and_existing_worktrees_without_making_any() {
+    fn lists_only_worktrees_inside_the_project_and_makes_none() {
         let root = scratch("list");
         let repo = root.join("app");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-b", "main"]);
         std::fs::write(repo.join("a.txt"), "a").unwrap();
+        std::fs::write(repo.join(".git/info/exclude"), ".wt/\n").unwrap();
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-m", "one"]);
-        let tree = root.join("feature");
-        git(&repo, &["worktree", "add", "-b", "egant/feature", tree.to_str().unwrap()]);
-        std::fs::write(tree.join("b.txt"), "b").unwrap();
+        let inside_tree = repo.join(".wt/feature");
+        git(&repo, &["worktree", "add", "-b", "egant/feature", inside_tree.to_str().unwrap()]);
+        let elsewhere = root.join("other");
+        git(&repo, &["worktree", "add", "-b", "other-tool/x", elsewhere.to_str().unwrap()]);
+        std::fs::write(inside_tree.join("b.txt"), "b").unwrap();
 
         let listed = list(&repo, false);
         assert_eq!(listed["isRepo"], true);
         let checkouts = listed["checkouts"].as_array().unwrap();
-        assert_eq!(checkouts.len(), 2);
+        assert_eq!(checkouts.len(), 2, "{checkouts:?}");
         assert_eq!(checkouts[0]["kind"], "project");
         assert_eq!(checkouts[0]["branch"], "main");
         assert_eq!(checkouts[0]["dirty"], 0);
@@ -241,7 +236,9 @@ mod tests {
         assert_eq!(checkouts[1]["dirty"], 1);
 
         let found = worktree_path(&repo, "egant/feature").unwrap();
-        assert_eq!(found.canonicalize().unwrap(), tree.canonicalize().unwrap());
+        assert_eq!(found.canonicalize().unwrap(), inside_tree.canonicalize().unwrap());
+        // Another tool's worktree is not the project's to run in, even by name.
+        assert!(worktree_path(&repo, "other-tool/x").is_err());
         assert!(worktree_path(&repo, "main").is_err());
         assert!(worktree_path(&repo, "nope").is_err());
         let _ = std::fs::remove_dir_all(&root);
