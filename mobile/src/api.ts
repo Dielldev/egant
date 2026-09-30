@@ -51,6 +51,16 @@ export interface MobileSession {
   lastActivityMs: number;
 }
 
+/** What a chat's "Run website" pill offers — `GET /sessions/{id}/run`. Read
+ * from the project's manifests and from what is listening on the Mac, never
+ * from anything the phone said. */
+export interface RunInfo {
+  /** The command the project runs with; `null` when nothing on disk says. */
+  run: { label: string; command: string; source: string } | null;
+  /** This chat's site, answering on the Mac right now. */
+  site: { port: number } | null;
+}
+
 /** A project a new chat can run in — `ProjectRowDto`. */
 export interface MobileProject {
   id: number;
@@ -161,6 +171,11 @@ export const api = {
   send: (id: number, text: string) =>
     request<{ title: string | null }>("POST", `/api/v1/sessions/${id}/messages`, { text }),
   interrupt: (id: number) => request<{ ok: boolean }>("POST", `/api/v1/sessions/${id}/interrupt`),
+  runInfo: (id: number) => request<RunInfo>("GET", `/api/v1/sessions/${id}/run`),
+  /** A link, good once and for a minute, that opens the chat's running site
+   * in a browser tab — on a port of its own, not this page's origin. */
+  openPreview: (id: number) =>
+    request<{ url: string; port: number }>("POST", `/api/v1/sessions/${id}/preview`),
   agents: () => request<MobileAgent[]>("GET", "/api/v1/agents"),
   models: (agent: string) =>
     request<AgentModel[]>("GET", `/api/v1/agents/${encodeURIComponent(agent)}/models`),

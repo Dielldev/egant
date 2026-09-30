@@ -12,11 +12,17 @@
 //! - [`auth`], pairing by QR code and device tokens stored hashed — the same
 //!   whichever way the phone arrives.
 //!
+//! A fourth piece, [`preview`], shows the phone a website running on this Mac
+//! — a second listener on its own port, so the site is its own origin — and
+//! [`run`] is how the phone learns what to run and what is up.
+//!
 //! Off until the user turns it on in Settings → Devices.
 
 pub mod assets;
 pub mod auth;
 pub mod dto;
+pub mod preview;
+pub mod run;
 pub mod server;
 pub mod tailscale;
 
@@ -58,6 +64,8 @@ pub struct MobileShared {
     connections: Mutex<HashMap<String, usize>>,
     /// When each device's last-seen time was last written to disk.
     seen_saved: Mutex<HashMap<String, u64>>,
+    /// Links to a website preview, and the browsers that opened one.
+    previews: Mutex<preview::Previews>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -74,6 +82,7 @@ impl MobileShared {
             pairings: Mutex::new(Pairings::default()),
             connections: Mutex::new(HashMap::new()),
             seen_saved: Mutex::new(HashMap::new()),
+            previews: Mutex::new(preview::Previews::default()),
         }
     }
 
@@ -151,12 +160,37 @@ impl MobileShared {
             removed
         };
         if removed {
+            lock(&self.previews).revoke_device(id);
             if let Some(hub) = self.app.get().and_then(|app| app.try_state::<SyncHub>()) {
                 hub.revoke_device(id);
             }
             self.changed();
         }
         removed
+    }
+
+    /// A one-time link secret that opens `site` — a session's running website
+    /// — in a browser (see [`preview`]).
+    pub fn issue_preview_ticket(&self, device: &str, site: run::Site) -> String {
+        lock(&self.previews).issue(device, site, now_ms())
+    }
+
+    /// Spends a link secret for the cookie the browser that opened it keeps,
+    /// and how many seconds it lasts.
+    pub fn redeem_preview_ticket(&self, ticket: &str) -> Option<(String, u64)> {
+        lock(&self.previews).redeem(ticket, now_ms())
+    }
+
+    /// What a preview cookie lets its browser reach — while it has not run
+    /// out and the device it was issued to is still paired.
+    pub fn preview_grant(&self, token: &str) -> Option<preview::Grant> {
+        let grant = lock(&self.previews).lookup(token, now_ms())?;
+        self.device_exists(&grant.device).then_some(grant)
+    }
+
+    /// Ends every preview: phone access went off.
+    pub fn clear_previews(&self) {
+        lock(&self.previews).clear();
     }
 
     fn connect(self: &Arc<Self>, device: &str) -> Connection {
@@ -201,6 +235,11 @@ struct RunningServer {
 pub struct MobileService {
     shared: Arc<MobileShared>,
     server: Mutex<Option<RunningServer>>,
+    /// The second listener, which shows the phone a website.
+    preview_server: Mutex<Option<RunningServer>>,
+    /// Why the preview can't be reached: its port wouldn't bind, or
+    /// Tailscale refused to open it.
+    preview_error: Mutex<Option<String>>,
     /// Why the server could not start, or why `tailscale serve` refused.
     error: Mutex<Option<String>>,
     /// Why the public link could not open (or close).
@@ -228,6 +267,8 @@ impl MobileService {
         Self {
             shared: Arc::new(shared),
             server: Mutex::new(None),
+            preview_server: Mutex::new(None),
+            preview_error: Mutex::new(None),
             error: Mutex::new(None),
             public_error: Mutex::new(None),
             public_opened: Mutex::new(None),
@@ -245,6 +286,16 @@ pub fn init(app: &AppHandle) {
         tauri::async_runtime::spawn(async move {
             if let Err(error) = start(&app).await {
                 log::error!("mobile: {error}");
+                return;
+            }
+            // The link's own Tailscale entries outlive the app, but the
+            // website preview's are newer than a Mac that was set up before
+            // it: without this, nothing would open its port until someone
+            // pressed Recheck. Both steps do nothing when it is already open.
+            serve_preview(&app).await;
+            let public = lock(&app.state::<MobileService>().shared.config).public;
+            if public {
+                funnel_preview(&app).await;
             }
         });
     }
@@ -281,11 +332,66 @@ async fn start(app: &AppHandle) -> Result<(), String> {
     *lock(&service.server) = Some(RunningServer { port, stop });
     *lock(&service.error) = None;
     log::info!("mobile: listening on 127.0.0.1:{port}");
+    start_preview(app).await;
     Ok(())
+}
+
+/// The port the website preview listens on, on 127.0.0.1 — and, like the
+/// phone API's, the number of the HTTPS port `tailscale serve` gives it: the
+/// API's own, plus one.
+pub fn preview_port(port: u16) -> u16 {
+    port.checked_add(1).unwrap_or(port - 1)
+}
+
+/// Brings up the second listener, which shows the phone a website. Failing to
+/// bind is recorded for the panel, not returned: the phone API is fine
+/// without it.
+async fn start_preview(app: &AppHandle) {
+    let service = app.state::<MobileService>();
+    if lock(&service.preview_server).is_some() {
+        return;
+    }
+    let port = preview_port(service.shared.port());
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let message =
+                format!("couldn't listen on 127.0.0.1:{port} for the website preview: {error}");
+            log::warn!("mobile: {message}");
+            *lock(&service.preview_error) = Some(message);
+            return;
+        }
+    };
+    let router = preview::router(preview::Ctx {
+        shared: service.shared.clone(),
+        port,
+    });
+    let (stop, stopped) = oneshot::channel::<()>();
+    tauri::async_runtime::spawn(async move {
+        let served = axum::serve(listener, router).with_graceful_shutdown(async move {
+            let _ = stopped.await;
+        });
+        if let Err(error) = served.await {
+            log::error!("mobile: preview server stopped: {error}");
+        }
+    });
+    *lock(&service.preview_server) = Some(RunningServer { port, stop });
+    *lock(&service.preview_error) = None;
+    log::info!("mobile: website preview listening on 127.0.0.1:{port}");
 }
 
 fn stop(app: &AppHandle) {
     let service = app.state::<MobileService>();
+    // Previews end with phone access: a browser's cookie stops working at
+    // once, and a hot-reload socket is closed the next time it checks.
+    service.shared.clear_previews();
+    if let Some(preview) = lock(&service.preview_server).take() {
+        let _ = preview.stop.send(());
+        log::info!(
+            "mobile: stopped the website preview on 127.0.0.1:{}",
+            preview.port
+        );
+    }
     let Some(server) = lock(&service.server).take() else {
         return;
     };
@@ -308,17 +414,27 @@ async fn tailscale_status(app: &AppHandle, fresh: bool) -> TailscaleStatus {
         }
     }
     let port = service.shared.port();
-    let status = tauri::async_runtime::spawn_blocking(move || tailscale::probe(port, port))
-        .await
-        .unwrap_or_default();
+    let preview = preview_port(port);
+    let status =
+        tauri::async_runtime::spawn_blocking(move || tailscale::probe(port, port, preview))
+            .await
+            .unwrap_or_default();
     *lock(&service.tailscale) = Some((Instant::now(), status.clone()));
     status
+}
+
+/// Points `tailscale serve` at the server and at the website preview's
+/// listener. Each is its own step, so one that is already in place (or that
+/// Tailscale refuses) never stops the other.
+async fn setup_serve(app: &AppHandle) {
+    serve_api(app).await;
+    serve_preview(app).await;
 }
 
 /// Points `tailscale serve` at the server, when Tailscale is up and the
 /// tailnet issues certificates. Failure is recorded for the panel, not
 /// returned: the server itself is fine either way.
-async fn setup_serve(app: &AppHandle) {
+async fn serve_api(app: &AppHandle) {
     let status = tailscale_status(app, true).await;
     let service = app.state::<MobileService>();
     if !status.running || !status.https_enabled || status.serving {
@@ -345,10 +461,51 @@ async fn setup_serve(app: &AppHandle) {
     *lock(&service.tailscale) = None;
 }
 
+/// Points `tailscale serve` at the website preview's listener too, on the
+/// HTTPS port of the same number: how a phone on the tailnet is shown a site.
+/// A refusal is recorded for the panel — and told to a phone that asks to
+/// open a site — not returned.
+async fn serve_preview(app: &AppHandle) {
+    let status = tailscale_status(app, true).await;
+    let service = app.state::<MobileService>();
+    if !status.running || !status.https_enabled || status.preview_serving {
+        return;
+    }
+    let port = preview_port(service.shared.port());
+    let outcome = tauri::async_runtime::spawn_blocking(move || tailscale::enable_serve(port, port))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    match outcome {
+        Ok(()) => {
+            log::info!(
+                "mobile: tailscale serve now proxies https port {port} to the website preview"
+            );
+            service
+                .shared
+                .update(|config| config.preview_serve_configured = true);
+            if lock(&service.preview_server).is_some() {
+                *lock(&service.preview_error) = None;
+            }
+        }
+        Err(error) => {
+            log::warn!("mobile: tailscale serve for the website preview failed: {error}");
+            *lock(&service.preview_error) = Some(error);
+        }
+    }
+    *lock(&service.tailscale) = None;
+}
+
+/// Opens the public link, and the website preview beside it.
+async fn setup_funnel(app: &AppHandle) {
+    funnel_api(app).await;
+    funnel_preview(app).await;
+}
+
 /// Opens the public link: Tailscale Funnel in front of the same server, on
 /// this Mac's `*.ts.net` name. Like [`setup_serve`], a refusal is recorded
 /// for the panel rather than returned.
-async fn setup_funnel(app: &AppHandle) {
+async fn funnel_api(app: &AppHandle) {
     let status = tailscale_status(app, true).await;
     let service = app.state::<MobileService>();
     let refusal = if !status.installed {
@@ -389,9 +546,65 @@ async fn setup_funnel(app: &AppHandle) {
     *lock(&service.tailscale) = None;
 }
 
+/// Opens the website preview on the public link too: a second Funnel port
+/// beside the one the link is on (Funnel has three — 443, 8443, 10000). Only
+/// while the public link is live: a preview with no link to go with it would
+/// be a public port for nothing.
+async fn funnel_preview(app: &AppHandle) {
+    let status = tailscale_status(app, true).await;
+    let service = app.state::<MobileService>();
+    if status.funnel_port.is_none() || status.preview_funnel_port.is_some() {
+        return;
+    }
+    let port = preview_port(service.shared.port());
+    let outcome = tauri::async_runtime::spawn_blocking(move || tailscale::enable_funnel(port))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    match outcome {
+        Ok(funnel) => {
+            log::info!("mobile: Funnel opens https port {funnel} to the website preview");
+            if lock(&service.preview_server).is_some() {
+                *lock(&service.preview_error) = None;
+            }
+        }
+        Err(error) => {
+            log::warn!("mobile: Funnel for the website preview failed: {error}");
+            *lock(&service.preview_error) = Some(format!(
+                "The website preview couldn't open on the public link: {error}"
+            ));
+        }
+    }
+    *lock(&service.tailscale) = None;
+}
+
+/// Closes the public link, and the website preview's Funnel port with it.
+async fn remove_funnel(app: &AppHandle) {
+    unfunnel_preview(app).await;
+    unfunnel_api(app).await;
+}
+
+/// Closes the preview's Funnel port: the entry pointing at its listener, and
+/// nothing else.
+async fn unfunnel_preview(app: &AppHandle) {
+    let service = app.state::<MobileService>();
+    let Some(port) = tailscale_status(app, true).await.preview_funnel_port else {
+        return;
+    };
+    let outcome = tauri::async_runtime::spawn_blocking(move || tailscale::disable_funnel(port))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    match outcome {
+        Ok(()) => log::info!("mobile: closed the website preview's Funnel port {port}"),
+        Err(error) => log::warn!("mobile: couldn't close Funnel on port {port}: {error}"),
+    }
+    *lock(&service.tailscale) = None;
+}
+
 /// Closes the public link: the Funnel entry pointing at egant — whoever
 /// opened it — and nothing else.
-async fn remove_funnel(app: &AppHandle) {
+async fn unfunnel_api(app: &AppHandle) {
     let service = app.state::<MobileService>();
     *lock(&service.public_error) = None;
     *lock(&service.public_opened) = None;
@@ -441,6 +654,20 @@ pub struct PublicLinkDto {
     pub opened_ms: Option<u64>,
 }
 
+/// The website preview, as the Devices panel shows it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewDto {
+    /// Its listener is up on this Mac.
+    pub running: bool,
+    /// A phone on the tailnet can reach it: `tailscale serve` has its port.
+    pub tailnet: bool,
+    /// A phone on the public link can: the Funnel port it is open on.
+    pub public_port: Option<u16>,
+    /// Why it can't be reached, where that is known.
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MobileStatusDto {
@@ -456,6 +683,7 @@ pub struct MobileStatusDto {
     /// This Mac's tailnet-only address, once `tailscale serve` is up.
     pub tailnet_url: Option<String>,
     pub public: PublicLinkDto,
+    pub preview: PreviewDto,
     /// The same app on this Mac, for trying it in a desktop browser.
     pub local_url: String,
     /// What to run by hand when egant can't set `serve` up itself.
@@ -485,11 +713,91 @@ fn tailnet_url(service: &MobileService, tailscale: &TailscaleStatus) -> Option<S
     Some(format!("https://{name}:{}", config.port))
 }
 
+/// Where a phone that reached egant at `host` should open a website preview:
+/// the listener on the same kind of link — loopback while a browser on this
+/// Mac is trying the phone app, the tailnet port through `serve`, or the
+/// Funnel port beside the public link.
+pub(crate) async fn preview_origin(app: &AppHandle, host: &str) -> Result<String, String> {
+    let service = app.state::<MobileService>();
+    let api_port = service.shared.port();
+    let tailscale = tailscale_status(app, false).await;
+    origin_for(
+        host,
+        api_port,
+        &PreviewState {
+            listening: lock(&service.preview_server).is_some(),
+            serve_configured: lock(&service.shared.config).preview_serve_configured,
+            error: lock(&service.preview_error).clone(),
+        },
+        &tailscale,
+    )
+}
+
+/// What [`origin_for`] needs to know about the preview listener.
+struct PreviewState {
+    listening: bool,
+    /// egant put the preview's `tailscale serve` entry in place.
+    serve_configured: bool,
+    error: Option<String>,
+}
+
+/// The decision behind [`preview_origin`], on plain values.
+fn origin_for(
+    host: &str,
+    api_port: u16,
+    preview: &PreviewState,
+    tailscale: &TailscaleStatus,
+) -> Result<String, String> {
+    let local = preview_port(api_port);
+    if !preview.listening {
+        return Err(preview
+            .error
+            .clone()
+            .unwrap_or_else(|| "The website preview isn't running on your Mac.".to_string()));
+    }
+    let host = host.trim().to_ascii_lowercase();
+    let (name, host_port) = server::split_host(&host);
+    let name = name.trim_end_matches('.');
+    let host_port = host_port.and_then(|port| port.parse::<u16>().ok());
+    if matches!(name, "127.0.0.1" | "localhost" | "[::1]") {
+        return Ok(format!("http://{name}:{local}"));
+    }
+
+    let not_open = |link: &str| {
+        preview.error.clone().unwrap_or_else(|| {
+            format!(
+                "The website preview isn't open on {link} yet. On your Mac, open egant's \
+                 Settings → Devices and press Recheck."
+            )
+        })
+    };
+    if host_port == Some(api_port) {
+        // The tailnet link: `serve`, on the preview's own HTTPS port.
+        return if tailscale.preview_serving || preview.serve_configured {
+            Ok(format!("https://{name}:{local}"))
+        } else {
+            Err(not_open("your tailnet"))
+        };
+    }
+    // The public link: Funnel, on the port beside the link's own.
+    match tailscale.preview_funnel_port {
+        Some(443) => Ok(format!("https://{name}")),
+        Some(port) => Ok(format!("https://{name}:{port}")),
+        None => Err(not_open("the public link")),
+    }
+}
+
 async fn status(app: &AppHandle, fresh: bool) -> MobileStatusDto {
     let tailscale = tailscale_status(app, fresh).await;
     let service = app.state::<MobileService>();
     let public_url = funnel_url(&tailscale);
     let tailnet = tailnet_url(&service, &tailscale);
+    let preview = PreviewDto {
+        running: lock(&service.preview_server).is_some(),
+        tailnet: tailscale.preview_serving,
+        public_port: tailscale.preview_funnel_port,
+        error: lock(&service.preview_error).clone(),
+    };
     let url = public_url.clone();
     let running = lock(&service.server).is_some();
     let connections = lock(&service.shared.connections).clone();
@@ -522,6 +830,7 @@ async fn status(app: &AppHandle, fresh: bool) -> MobileStatusDto {
             command: tailscale::funnel_command(config.port),
             opened_ms: *lock(&service.public_opened),
         },
+        preview,
         local_url: format!("http://127.0.0.1:{}", config.port),
         serve_command: tailscale::serve_command(config.port, config.port),
         devices,
@@ -571,6 +880,28 @@ pub async fn mobile_set_enabled(app: AppHandle, enabled: bool) -> MobileStatusDt
                 Err(error) => log::warn!("mobile: couldn't remove tailscale serve: {error}"),
             }
         }
+        let (preview_configured, preview_local) = {
+            let config = lock(&service.shared.config);
+            (config.preview_serve_configured, preview_port(config.port))
+        };
+        if preview_configured {
+            match tauri::async_runtime::spawn_blocking(move || {
+                tailscale::disable_serve(preview_local)
+            })
+            .await
+            {
+                Ok(Ok(())) => service
+                    .shared
+                    .update(|config| config.preview_serve_configured = false),
+                Ok(Err(error)) => {
+                    log::warn!("mobile: couldn't remove tailscale serve for the preview: {error}")
+                }
+                Err(error) => {
+                    log::warn!("mobile: couldn't remove tailscale serve for the preview: {error}")
+                }
+            }
+        }
+        *lock(&service.preview_error) = None;
     }
     service.shared.changed();
     status(&app, true).await
@@ -688,6 +1019,126 @@ mod tests {
         let svg = qr_svg("https://mac.tail1234.ts.net:47247/#pair=ABCDEFGHJK").unwrap();
         assert!(svg.contains("<svg"), "{svg}");
         assert!(svg.contains("#0d0d0d"));
+    }
+
+    fn preview_state(listening: bool) -> PreviewState {
+        PreviewState {
+            listening,
+            serve_configured: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_preview_link_goes_out_on_the_same_kind_of_link_the_phone_came_in_on() {
+        let api = auth::DEFAULT_PORT;
+        let local = preview_port(api);
+        assert_eq!(local, 47248);
+        let ready = TailscaleStatus {
+            preview_serving: true,
+            preview_funnel_port: Some(8443),
+            ..TailscaleStatus::default()
+        };
+        let origin = |host: &str, tailscale: &TailscaleStatus| {
+            origin_for(host, api, &preview_state(true), tailscale)
+        };
+
+        // A browser on this Mac trying the phone app: the listener itself.
+        assert_eq!(
+            origin("127.0.0.1:47247", &ready).unwrap(),
+            "http://127.0.0.1:47248"
+        );
+        assert_eq!(
+            origin("localhost:47247", &ready).unwrap(),
+            "http://localhost:47248"
+        );
+        // The public link (Funnel, 443): the Funnel port beside it.
+        assert_eq!(
+            origin("mac.tail1234.ts.net", &ready).unwrap(),
+            "https://mac.tail1234.ts.net:8443"
+        );
+        // The tailnet link: serve's port for the preview.
+        assert_eq!(
+            origin("Mac.tail1234.ts.net.:47247", &ready).unwrap(),
+            "https://mac.tail1234.ts.net:47248"
+        );
+        // A public link that ended up on 8443 still finds the preview's own.
+        let on_10000 = TailscaleStatus {
+            preview_funnel_port: Some(10000),
+            ..TailscaleStatus::default()
+        };
+        assert_eq!(
+            origin("mac.tail1234.ts.net:8443", &on_10000).unwrap(),
+            "https://mac.tail1234.ts.net:10000"
+        );
+        // And 443, when that is the free one, leaves the port out.
+        let on_443 = TailscaleStatus {
+            preview_funnel_port: Some(443),
+            ..TailscaleStatus::default()
+        };
+        assert_eq!(
+            origin("mac.tail1234.ts.net:8443", &on_443).unwrap(),
+            "https://mac.tail1234.ts.net"
+        );
+    }
+
+    #[test]
+    fn a_preview_that_isnt_open_says_where_to_fix_it() {
+        let nothing = TailscaleStatus::default();
+        let closed =
+            |host: &str| origin_for(host, auth::DEFAULT_PORT, &preview_state(true), &nothing);
+        let message = closed("mac.tail1234.ts.net").unwrap_err();
+        assert!(
+            message.contains("public link") && message.contains("Recheck"),
+            "{message}"
+        );
+        let message = closed("mac.tail1234.ts.net:47247").unwrap_err();
+        assert!(
+            message.contains("tailnet") && message.contains("Recheck"),
+            "{message}"
+        );
+
+        // egant's own serve entry counts even when the probe missed it.
+        let configured = PreviewState {
+            serve_configured: true,
+            ..preview_state(true)
+        };
+        assert_eq!(
+            origin_for(
+                "mac.tail1234.ts.net:47247",
+                auth::DEFAULT_PORT,
+                &configured,
+                &nothing
+            )
+            .unwrap(),
+            "https://mac.tail1234.ts.net:47248"
+        );
+
+        // A listener that never came up is the reason, ahead of anything else.
+        assert_eq!(
+            origin_for(
+                "mac.tail1234.ts.net",
+                auth::DEFAULT_PORT,
+                &preview_state(false),
+                &nothing
+            )
+            .unwrap_err(),
+            "The website preview isn't running on your Mac."
+        );
+        let failed = PreviewState {
+            error: Some("couldn't listen on 127.0.0.1:47248".into()),
+            ..preview_state(false)
+        };
+        assert_eq!(
+            origin_for("127.0.0.1:47247", auth::DEFAULT_PORT, &failed, &nothing).unwrap_err(),
+            "couldn't listen on 127.0.0.1:47248"
+        );
+    }
+
+    #[test]
+    fn the_preview_port_is_the_next_one_up_and_never_overflows() {
+        assert_eq!(preview_port(47247), 47248);
+        assert_eq!(preview_port(u16::MAX), u16::MAX - 1);
     }
 
     #[test]

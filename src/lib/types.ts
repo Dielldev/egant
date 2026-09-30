@@ -759,10 +759,24 @@ export interface MobileStatus {
   /** This Mac's tailnet-only address, once `tailscale serve` is up. */
   tailnetUrl: string | null;
   public: MobilePublicLink;
+  /** The website preview: the second port that shows a phone a site. */
+  preview: MobilePreview;
   /** The phone app on this Mac, for trying it in a desktop browser. */
   localUrl: string;
   serveCommand: string;
   devices: MobileDevice[];
+}
+
+/** The website preview beside the phone link (`PreviewDto`). */
+export interface MobilePreview {
+  /** Its listener is up on this Mac. */
+  running: boolean;
+  /** A phone on the tailnet can reach it. */
+  tailnet: boolean;
+  /** The Funnel port it is open on, for a phone on the public link. */
+  publicPort: number | null;
+  /** Why it can't be reached, where that is known. */
+  error: string | null;
 }
 
 /** A pairing code and the QR code that carries it (`mobile_create_pairing`). */

@@ -244,6 +244,7 @@ function TailscaleRow({
         <span className="font-mono text-[var(--ink)]">
           {status.tailnetUrl.replace("https://", "")}
         </span>
+        <PreviewNote status={status} />
       </>
     );
   } else if (ts.portConflict) {
@@ -321,6 +322,7 @@ function PublicLinkRow({
           Anyone can open it; only phones you pair get in.
           {fresh && " A new address can take a few minutes to reach phones."}
         </span>
+        <PreviewNote status={status} />
       </>
     );
   } else if (fix) {
@@ -366,6 +368,15 @@ function PublicLinkRow({
       }
     />
   );
+}
+
+/** What stops the phone opening a website your agent runs on this Mac (the
+ * preview, on a port beside the link). It has a line only when something is
+ * wrong: working, it has nothing to say. */
+function PreviewNote({ status }: { status: MobileStatus }) {
+  const error = status.preview.error;
+  if (!error) return null;
+  return <span className="mt-1 block text-[var(--danger)]">{error}</span>;
 }
 
 /** A Tailscale refusal ends with the admin page that turns on what's

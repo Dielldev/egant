@@ -41,6 +41,8 @@ pub struct MobileConfig {
     /// Whether egant itself put the `tailscale serve` entry in place — only
     /// then is it egant's to take down again.
     pub serve_configured: bool,
+    /// The same for the website preview's own `tailscale serve` entry.
+    pub preview_serve_configured: bool,
     /// The public link is wanted: Tailscale Funnel in front of the same
     /// server, for a phone with nothing installed. It comes back whenever
     /// phone access is turned back on.
@@ -54,6 +56,7 @@ impl Default for MobileConfig {
             enabled: false,
             port: DEFAULT_PORT,
             serve_configured: false,
+            preview_serve_configured: false,
             public: false,
             devices: Vec::new(),
         }
@@ -194,7 +197,9 @@ fn new_pairing_code() -> String {
         .collect()
 }
 
-fn new_token() -> String {
+/// 256 random bits, URL-safe: a device token, and the same for a preview
+/// link or cookie.
+pub(super) fn new_token() -> String {
     base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         random_bytes::<32>(),

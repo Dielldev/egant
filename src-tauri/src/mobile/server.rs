@@ -2,20 +2,27 @@
 //! nothing else.
 //!
 //! Reads: the session and project lists, the chat agents and their models, a
-//! window of one transcript, the Mac's wallpaper, and the live event stream.
+//! window of one transcript, what a session's "Run website" pill offers, the
+//! Mac's wallpaper, and the live event stream.
 //! Writes: start a chat in a project the Mac already has open, send a
 //! message, stop a turn, switch a session's model or permission mode, answer
 //! a permission request, answer a decision prompt. Each write goes through
 //! [`crate::service`] — the same code the desktop window's commands run — so
 //! the desktop stays the one place the agents live, and the window hears
-//! about everything the phone does.
+//! about everything the phone does. One more write changes nothing on the
+//! Mac: asking for a link that opens a session's running website
+//! ([`super::preview`]).
 //!
 //! What is deliberately absent matters as much: no path is ever taken from
 //! the phone (a project is named by its id, and only one the Mac already
-//! has), nothing runs a shell or a terminal, nothing reads or writes a file
-//! beyond the one wallpaper the user picked, installs an agent, opens a
-//! folder or touches git on its own — a new chat's worktree follows the
-//! Mac's own default.
+//! has), nothing runs a shell or a terminal ("Run website" is a message to
+//! the agent, which runs the command under the session's own permission mode),
+//! nothing reads or writes a file beyond the one wallpaper the user picked (and
+//! the project's own manifests, read only to name that command and never
+//! sent), installs an agent, opens a folder or touches git on its own — a new
+//! chat's worktree follows the Mac's own default. And a website is never served
+//! from here: it gets an origin of its own, so nothing in it can act as the
+//! phone.
 //!
 //! Every request must name a host egant answers to (loopback on its own port,
 //! or this Mac's `*.ts.net` name — through `tailscale serve` on the tailnet,
@@ -41,13 +48,14 @@ use futures_util::stream::{self, Stream};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tokio::sync::broadcast;
 
 use super::auth::PairError;
-use super::{Device, MobileShared, assets, dto};
+use super::{Device, MobileShared, assets, dto, preview, run};
 use crate::service::{self, DecisionOutcome};
 use crate::sessions::PermissionAnswer;
 use crate::state::AppState;
@@ -73,6 +81,14 @@ pub struct Ctx {
     pub port: u16,
 }
 
+impl Ctx {
+    /// The ports egant itself listens on: never a website of a session, and a
+    /// proxy pointed at one would loop.
+    fn own_ports(&self) -> Vec<u16> {
+        vec![self.port, super::preview_port(self.port)]
+    }
+}
+
 pub fn router(ctx: Ctx) -> Router {
     let api = Router::new()
         .route("/api/v1/health", get(health))
@@ -84,6 +100,8 @@ pub fn router(ctx: Ctx) -> Router {
         .route("/api/v1/agents/{agent}/models", get(models))
         .route("/api/v1/sessions", post(create_session))
         .route("/api/v1/sessions/{id}/transcript", get(transcript))
+        .route("/api/v1/sessions/{id}/run", get(run_info))
+        .route("/api/v1/sessions/{id}/preview", post(open_preview))
         .route("/api/v1/sessions/{id}/messages", post(send_message))
         .route("/api/v1/sessions/{id}/interrupt", post(interrupt))
         .route("/api/v1/sessions/{id}/model", post(set_model))
@@ -142,7 +160,7 @@ async fn no_store(request: Request, next: Next) -> Response {
 }
 
 /// `(name, port)` of a `Host` header, IPv6 literals included.
-fn split_host(host: &str) -> (&str, Option<&str>) {
+pub(super) fn split_host(host: &str) -> (&str, Option<&str>) {
     if host.starts_with('[') {
         return match host.find(']') {
             Some(end) => (&host[..=end], host[end + 1..].strip_prefix(':')),
@@ -174,7 +192,7 @@ pub fn host_allowed(host: &str, port: u16) -> bool {
 /// Whether the phone reached egant over HTTPS, which only Tailscale (`serve`
 /// or Funnel) provides — the one case the device cookie can be marked
 /// `Secure`.
-fn is_https(headers: &HeaderMap) -> bool {
+pub(super) fn is_https(headers: &HeaderMap) -> bool {
     let forwarded = headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
@@ -453,6 +471,58 @@ async fn transcript(
     .await
 }
 
+/// The folder a chat session works in, and the ports its own words say things
+/// are serving on — or `None` for a terminal session, which the phone can
+/// neither drive nor show a site of.
+struct SiteTarget {
+    dir: PathBuf,
+    announced: Vec<u16>,
+}
+
+async fn site_target(ctx: &Ctx, id: u64) -> Result<Option<SiteTarget>, ApiError> {
+    with_state(ctx, move |_, state| {
+        let session = state
+            .sessions
+            .get(&id)
+            .ok_or_else(ApiError::unknown_session)?;
+        if session.meta.cli_agent.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(SiteTarget {
+            dir: session.meta.cwd.clone(),
+            announced: run::announced_ports(&session.transcript.entries),
+        }))
+    })
+    .await
+}
+
+/// What a session's "Run website" pill needs: the command its project runs
+/// with, and the site of this session that is answering right now, if any.
+///
+/// A read of its own rather than a field on every session row: a row is
+/// rebuilt under the app-wide lock on each change and diffed for the event
+/// stream, and this reads manifests and asks the machine what is listening.
+/// The folder comes from the session, the port from the machine — the phone
+/// names neither.
+async fn run_info(
+    State(ctx): State<Ctx>,
+    _device: Device,
+    Path(id): Path<u64>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(target) = site_target(&ctx, id).await? else {
+        return Ok(Json(json!({ "run": null, "site": null })));
+    };
+    let dir = target.dir.clone();
+    let command = tokio::task::spawn_blocking(move || run::detect_run_command(&dir))
+        .await
+        .map_err(|_| ApiError::internal())?;
+    let site = run::find_site(target.dir, target.announced, ctx.own_ports()).await;
+    Ok(Json(json!({
+        "run": command,
+        "site": site.map(|site| json!({ "port": site.port })),
+    })))
+}
+
 /// The chat agents, and whether this Mac has each one installed and signed
 /// in. A filesystem probe that can fall through to a login shell the first
 /// time, so off the async threads.
@@ -708,6 +778,50 @@ async fn interrupt(
         Ok(Json(json!({ "ok": true })))
     })
     .await
+}
+
+/// Opens a session's website on the phone: finds it, and answers with a link
+/// on the preview listener that works once — the phone opens it in a browser
+/// tab of its own. See [`super::preview`] for why the site is not served from
+/// here.
+async fn open_preview(
+    State(ctx): State<Ctx>,
+    device: Device,
+    _client: Client,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Result<Json<Value>, ApiError> {
+    let Some(target) = site_target(&ctx, id).await? else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "A terminal session has no website to open from the phone.",
+        ));
+    };
+    let site = run::find_site(target.dir, target.announced, ctx.own_ports())
+        .await
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "Nothing is serving on your Mac for this chat right now. Tap Run website first.",
+            )
+        })?;
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let origin = super::preview_origin(&ctx.app, host)
+        .await
+        .map_err(|message| ApiError::new(StatusCode::CONFLICT, message))?;
+    let ticket = ctx.shared.issue_preview_ticket(&device.id, site);
+    log::info!(
+        "mobile: {} opened the website on port {} of session {id}",
+        device.name,
+        site.port
+    );
+    Ok(Json(json!({
+        "url": format!("{origin}{}?t={ticket}", preview::ENTER_PATH),
+        "port": site.port,
+    })))
 }
 
 #[derive(Deserialize)]

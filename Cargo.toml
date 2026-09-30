@@ -66,8 +66,14 @@ uuid = { version = "1", features = ["v4"] }
 # the app, reached over Tailscale. `tokio` is already the runtime Tauri runs
 # on; naming it here only turns on the pieces the server needs.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
-tokio = { version = "1", features = ["net", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["net", "sync", "time", "macros", "rt", "io-util"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The website preview (`src-tauri/src/mobile/preview.rs`) talks HTTP/1.1 to a
+# dev server with hyper itself, so a WebSocket (hot reload) can be handed
+# through as raw bytes. Both are already in the tree under axum and reqwest;
+# naming them only turns on the pieces the proxy uses.
+hyper = { version = "1", default-features = false, features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 # The phone app is built into the binary in release and read from disk in
 # debug, so `npm run build:mobile` is all a dev loop needs.
 rust-embed = "8"

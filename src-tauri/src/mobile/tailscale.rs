@@ -48,6 +48,13 @@ pub struct TailscaleStatus {
     pub funnel_port: Option<u16>,
     /// Every Funnel port already serves something else.
     pub funnel_blocked: bool,
+    /// `tailscale serve` already sends the preview's HTTPS port to egant's
+    /// preview listener (the second port that shows a phone a website).
+    pub preview_serving: bool,
+    /// Something else's `tailscale serve` entry holds the preview's port.
+    pub preview_port_conflict: bool,
+    /// The Funnel port that opens the preview listener to the internet.
+    pub preview_funnel_port: Option<u16>,
     pub error: Option<String>,
 }
 
@@ -70,8 +77,10 @@ pub fn find_cli() -> Option<PathBuf> {
 }
 
 /// The daemon's state and this machine's name, then whether `serve` already
-/// points `https_port` at `local_port`, and whether Funnel opens it publicly.
-pub fn probe(https_port: u16, local_port: u16) -> TailscaleStatus {
+/// points `https_port` at `local_port`, and whether Funnel opens it publicly —
+/// and the same two questions about `preview_port`, the listener that shows a
+/// phone a website (served on the HTTPS port of the same number).
+pub fn probe(https_port: u16, local_port: u16, preview_port: u16) -> TailscaleStatus {
     let Some(cli) = find_cli() else {
         return TailscaleStatus::default();
     };
@@ -105,6 +114,11 @@ pub fn probe(https_port: u16, local_port: u16) -> TailscaleStatus {
             let (live, free) = funnel_state(&ports, local_port);
             status.funnel_port = live;
             status.funnel_blocked = live.is_none() && free.is_none();
+            let (preview_serving, preview_conflict) =
+                port_state(&ports, preview_port, preview_port);
+            status.preview_serving = preview_serving;
+            status.preview_port_conflict = preview_conflict;
+            status.preview_funnel_port = funnel_state(&ports, preview_port).0;
         }
     }
     status
@@ -122,7 +136,7 @@ fn serve_status(cli: &Path) -> Option<String> {
 /// replacing someone else's proxy is not a side effect a toggle should have.
 pub fn enable_serve(https_port: u16, local_port: u16) -> Result<(), String> {
     let cli = find_cli().ok_or("Tailscale isn't installed")?;
-    let status = probe(https_port, local_port);
+    let status = probe(https_port, local_port, local_port);
     if status.serving {
         return Ok(());
     }
@@ -425,6 +439,18 @@ fn run(cli: &Path, args: &[&str], timeout: Duration) -> Result<Output, RunError>
     run_until(cli, args, timeout, None)
 }
 
+/// Runs any program with a deadline and returns what it printed — also when
+/// it exits non-zero, which `lsof` does whenever a process it was asked about
+/// has gone by the time it looked — or `None` when it could not be run or ran
+/// out of time. The same both-pipes-drained handling as the CLI calls.
+pub(super) fn capture(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+    match run(program, args, timeout) {
+        Ok(output) => Some(output.stdout),
+        Err(RunError::Failed { stdout, .. }) => Some(stdout),
+        Err(_) => None,
+    }
+}
+
 /// [`run`], stopping the CLI early once its output so far satisfies
 /// `settled`. Both pipes are drained on their own threads as the CLI writes,
 /// so a large answer (`status` lists every peer) can never fill a pipe and
@@ -641,6 +667,52 @@ mod tests {
     fn a_funnel_held_open_in_a_terminal_counts_too() {
         let json = r#"{"Foreground":{"session-1":{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}}},"AllowFunnel":{"mac.tail1234.ts.net:443":true}}}}"#;
         assert_eq!(funnel(json), (None, Some(8443)));
+    }
+
+    /// The public link on 443 and, beside it, the preview listener (47248) on
+    /// its own Funnel port and its own tailnet port.
+    const WITH_PREVIEW: &str = r#"{
+        "TCP": {"443": {"HTTPS": true}, "8443": {"HTTPS": true},
+                "47247": {"HTTPS": true}, "47248": {"HTTPS": true}},
+        "Web": {
+            "mac.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:47247"}}},
+            "mac.tail1234.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:47248"}}},
+            "mac.tail1234.ts.net:47247": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:47247"}}},
+            "mac.tail1234.ts.net:47248": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:47248"}}}
+        },
+        "AllowFunnel": {"mac.tail1234.ts.net:443": true, "mac.tail1234.ts.net:8443": true}
+    }"#;
+
+    fn preview_funnel(json: &str) -> (Option<u16>, Option<u16>) {
+        funnel_state(&serve_ports(json), 47248)
+    }
+
+    #[test]
+    fn the_preview_takes_a_funnel_port_beside_the_public_link() {
+        // 443 already carries egant's own port, so the preview is offered the
+        // next one — and nothing on 443 reads as the preview being open.
+        assert_eq!(preview_funnel(FUNNELED), (None, Some(8443)));
+        assert_eq!(preview_funnel("{}"), (None, Some(443)));
+        // Both open: each is read as itself, neither mistaken for the other.
+        assert_eq!(preview_funnel(WITH_PREVIEW), (Some(8443), Some(8443)));
+        assert_eq!(funnel(WITH_PREVIEW), (Some(443), Some(443)));
+        assert_eq!(serve_state(WITH_PREVIEW, 47248, 47248), (true, false));
+        assert_eq!(serve_state(FUNNELED, 47248, 47248), (false, false));
+    }
+
+    #[test]
+    fn the_preview_finds_no_funnel_port_when_the_rest_are_taken() {
+        let json = r#"{"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true},"10000":{"HTTPS":true}},"Web":{
+            "mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47247"}}},
+            "mac.tail1234.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3001"}}},
+            "mac.tail1234.ts.net:10000":{"Handlers":{"/":{"Path":"/srv/site"}}}}}"#;
+        assert_eq!(preview_funnel(json), (None, None));
+    }
+
+    #[test]
+    fn a_tailnet_port_of_someone_elses_is_a_conflict_not_a_preview() {
+        let json = r#"{"TCP":{"47248":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:47248":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:9000"}}}}}"#;
+        assert_eq!(serve_state(json, 47248, 47248), (false, true));
     }
 
     #[test]

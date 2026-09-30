@@ -30,6 +30,7 @@ import { Composer, ToolbarChip } from "./Composer";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { IconButton, MenuIcon, SessionTitle, TopBar } from "./Header";
 import { ModeSheet, ModelSheet, modelName } from "./Pickers";
+import { RunPill } from "./RunPill";
 
 /** How close to the bottom still counts as "at the bottom" — the desktop's
  * own rule, so a streaming reply keeps the view pinned the same way. */
@@ -271,6 +272,17 @@ function Thread({ session, transcript }: { session: MobileSession; transcript: L
                 <StatusLine state={transcript.state} startedAt={transcript.turnStartedAt} />
               </div>
             )}
+            {/* The task is done — offer to run what it just changed, and to
+              open it once it runs. Like the desktop, only between turns. */}
+            {!busy && transcript.entries.length > 0 && (
+              <div className="-mt-2 flex flex-col">
+                <RunPill
+                  session={session}
+                  canRun={!(session.ended && transcript.sessionId == null)}
+                  lastUserText={lastUserText(transcript.entries)}
+                />
+              </div>
+            )}
           </div>
         </div>
         {!atBottom && (
@@ -299,6 +311,15 @@ function Thread({ session, transcript }: { session: MobileSession; transcript: L
       </div>
     </>
   );
+}
+
+/** The newest thing the person said. */
+function lastUserText(entries: Entry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    if (entry.kind === "user") return entry.text;
+  }
+  return null;
 }
 
 /** The transcript's entries, drawn the way the desktop draws them: user
