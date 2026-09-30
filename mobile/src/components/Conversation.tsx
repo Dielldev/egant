@@ -17,10 +17,24 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { DecisionPrompt } from "@egant/components/DecisionPrompt";
 import { Markdown } from "@egant/components/Markdown";
+import { PlanCard } from "@egant/components/PlanCard";
+import { QuestionCard } from "@egant/components/QuestionCard";
+import { SettledRequest } from "@egant/components/SettledRequest";
 import { ToolActivityGroup } from "@egant/components/ToolCards";
 import { fallbackName } from "@egant/lib/agents";
-import { modeLabel, permissionSummary, timeLabel, truncate } from "@egant/lib/transcript";
-import type { AgentRequest, Entry, PendingPermission } from "@egant/lib/types";
+import {
+  ASK_USER_QUESTION,
+  askQuestions,
+  describeAlwaysAllow,
+  isCardRequest,
+  isInteractiveTool,
+  modeLabel,
+  permissionSummary,
+  planOf,
+  timeLabel,
+  truncate,
+} from "@egant/lib/transcript";
+import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "@egant/lib/types";
 import type { MobileSession } from "../api";
 import { localLink } from "../localLink";
 import { usePrefs } from "../prefs";
@@ -210,6 +224,9 @@ function Thread({ session, transcript }: { session: MobileSession; transcript: L
   const busy = transcript.state === "running" || transcript.state === "awaiting_permission";
   const pendingList =
     transcript.pendingList ?? (transcript.pending != null ? [transcript.pending] : []);
+  // A question or a plan gets its own card; everything else asks leave to act.
+  const cardRequests = pendingList.filter(isCardRequest);
+  const sheetRequests = pendingList.filter((p) => !isCardRequest(p));
 
   // Pinned to the bottom while the reader is there, never yanked back once
   // they scroll up — the desktop's rule. Every render, because a streaming
@@ -300,12 +317,30 @@ function Thread({ session, transcript }: { session: MobileSession; transcript: L
       </div>
       <div className="safe-bottom shrink-0 px-2.5 pt-1">
         <div className="mx-auto w-full max-w-[735px]">
-          {pendingList.length > 0 && (
+          {cardRequests.length > 0 && (
+            <div className="fade-up mb-2 flex max-h-[60vh] flex-col gap-2 overflow-y-auto text-[14px]">
+              {cardRequests.map((pending) =>
+                pending.toolName === ASK_USER_QUESTION ? (
+                  <QuestionCard
+                    key={pending.requestId}
+                    questions={askQuestions(pending.input)}
+                    onAnswer={(reply) => void answerPermission(session.id, pending.requestId, reply)}
+                  />
+                ) : (
+                  <PlanCard
+                    key={pending.requestId}
+                    {...planOf(pending.input)}
+                    onAnswer={(reply) => void answerPermission(session.id, pending.requestId, reply)}
+                  />
+                ),
+              )}
+            </div>
+          )}
+          {sheetRequests.length > 0 && (
             <PermissionSheet
-              items={pendingList}
-              onAnswer={(requestId, decision) =>
-                void answerPermission(session.id, requestId, decision)
-              }
+              items={sheetRequests}
+              agent={session.agent}
+              onAnswer={(requestId, reply) => void answerPermission(session.id, requestId, reply)}
             />
           )}
           <ChatComposer session={session} transcript={transcript} />
@@ -349,9 +384,29 @@ function Entries({
   });
   while (i < entries.length) {
     const entry = entries[i]!;
+    // A question or a plan stands on its own, as the desktop draws it.
+    if (entry.kind === "tool" && isInteractiveTool(entry.name)) {
+      // Still open, it is the card above the composer instead.
+      if (entry.output != null) {
+        nodes.push(
+          <div key={`request-${i}`} className="text-[14px]">
+            <SettledRequest entry={entry} />
+          </div>,
+        );
+      }
+      previous = entry;
+      i++;
+      continue;
+    }
     if (entry.kind === "tool") {
       let j = i + 1;
-      while (j < entries.length && entries[j]!.kind === "tool") j++;
+      while (
+        j < entries.length &&
+        entries[j]!.kind === "tool" &&
+        !isInteractiveTool((entries[j] as Extract<Entry, { kind: "tool" }>).name)
+      ) {
+        j++;
+      }
       nodes.push(
         <div key={`tools-${i}`} className="text-[14px]">
           <ToolActivityGroup entries={entries.slice(i, j) as Extract<Entry, { kind: "tool" }>[]} />
@@ -527,15 +582,17 @@ function CopyButton({ text }: { text: string }) {
 }
 
 /** Every outstanding permission request, docked above the composer: what the
- * agent wants to do, and Allow once / Allow always / Deny. "Allow always"
- * flips the whole session to Bypass permissions on the Mac, so it asks
- * first. */
+ * agent wants to do, and Allow once / Allow always / Deny. "Always" says what
+ * it will do before doing it — save the rule Claude suggested, or, on
+ * opencode, stop asking in this chat — so it asks first. */
 function PermissionSheet({
   items,
+  agent,
   onAnswer,
 }: {
   items: PendingPermission[];
-  onAnswer: (requestId: string, decision: "allow" | "allow-always" | "deny") => void;
+  agent: string;
+  onAnswer: (requestId: string, reply: PermissionReply) => void;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   return (
@@ -547,42 +604,51 @@ function PermissionSheet({
         </div>
         <div className="ml-auto text-[12px] text-[var(--faint)]">Nothing runs until you answer</div>
       </div>
-      {items.map((pending) => (
-        <div key={pending.requestId} className="flex flex-col gap-2.5 rounded-[18px] bg-[var(--raised-2)]/60 p-3">
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span className="self-start rounded-md bg-[var(--stage)] px-2 py-0.5 font-mono text-[12px] text-[var(--ink)]">
-              {pending.toolName}
-            </span>
-            <span className="min-w-0 font-mono text-[12.5px] leading-5 break-all text-[var(--muted)]">
-              {truncate(permissionSummary(pending.input), 400)}
-            </span>
-          </div>
-          {confirming === pending.requestId ? (
-            <div className="flex flex-col gap-2">
-              <div className="text-[13px] leading-relaxed text-[var(--muted)]">
-                Allow always also switches this chat to Bypass permissions — it won't ask again for
-                anything.
+      {items.map((pending) => {
+        const always = describeAlwaysAllow(pending, agent);
+        const description = pending.description?.trim() || null;
+        return (
+          <div key={pending.requestId} className="flex flex-col gap-2.5 rounded-[18px] bg-[var(--raised-2)]/60 p-3">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <span className="self-start rounded-md bg-[var(--stage)] px-2 py-0.5 font-mono text-[12px] text-[var(--ink)]">
+                {pending.toolName}
+              </span>
+              {description && (
+                <span className="min-w-0 text-[13px] leading-5 text-[var(--ink)]">{description}</span>
+              )}
+              <span className="min-w-0 font-mono text-[12.5px] leading-5 break-all text-[var(--muted)]">
+                {truncate(permissionSummary(pending.input), 400)}
+              </span>
+            </div>
+            {confirming === pending.requestId && always ? (
+              <div className="flex flex-col gap-2">
+                <div className="text-[13px] leading-relaxed text-[var(--muted)]">{always.detail}</div>
+                <div className="flex gap-2">
+                  <SheetButton
+                    primary
+                    onClick={() => onAnswer(pending.requestId, { decision: "allow-always" })}
+                  >
+                    Always allow
+                  </SheetButton>
+                  <SheetButton onClick={() => setConfirming(null)}>Cancel</SheetButton>
+                </div>
               </div>
+            ) : (
               <div className="flex gap-2">
-                <SheetButton primary onClick={() => onAnswer(pending.requestId, "allow-always")}>
-                  Allow always
+                <SheetButton primary onClick={() => onAnswer(pending.requestId, { decision: "allow" })}>
+                  Allow
                 </SheetButton>
-                <SheetButton onClick={() => setConfirming(null)}>Cancel</SheetButton>
+                {always && (
+                  <SheetButton onClick={() => setConfirming(pending.requestId)}>Always</SheetButton>
+                )}
+                <SheetButton quiet onClick={() => onAnswer(pending.requestId, { decision: "deny" })}>
+                  Deny
+                </SheetButton>
               </div>
-            </div>
-          ) : (
-            <div className="flex gap-2">
-              <SheetButton primary onClick={() => onAnswer(pending.requestId, "allow")}>
-                Allow
-              </SheetButton>
-              <SheetButton onClick={() => setConfirming(pending.requestId)}>Always</SheetButton>
-              <SheetButton quiet onClick={() => onAnswer(pending.requestId, "deny")}>
-                Deny
-              </SheetButton>
-            </div>
-          )}
-        </div>
-      ))}
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

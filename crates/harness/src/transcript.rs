@@ -188,6 +188,17 @@ pub struct PendingPermission {
     /// Wider patterns an "allow always" answer would approve.
     #[serde(default)]
     pub always_patterns: Vec<String>,
+    /// The wire's own "don't ask again" options — see
+    /// [`crate::always_allow_update`]. Empty on wires that offer none, and
+    /// on transcripts written before they were kept.
+    #[serde(default)]
+    pub suggestions: Vec<Value>,
+    /// What the call does, in the agent's words.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The path that made the agent ask, when one did.
+    #[serde(default)]
+    pub blocked_path: Option<String>,
 }
 
 impl Transcript {
@@ -289,6 +300,9 @@ impl Transcript {
                 input,
                 patterns,
                 always_patterns,
+                suggestions,
+                description,
+                blocked_path,
             } => {
                 self.state = TurnState::AwaitingPermission;
                 let pending = PendingPermission {
@@ -297,6 +311,9 @@ impl Transcript {
                     input,
                     patterns,
                     always_patterns,
+                    suggestions,
+                    description,
+                    blocked_path,
                 };
                 // Replace a re-ask for the same request; otherwise append so
                 // the UI can table several outstanding prompts at once (an
@@ -341,6 +358,10 @@ impl Transcript {
             } => {
                 self.usage.record_context(context_tokens, context_window);
             }
+
+            // The mode belongs to the session, not the conversation: the
+            // session layer records it. Nothing here to draw.
+            HarnessEvent::ModeChanged { .. } => {}
 
             HarnessEvent::Error { message } => {
                 self.entries.push(TranscriptEntry::Notice {
@@ -527,6 +548,9 @@ mod tests {
             input: json!({ "command": "rm -rf /" }),
             patterns: vec!["rm -rf /".to_string()],
             always_patterns: vec!["rm *".to_string()],
+            suggestions: vec![],
+            description: None,
+            blocked_path: None,
         });
         assert_eq!(transcript.state, TurnState::AwaitingPermission);
         assert!(transcript.is_busy());
@@ -548,6 +572,9 @@ mod tests {
                 input: json!({ "file_path": path }),
                 patterns: vec![path.to_string()],
                 always_patterns: vec!["/tmp/*".to_string()],
+                suggestions: vec![],
+                description: None,
+                blocked_path: None,
             });
         }
         assert_eq!(transcript.pending_permissions.len(), 2);

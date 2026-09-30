@@ -148,7 +148,7 @@ function rowClass(checked: boolean, disabled: boolean, dimmed: boolean, layout: 
     .join(" ");
 }
 
-function OptionRow({
+export function OptionRow({
   groupName,
   option,
   multi,
@@ -188,7 +188,7 @@ function OptionRow({
   );
 }
 
-function CustomOptionRow({
+export function CustomOptionRow({
   groupName,
   multi,
   checked,

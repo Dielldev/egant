@@ -120,13 +120,27 @@ pub enum HarnessEvent {
     /// an "allow always" answer would approve for the rest of the session
     /// (what opencode's own UI offers). Wires without suggestions leave both
     /// empty — the UI then falls back to the tool name and input summary.
+    ///
+    /// `suggestions` are the wire's own "don't ask again" options (Claude's
+    /// `permission_suggestions`), which an "always" answer hands back instead
+    /// of remembering patterns — see [`always_allow_update`]. `description`
+    /// and `blocked_path` say what the call does and which path made the
+    /// agent ask, when the wire says either.
     PermissionRequest {
         request_id: String,
         tool_name: String,
         input: Value,
         patterns: Vec<String>,
         always_patterns: Vec<String>,
+        suggestions: Vec<Value>,
+        description: Option<String>,
+        blocked_path: Option<String>,
     },
+    /// The agent now runs under another permission mode: it switched itself
+    /// (Claude entering plan mode) or applied one that came with an answer
+    /// (an approved plan switching to accept-edits). The agent's word, so it
+    /// replaces whatever the host last asked for.
+    ModeChanged { mode: PermissionMode },
     /// The turn ended. Carries the accounting the status bar shows.
     TurnEnded {
         result: Option<String>,
@@ -158,18 +172,47 @@ pub enum PermissionDecision {
     /// Must carry the original input when approving as-is: Claude Code
     /// rejects an `allow` without `updatedInput` (pre-v2.1.207 as a
     /// validation error that surfaces as a deny) and the docs still require
-    /// passing the original input through.
-    Allow { updated_input: Option<Value> },
-    /// Run the tool and remember the approval: future requests matching
-    /// `patterns` (or the same tool when empty) are approved without asking.
-    /// Carries `updated_input` for the same reason as `Allow` — the current
-    /// request still needs its original input echoed back.
-    AllowAlways {
-        patterns: Vec<String>,
+    /// passing the original input through. An answered question rides here
+    /// too: its answers are part of the input the tool runs with.
+    ///
+    /// `updated_permissions` are applied along with the approval — the rule
+    /// an "always allow" saves, the mode an approved plan switches to.
+    Allow {
         updated_input: Option<Value>,
+        updated_permissions: Vec<Value>,
     },
-    /// Refuse. The agent sees `reason` and can try something else.
-    Deny { reason: String },
+    /// Refuse. The agent sees `reason` and can try something else — unless
+    /// `interrupt` also ends the turn.
+    Deny { reason: String, interrupt: bool },
+}
+
+/// Claude's built-in tool for putting questions to the person. Its
+/// "permission request" is the question itself: answering it means
+/// approving with the answers added to its input.
+pub const ASK_USER_QUESTION: &str = "AskUserQuestion";
+
+/// Claude's built-in tool for handing a finished plan back for approval.
+pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
+
+/// Whether a tool's permission request is really a question for the person —
+/// something only they can answer, never a remembered approval.
+pub fn is_interactive_tool(tool_name: &str) -> bool {
+    tool_name == ASK_USER_QUESTION || tool_name == EXIT_PLAN_MODE
+}
+
+/// The one suggestion an "always allow" answer applies: the rule the CLI
+/// proposed (`Bash(git status:*)` saved to the project), else access to the
+/// directory it named. Never a `setMode` — handing all of the CLI's
+/// suggestions back also switches the session to accept-edits, which is a
+/// decision for the mode picker, not a side effect of one approval.
+pub fn always_allow_update(suggestions: &[Value]) -> Option<Value> {
+    let of_type = |kind: &str| {
+        suggestions
+            .iter()
+            .find(|s| s.get("type").and_then(Value::as_str) == Some(kind))
+            .cloned()
+    };
+    of_type("addRules").or_else(|| of_type("addDirectories"))
 }
 
 /// How much freedom the agent has before it must ask. Names and CLI values
@@ -205,10 +248,13 @@ impl PermissionMode {
 
     /// The inverse of [`Self::as_cli_arg`], for a mode name arriving over IPC
     /// (the frontend's mode picker) rather than one this process produced.
+    ///
+    /// Also reads the CLI's own reports of its mode, which name `manual`
+    /// by its internal name, `default`.
     pub fn from_cli_arg(name: &str) -> Option<Self> {
         match name {
             "auto" => Some(PermissionMode::Auto),
-            "manual" => Some(PermissionMode::Manual),
+            "manual" | "default" => Some(PermissionMode::Manual),
             "plan" => Some(PermissionMode::Plan),
             "acceptEdits" => Some(PermissionMode::AcceptEdits),
             "bypassPermissions" => Some(PermissionMode::BypassPermissions),
@@ -451,5 +497,49 @@ mod project_context_tests {
             "Arka"
         );
         assert!(!project_display_name(std::path::Path::new("/")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn always_allow_takes_the_rule_never_the_mode_switch() {
+        // The CLI's own offer for a `touch` in manual mode, captured from
+        // 2.1.276: a rule, a directory and a switch to accept-edits.
+        let suggestions = vec![
+            json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "touch a.txt"}],
+                   "behavior": "allow", "destination": "localSettings"}),
+            json!({"type": "addDirectories", "directories": ["/tmp/p"], "destination": "session"}),
+            json!({"type": "setMode", "mode": "acceptEdits", "destination": "session"}),
+        ];
+        let update = always_allow_update(&suggestions).unwrap();
+        assert_eq!(update["type"], "addRules");
+
+        // Without a rule, the directory is the narrowest thing on offer.
+        let update = always_allow_update(&suggestions[1..]).unwrap();
+        assert_eq!(update["type"], "addDirectories");
+
+        // A mode switch alone is never taken for "always allow".
+        assert!(always_allow_update(&suggestions[2..]).is_none());
+        assert!(always_allow_update(&[]).is_none());
+    }
+
+    #[test]
+    fn the_clis_own_name_for_manual_reads_as_manual() {
+        assert_eq!(
+            PermissionMode::from_cli_arg("default"),
+            Some(PermissionMode::Manual)
+        );
+        assert_eq!(PermissionMode::Manual.as_cli_arg(), "manual");
+    }
+
+    #[test]
+    fn questions_and_plans_are_interactive() {
+        assert!(is_interactive_tool(ASK_USER_QUESTION));
+        assert!(is_interactive_tool(EXIT_PLAN_MODE));
+        assert!(!is_interactive_tool("Bash"));
     }
 }

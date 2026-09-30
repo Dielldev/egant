@@ -294,6 +294,20 @@ pub enum ControlRequest {
         input: Value,
         #[serde(default)]
         tool_use_id: Option<String>,
+        /// The CLI's own "don't ask again" options for this request, as the
+        /// permission updates it would accept back in `updatedPermissions`
+        /// (`addRules`, `addDirectories`, `setMode`). Alternatives, not a set:
+        /// applying all of them also switches the session's mode — see
+        /// [`crate::always_allow_update`].
+        #[serde(default)]
+        permission_suggestions: Vec<Value>,
+        /// What the call does, in the CLI's words (a Bash call's
+        /// `description`, say).
+        #[serde(default)]
+        description: Option<String>,
+        /// The path that made the CLI ask, when a path did.
+        #[serde(default)]
+        blocked_path: Option<String>,
     },
     #[serde(other)]
     Unknown,
@@ -384,12 +398,25 @@ pub struct HostControlResponse {
 impl HostControlResponse {
     /// Answers a `can_use_tool` request. `updated_input` lets the host rewrite
     /// the tool call before it runs; `None` approves it as proposed.
-    pub fn allow(request_id: impl Into<String>, updated_input: Option<Value>) -> Self {
+    /// `updated_permissions` are permission updates the CLI applies along
+    /// with the approval — a rule it saves to the project, a mode it switches
+    /// to — the same shapes it offers in `permission_suggestions`.
+    pub fn allow(
+        request_id: impl Into<String>,
+        updated_input: Option<Value>,
+        updated_permissions: Vec<Value>,
+    ) -> Self {
         let mut body = BTreeMap::new();
         let mut response = serde_json::Map::new();
         response.insert("behavior".into(), Value::String("allow".into()));
         if let Some(input) = updated_input {
             response.insert("updatedInput".into(), input);
+        }
+        if !updated_permissions.is_empty() {
+            response.insert(
+                "updatedPermissions".into(),
+                Value::Array(updated_permissions),
+            );
         }
         body.insert("response".into(), Value::Object(response));
         Self {
@@ -399,11 +426,21 @@ impl HostControlResponse {
         }
     }
 
-    pub fn deny(request_id: impl Into<String>, message: impl Into<String>) -> Self {
+    /// Refuses a `can_use_tool` request. The agent reads `message` as the
+    /// tool's result. `interrupt` also ends the turn, the way pressing Stop
+    /// would — the CLI settles it as `error_during_execution`.
+    pub fn deny(
+        request_id: impl Into<String>,
+        message: impl Into<String>,
+        interrupt: bool,
+    ) -> Self {
         let mut body = BTreeMap::new();
         let mut response = serde_json::Map::new();
         response.insert("behavior".into(), Value::String("deny".into()));
         response.insert("message".into(), Value::String(message.into()));
+        if interrupt {
+            response.insert("interrupt".into(), Value::Bool(true));
+        }
         body.insert("response".into(), Value::Object(response));
         Self {
             subtype: "success",
@@ -455,6 +492,60 @@ mod tests {
         };
         assert!(!result.is_error);
         assert_eq!(result.result.as_deref(), Some("hello"));
+    }
+
+    /// Captured from CLI 2.1.276 run with `--permission-prompt-tool stdio` in
+    /// `manual` mode, paths shortened. Three suggestions, one of which is a
+    /// mode switch.
+    const CAN_USE_BASH: &str = r#"{"type":"control_request","request_id":"a8777116-6c95-435e-97ea-4e4034d856c1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"touch probe-a.txt","description":"Create file probe-a.txt"},"description":"Create file probe-a.txt","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch probe-a.txt"}],"behavior":"allow","destination":"localSettings"},{"type":"addDirectories","directories":["/tmp/probe"],"destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}],"blocked_path":"/tmp/probe/probe-a.txt","tool_use_id":"toolu_01VCr3dec3ExGuJpD2MtR1T4"}}"#;
+
+    #[test]
+    fn parses_a_permission_request_with_its_suggestions() {
+        let msg: CliMessage = serde_json::from_str(CAN_USE_BASH).unwrap();
+        let CliMessage::ControlRequest(envelope) = msg else {
+            panic!("expected a control request");
+        };
+        let ControlRequest::CanUseTool {
+            tool_name,
+            permission_suggestions,
+            description,
+            blocked_path,
+            ..
+        } = envelope.request
+        else {
+            panic!("expected can_use_tool");
+        };
+        assert_eq!(tool_name, "Bash");
+        assert_eq!(permission_suggestions.len(), 3);
+        assert_eq!(description.as_deref(), Some("Create file probe-a.txt"));
+        assert_eq!(blocked_path.as_deref(), Some("/tmp/probe/probe-a.txt"));
+    }
+
+    #[test]
+    fn an_allow_carries_permission_updates_only_when_there_are_some() {
+        let with = serde_json::to_value(HostControlResponse::allow(
+            "r1",
+            Some(serde_json::json!({ "command": "ls" })),
+            vec![serde_json::json!({ "type": "addRules" })],
+        ))
+        .unwrap();
+        assert_eq!(
+            with["response"]["updatedPermissions"],
+            serde_json::json!([{ "type": "addRules" }])
+        );
+        assert_eq!(with["response"]["updatedInput"]["command"], "ls");
+
+        let without = serde_json::to_value(HostControlResponse::allow("r1", None, vec![])).unwrap();
+        assert!(without["response"].get("updatedPermissions").is_none());
+    }
+
+    #[test]
+    fn a_deny_can_also_stop_the_turn() {
+        let stop = serde_json::to_value(HostControlResponse::deny("r1", "no", true)).unwrap();
+        assert_eq!(stop["response"]["behavior"], "deny");
+        assert_eq!(stop["response"]["interrupt"], true);
+        let plain = serde_json::to_value(HostControlResponse::deny("r1", "no", false)).unwrap();
+        assert!(plain["response"].get("interrupt").is_none());
     }
 
     #[test]

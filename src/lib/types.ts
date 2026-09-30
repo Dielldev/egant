@@ -90,6 +90,35 @@ export interface PendingPermission {
   input: unknown;
   patterns: string[];
   alwaysPatterns: string[];
+  /** The CLI's own "don't ask again" options (Claude only). An "always"
+   * answer hands back one of them — see `alwaysAllowUpdate`. Absent on
+   * snapshots from older backends. */
+  suggestions?: PermissionUpdate[];
+  /** What the call does, in the agent's words. */
+  description?: string | null;
+  /** The path that made the agent ask, when one did. */
+  blockedPath?: string | null;
+}
+
+/** One permission update, as Claude's CLI offers it in a request's
+ * suggestions and accepts back with an approval. */
+export interface PermissionUpdate {
+  type: "addRules" | "addDirectories" | "setMode" | (string & {});
+  rules?: { toolName: string; ruleContent?: string }[];
+  behavior?: string;
+  /** `localSettings` (the project's `.claude/settings.local.json`),
+   * `projectSettings`, `userSettings` or `session`. */
+  destination?: string;
+  directories?: string[];
+  mode?: string;
+}
+
+/** One question in Claude's AskUserQuestion tool input. */
+export interface AskQuestion {
+  question: string;
+  header?: string;
+  options: { label: string; description?: string }[];
+  multiSelect?: boolean;
 }
 
 /** Full transcript snapshot, as returned by `get_transcript`. */
@@ -108,6 +137,29 @@ export interface TranscriptDto {
   /** Answers to this transcript's decision prompts, keyed by prompt id. Kept
    * by the backend so every device agrees on which prompts are settled. */
   decisionResponses?: Record<string, DecisionResponse>;
+  /** Messages waiting for the running turn to end, oldest first. */
+  queued?: QueuedMessage[];
+}
+
+/** A message sent while the agent was busy, waiting its turn. */
+export interface QueuedMessage {
+  id: number;
+  text: string;
+  imageCount: number;
+}
+
+/** What sending a message did: the session's new title when it named the
+ * session, and its queue when the message joined it. */
+export interface SendResult {
+  title: string | null;
+  queued: boolean;
+  queue: QueuedMessage[];
+}
+
+/** The `session-queue` event: the app sent the next queued message. */
+export interface SessionQueuePayload {
+  sessionId: number;
+  queued: QueuedMessage[];
 }
 
 /** What one turn put through the model. Mirrors the Rust `TurnUsage`. */
@@ -145,8 +197,26 @@ export interface TranscriptState extends TranscriptDto {
   turnStartedAt: number | null;
 }
 
-/** How the user answered one row of the permission table. */
-export type PermissionDecision = "allow" | "allow-always" | "deny";
+/** How the user answered one row of the permission table. `answer` is for
+ * a question (AskUserQuestion) and `approve-plan` for a plan (ExitPlanMode);
+ * neither takes a plain allow. */
+export type PermissionDecision = "allow" | "allow-always" | "deny" | "answer" | "approve-plan";
+
+/** A permission answer with whatever its decision carries. */
+export interface PermissionReply {
+  decision: PermissionDecision;
+  /** `answer`: the pick for each question, keyed by the question's text —
+   * several labels for a multi-select question. */
+  answers?: Record<string, string | string[]>;
+  /** `answer`: a remark per question, keyed the same way. */
+  notes?: Record<string, string>;
+  /** `deny`: what the agent reads instead of the stock refusal. */
+  feedback?: string;
+  /** `deny`: also end the turn. */
+  stop?: boolean;
+  /** `approve-plan`: the mode to carry on in. */
+  mode?: string;
+}
 
 /** One streaming event, as emitted on `session-event`. Mirrors `HarnessEvent`
  * variant-for-variant so the fold below stays a mechanical port of
@@ -167,7 +237,12 @@ export type HarnessEvent =
       input: unknown;
       patterns?: string[];
       always_patterns?: string[];
+      suggestions?: PermissionUpdate[];
+      description?: string | null;
+      blocked_path?: string | null;
     }
+  /** The agent now runs under another permission mode (CLI flag form). */
+  | { type: "mode_changed"; mode: string }
   | {
       type: "turn_ended";
       result: string | null;
@@ -213,6 +288,13 @@ export type SyncEnvelope = {
   | { type: "transcript_reset"; payload: Record<string, never> }
 );
 
+/** The `session-titled` event: a small model titled a session after its
+ * first turn, replacing the first message's opening line. */
+export interface SessionTitledPayload {
+  sessionId: number;
+  title: string;
+}
+
 /** The `worktree-renamed` event: a session's first turn said what it is
  * about, and the worktree at `path` moved off its placeholder branch
  * (`egant/quiet-quartz` → `egant/fix-login-flow`). The folder doesn't move. */
@@ -255,7 +337,13 @@ export interface SessionInfo {
    * started on this machine. The sidebar's "By device" groups on it. */
   device: string | null;
   ended: boolean;
+  /** A turn is in flight or blocked on the user; `state` says which. */
   busy: boolean;
+  /** `running` while the agent works, `awaiting_permission` while it waits
+   * on the user — a permission, a question, a plan. */
+  state: TurnState;
+  /** Requests waiting on the user. */
+  pendingCount: number;
   model: string | null;
   totalCostUsd: number;
 }
@@ -329,6 +417,24 @@ export interface WorktreeInfo {
 /** What closing a session answers with. The worktree is given back as part of
  * the same call, so the snapshot here already reflects whatever happened to
  * it. */
+/** One archived session (Settings → Archived). Mirrors `ArchivedSessionDto`:
+ * read from disk, since an archived session has no row in the window. */
+export interface ArchivedSession {
+  id: number;
+  title: string;
+  /** The folder it belongs to — restoring needs that project open. */
+  projectPath: string;
+  projectName: string;
+  agent: string;
+  kind: SessionKind;
+  startedUnixMs: number;
+  archivedAtMs: number;
+  branch: string | null;
+  /** The worktree kept for it, when it ran in one. */
+  worktree: WorktreeInfo | null;
+  device: string | null;
+}
+
 export interface CloseResult {
   state: WindowState;
   /** Set when the worktree was kept rather than removed — it says where it is

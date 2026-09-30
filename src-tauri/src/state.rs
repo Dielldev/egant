@@ -17,9 +17,36 @@ use crate::project::Project;
 use crate::sessions::SessionCommand;
 use crate::settings::Settings;
 
+/// Where a session's title came from, which decides whether anything may
+/// replace it: a placeholder gives way to the first message's opening line,
+/// that line to a generated title, and nothing replaces one the user typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TitleSource {
+    /// "New session 3", before anything was said.
+    Placeholder,
+    /// The first message's opening line (`sessions::derive_title`).
+    FirstLine,
+    /// A few words a small model wrote about the first message, or settled
+    /// in some other way that nothing should revisit.
+    Generated,
+    /// Typed by the user.
+    User,
+}
+
+impl Default for TitleSource {
+    /// What a session saved before titles were tracked reads as: settled.
+    /// Retitling months-old conversations the day this shipped would be the
+    /// app rewriting history the user already knows by name.
+    fn default() -> Self {
+        TitleSource::Generated
+    }
+}
+
 pub struct SessionMeta {
     pub id: u64,
     pub title: String,
+    pub title_source: TitleSource,
     pub project_id: usize,
     pub cwd: PathBuf,
     /// Branch the working directory was on at startup, read through
@@ -99,6 +126,22 @@ pub struct ManagedSession {
     /// When anything last happened in this session — a turn sent, an event
     /// from the agent. What the phone's list sorts by.
     pub last_activity_ms: u64,
+    /// Messages sent while a turn was running, oldest first, waiting for it
+    /// to end (see `sessions::flush_queue`). In memory only: a relaunch has
+    /// no turn left to wait on.
+    pub queued: std::collections::VecDeque<QueuedTurn>,
+    /// "Send now" interrupted the turn: send the next queued message when it
+    /// ends, however it ends.
+    pub flush_next_end: bool,
+}
+
+/// One message waiting its turn.
+#[derive(Debug, Clone)]
+pub struct QueuedTurn {
+    /// Unique across sessions, for the composer to name it by.
+    pub id: u64,
+    pub text: String,
+    pub images: Vec<std::path::PathBuf>,
 }
 
 pub struct AppState {
@@ -148,108 +191,8 @@ impl AppState {
             next_project_id += 1;
         }
 
-        let mut sessions = HashMap::new();
-        let mut order = Vec::new();
-        let mut next_session_id = 1;
-        for persisted in persist::load_sessions() {
-            let Some(project) = projects
-                .iter()
-                .find(|p| crate::project::same_project(&p.fs_path(), &persisted.meta.project_path))
-            else {
-                // The project this session belonged to is gone (moved,
-                // deleted, or dropped from projects.json by hand) — nothing
-                // sensible to reopen it into, so the history is skipped
-                // rather than shown with no project to attach to.
-                log::warn!(
-                    "skipping session {} — project {} no longer open",
-                    persisted.meta.id,
-                    persisted.meta.project_path.display()
-                );
-                continue;
-            };
-            // A session whose working directory vanished while the app was
-            // closed (folder moved, worktree pruned) cannot be revived where
-            // it was — reopen it in its project instead of spawning the agent
-            // in a deleted folder, which is how a revived `Arka` thread kept
-            // answering as `egant`'s neighbour that no longer resolves.
-            // A session that ran in a worktree reopens in it, but only while
-            // git still calls it one: a checkout removed from a terminal (or
-            // pruned) leaves a directory that looks fine to `is_dir` and is no
-            // longer part of the repository.
-            let expected_worktree = persisted.meta.worktree.is_some();
-            let worktree = persisted
-                .meta
-                .worktree
-                .filter(|worktree| crate::worktrees::is_live(worktree));
-            if expected_worktree && worktree.is_none() {
-                log::info!(
-                    "session {} lost its worktree — reopening in {}",
-                    persisted.meta.id,
-                    project.fs_path().display()
-                );
-            }
-            let cwd = match &worktree {
-                Some(worktree) => worktree.path.clone(),
-                // Same fallback as a project folder that moved, and for the
-                // same reason: better the project than a deleted directory.
-                None if expected_worktree => project.fs_path(),
-                None if persisted.meta.cwd.is_dir() => {
-                    crate::project::canonicalize_path(&persisted.meta.cwd)
-                }
-                None => project.fs_path(),
-            };
-            // A session that came back without its worktree is on whatever
-            // its project folder is on; the branch it recorded belongs to a
-            // checkout that no longer exists, and the sidebar shows it.
-            let branch = if expected_worktree && worktree.is_none() {
-                crate::sessions::branch_of(&cwd)
-            } else {
-                persisted.meta.branch
-            };
-            let meta = SessionMeta {
-                id: persisted.meta.id,
-                title: persisted.meta.title,
-                project_id: project.id,
-                cwd,
-                branch,
-                started_unix_ms: persisted.meta.started_unix_ms,
-                agent: persisted.meta.agent,
-                cli_agent: persisted.meta.cli_agent,
-                model: persisted.meta.model,
-                variant: persisted.meta.variant,
-                context: persisted.meta.context,
-                permission_mode: persisted.meta.permission_mode,
-                worktree,
-                device: persisted.meta.device,
-                ended: true,
-            };
-            next_session_id = next_session_id.max(meta.id + 1);
-            order.push(meta.id);
-            let last_activity_ms = persisted.modified_ms.max(meta.started_unix_ms);
-            let decisions = persisted.decisions;
-            let mut transcript = persisted.transcript;
-            // A turn in flight when the app last closed (crash, force-quit)
-            // has nothing running behind it any more; left as `Running` or
-            // `AwaitingPermission`, the composer would show a spinner or a
-            // permission prompt with no process left to answer either one.
-            transcript.state = TurnState::Idle;
-            transcript.pending_permission = None;
-            transcript.pending_permissions.clear();
-            sessions.insert(
-                meta.id,
-                ManagedSession {
-                    meta,
-                    transcript,
-                    commands: None,
-                    allowed_patterns: Vec::new(),
-                    last_user_text: None,
-                    last_user_images: Vec::new(),
-                    turn_baseline: None,
-                    decisions,
-                    last_activity_ms,
-                },
-            );
-        }
+        let (sessions, order, next_session_id) =
+            restore_sessions(&projects, persist::load_sessions());
         // Restored in `started_unix_ms` order; picking up on the most recent
         // conversation (rather than none at all) is what "reopen the app"
         // should feel like.
@@ -300,15 +243,23 @@ impl AppState {
     /// project's path rather than the in-memory project id (ids are
     /// reassigned every launch).
     pub(crate) fn persist_session(&self, id: u64) {
+        self.persist_session_with(id, None);
+    }
+
+    /// [`Self::persist_session`], saying whether the file was written and
+    /// marking it archived at `archived_at_ms` when that is set — the last
+    /// write a session gets before it leaves the window for the archive.
+    pub(crate) fn persist_session_with(&self, id: u64, archived_at_ms: Option<u64>) -> bool {
         let Some(session) = self.sessions.get(&id) else {
-            return;
+            return false;
         };
         let Some(project) = self.project(session.meta.project_id) else {
-            return;
+            return false;
         };
         let meta = persist::PersistedMeta {
             id: session.meta.id,
             title: session.meta.title.clone(),
+            title_source: session.meta.title_source,
             project_path: project.fs_path(),
             cwd: session.meta.cwd.clone(),
             branch: session.meta.branch.clone(),
@@ -321,8 +272,9 @@ impl AppState {
             permission_mode: session.meta.permission_mode,
             worktree: session.meta.worktree.clone(),
             device: session.meta.device.clone(),
+            archived_at_ms,
         };
-        persist::save_session(&meta, &session.transcript, &session.decisions);
+        persist::save_session(&meta, &session.transcript, &session.decisions)
     }
 
     /// Everything the window draws, gathered in one pass.
@@ -425,6 +377,139 @@ impl AppState {
     }
 }
 
+/// Rebuilds the window's sessions from what was saved: every one whose project
+/// is open, in the order they started. Archived sessions stay out of the
+/// window, but every id on disk counts toward the next one handed out — a new
+/// session must never be written over one that is archived, or whose project
+/// isn't open this run.
+pub(crate) fn restore_sessions(
+    projects: &[Project],
+    saved: Vec<persist::PersistedSession>,
+) -> (HashMap<u64, ManagedSession>, Vec<u64>, u64) {
+    let mut sessions = HashMap::new();
+    let mut order = Vec::new();
+    let mut next_session_id = 1;
+    for persisted in saved {
+        next_session_id = next_session_id.max(persisted.meta.id + 1);
+        if persisted.meta.archived_at_ms.is_some() {
+            continue;
+        }
+        let id = persisted.meta.id;
+        let Some(session) = restore_session(projects, persisted) else {
+            continue;
+        };
+        order.push(id);
+        sessions.insert(id, session);
+    }
+    (sessions, order, next_session_id)
+}
+
+/// Turns one saved session back into a window row — `ended`, since nothing
+/// reconnects a process at load; [`crate::sessions::send_text`] revives it on
+/// its next message — in the project it was saved under. `None` when that
+/// project isn't open. What launch does for every saved session, and what
+/// restoring an archived one does for it.
+pub(crate) fn restore_session(
+    projects: &[Project],
+    persisted: persist::PersistedSession,
+) -> Option<ManagedSession> {
+    let Some(project) = projects
+        .iter()
+        .find(|p| crate::project::same_project(&p.fs_path(), &persisted.meta.project_path))
+    else {
+        // The project this session belonged to is gone (moved,
+        // deleted, or dropped from projects.json by hand) — nothing
+        // sensible to reopen it into, so the history is skipped
+        // rather than shown with no project to attach to.
+        log::warn!(
+            "skipping session {} — project {} no longer open",
+            persisted.meta.id,
+            persisted.meta.project_path.display()
+        );
+        return None;
+    };
+    // A session whose working directory vanished while the app was
+    // closed (folder moved, worktree pruned) cannot be revived where
+    // it was — reopen it in its project instead of spawning the agent
+    // in a deleted folder, which is how a revived `Arka` thread kept
+    // answering as `egant`'s neighbour that no longer resolves.
+    // A session that ran in a worktree reopens in it, but only while
+    // git still calls it one: a checkout removed from a terminal (or
+    // pruned) leaves a directory that looks fine to `is_dir` and is no
+    // longer part of the repository.
+    let expected_worktree = persisted.meta.worktree.is_some();
+    let worktree = persisted
+        .meta
+        .worktree
+        .filter(|worktree| crate::worktrees::is_live(worktree));
+    if expected_worktree && worktree.is_none() {
+        log::info!(
+            "session {} lost its worktree — reopening in {}",
+            persisted.meta.id,
+            project.fs_path().display()
+        );
+    }
+    let cwd = match &worktree {
+        Some(worktree) => worktree.path.clone(),
+        // Same fallback as a project folder that moved, and for the
+        // same reason: better the project than a deleted directory.
+        None if expected_worktree => project.fs_path(),
+        None if persisted.meta.cwd.is_dir() => {
+            crate::project::canonicalize_path(&persisted.meta.cwd)
+        }
+        None => project.fs_path(),
+    };
+    // A session that came back without its worktree is on whatever
+    // its project folder is on; the branch it recorded belongs to a
+    // checkout that no longer exists, and the sidebar shows it.
+    let branch = if expected_worktree && worktree.is_none() {
+        crate::sessions::branch_of(&cwd)
+    } else {
+        persisted.meta.branch
+    };
+    let meta = SessionMeta {
+        id: persisted.meta.id,
+        title: persisted.meta.title,
+        title_source: persisted.meta.title_source,
+        project_id: project.id,
+        cwd,
+        branch,
+        started_unix_ms: persisted.meta.started_unix_ms,
+        agent: persisted.meta.agent,
+        cli_agent: persisted.meta.cli_agent,
+        model: persisted.meta.model,
+        variant: persisted.meta.variant,
+        context: persisted.meta.context,
+        permission_mode: persisted.meta.permission_mode,
+        worktree,
+        device: persisted.meta.device,
+        ended: true,
+    };
+    let last_activity_ms = persisted.modified_ms.max(meta.started_unix_ms);
+    let decisions = persisted.decisions;
+    let mut transcript = persisted.transcript;
+    // A turn in flight when the app last closed (crash, force-quit)
+    // has nothing running behind it any more; left as `Running` or
+    // `AwaitingPermission`, the composer would show a spinner or a
+    // permission prompt with no process left to answer either one.
+    transcript.state = TurnState::Idle;
+    transcript.pending_permission = None;
+    transcript.pending_permissions.clear();
+    Some(ManagedSession {
+        meta,
+        transcript,
+        commands: None,
+        allowed_patterns: Vec::new(),
+        last_user_text: None,
+        last_user_images: Vec::new(),
+        turn_baseline: None,
+        decisions,
+        last_activity_ms,
+        queued: Default::default(),
+        flush_next_end: false,
+    })
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
@@ -515,6 +600,8 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
         device: meta.device.clone(),
         ended: meta.ended,
         busy: session.transcript.is_busy(),
+        state: crate::dto::turn_state_name(session.transcript.state),
+        pending_count: session.transcript.pending_permissions.len(),
         model: session.transcript.model.clone(),
         total_cost_usd: session.transcript.total_cost_usd,
     }
@@ -523,6 +610,57 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn saved(id: u64, project: &str, archived: bool) -> persist::PersistedSession {
+        persist::PersistedSession {
+            meta: persist::PersistedMeta {
+                id,
+                title: format!("session {id}"),
+                title_source: TitleSource::Generated,
+                project_path: std::path::PathBuf::from(project),
+                cwd: std::path::PathBuf::from(project),
+                branch: None,
+                started_unix_ms: id,
+                agent: AgentId::Claude,
+                cli_agent: None,
+                model: None,
+                variant: None,
+                context: None,
+                permission_mode: PermissionMode::Auto,
+                worktree: None,
+                device: None,
+                archived_at_ms: archived.then_some(1),
+            },
+            transcript: Transcript::new(),
+            decisions: Default::default(),
+            modified_ms: 0,
+        }
+    }
+
+    #[test]
+    fn archived_and_orphaned_sessions_stay_out_but_keep_their_ids() {
+        let projects = vec![Project::new(
+            0,
+            std::path::PathBuf::from("/tmp/egant-test/egant"),
+        )];
+        let (sessions, order, next) = restore_sessions(
+            &projects,
+            vec![
+                saved(3, "/tmp/egant-test/egant", false),
+                saved(9, "/tmp/egant-test/egant", true),
+                // A project that isn't open this run.
+                saved(12, "/tmp/egant-test/elsewhere", false),
+            ],
+        );
+        assert_eq!(order, vec![3]);
+        assert!(sessions.contains_key(&3));
+        assert!(!sessions.contains_key(&9));
+        // Neither the archived 9 nor the orphaned 12 may have its file
+        // written over by the next new session.
+        assert_eq!(next, 13);
+        // What comes back is ended: nothing reconnects a process at load.
+        assert!(sessions[&3].meta.ended);
+    }
 
     /// Two projects (`egant`, `meme-cam`) with one live session in `egant` —
     /// the exact shape of the reported bug. Built by hand so no test touches
@@ -539,6 +677,7 @@ mod tests {
                 meta: SessionMeta {
                     id: 1,
                     title: "What project am I viewing".to_string(),
+                    title_source: TitleSource::User,
                     project_id: 0,
                     cwd: std::path::PathBuf::from("/tmp/egant-test/egant"),
                     branch: None,
@@ -561,6 +700,8 @@ mod tests {
                 turn_baseline: None,
                 decisions: Default::default(),
                 last_activity_ms: 0,
+                queued: Default::default(),
+                flush_next_end: false,
             },
         );
         AppState {
@@ -609,6 +750,7 @@ mod tests {
                 meta: SessionMeta {
                     id: 2,
                     title: "meme-cam thread".to_string(),
+                    title_source: TitleSource::User,
                     project_id: 1,
                     cwd: std::path::PathBuf::from("/tmp/egant-test/meme-cam"),
                     branch: None,
@@ -631,13 +773,18 @@ mod tests {
                 turn_baseline: None,
                 decisions: Default::default(),
                 last_activity_ms: 0,
+                queued: Default::default(),
+                flush_next_end: false,
             },
         );
         state.order.push(2);
         state.active_project = Some(1);
         state.active_session = Some(2);
 
-        let _ = crate::sessions::close_session(&mut state, 2);
+        // The selection logic closing and archiving share — without
+        // `close_session`'s delete, which would remove the real
+        // `sessions/2.json` from this machine's config folder.
+        let _ = crate::sessions::detach_session(&mut state, 2);
         // The stage falls back to the `egant` thread, so the project must come
         // with it — otherwise the sidebar still reads `meme-cam` over an
         // `egant` transcript.

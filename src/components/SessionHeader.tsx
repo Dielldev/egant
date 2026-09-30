@@ -3,6 +3,7 @@ import { modShortcut } from "../lib/platform";
 import { selectOnLaunchScreen, useEgant } from "../store";
 import { log } from "../lib/logger";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
+import { EditableTitle } from "./EditableTitle";
 import { ProviderGlyph } from "./ProviderLogo";
 import { WindowBar } from "./WindowBar";
 import { WorktreeChip } from "./Worktree";
@@ -41,6 +42,7 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
   }
   const agents = useEgant((s) => s.agents);
   const catalog = useEgant((s) => s.catalog);
+  const renameSession = useEgant((s) => s.renameSession);
   const sidebarVisible = snapshot?.sidebarVisible ?? true;
   // The catalog names every agent, including the ones with no harness behind
   // them; `agentName` alone would print a bare `goose` for a CLI session.
@@ -68,15 +70,25 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
             size={14}
             color={active?.agent ? AGENT_ACCENT[active.agent] : undefined}
           />
-          <span className="max-w-[45%] shrink-0 truncate text-[13px] font-medium text-[var(--ink)]">
-            {active?.title ?? "No conversation"}
-          </span>
+          {active ? (
+            <EditableTitle
+              title={active.title}
+              hint="Double-click to rename"
+              onRename={(title) => void renameSession(active.id, title)}
+              className="max-w-[45%] shrink-0 cursor-default truncate text-[13px] font-medium text-[var(--ink)]"
+              inputClassName="w-[45%] max-w-[420px] shrink-0 rounded-md border border-[var(--accent)]/60 bg-[rgba(0,0,0,0.2)] px-1.5 text-[13px] font-medium text-[var(--ink)] outline-none"
+            />
+          ) : (
+            <span className="max-w-[45%] shrink-0 truncate text-[13px] font-medium text-[var(--ink)]">
+              No conversation
+            </span>
+          )}
           {project && (
             <span
               data-tauri-drag-region
               className="min-w-0 flex-1 truncate text-xs text-[var(--faint)]"
             >
-              {project.name} @ {snapshot?.machineName ?? ""}
+              {project.name} @ {active?.device ?? snapshot?.machineName ?? ""}
               {agentLabel !== "" &&
                 ` · ${agentLabel}${active?.kind === "cli" ? " CLI" : ""}`}
             </span>

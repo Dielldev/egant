@@ -1,4 +1,5 @@
 import {
+  Archive,
   Bot,
   Calendar,
   Check,
@@ -13,14 +14,18 @@ import {
   MapPin,
   Plus,
   Search,
+  Smartphone,
   TerminalSquare,
   X,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../lib/api";
 import { shouldOpenUpward } from "../lib/popover";
 import { modShortcut } from "../lib/platform";
-import type { SessionInfo } from "../lib/types";
+import type { MobileDevice, SessionInfo } from "../lib/types";
 import { agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
+import { EditableTitle } from "./EditableTitle";
 import { ProviderGlyph } from "./ProviderLogo";
 import { useEgant } from "../store";
 import { ProjectMenu } from "./ProjectMenu";
@@ -60,7 +65,9 @@ export function Sidebar() {
   const toggleGroupCollapsed = useEgant((s) => s.toggleGroupCollapsed);
   const selectProject = useEgant((s) => s.selectProject);
   const selectSession = useEgant((s) => s.selectSession);
-  const closeSession = useEgant((s) => s.closeSession);
+  const archiveSession = useEgant((s) => s.archiveSession);
+  const renameSession = useEgant((s) => s.renameSession);
+  const unread = useEgant((s) => s.unread);
   const createSession = useEgant((s) => s.createSession);
   const openSettings = useEgant((s) => s.openSettings);
   const sidebarWidth = useEgant((s) => s.sidebarWidth);
@@ -143,14 +150,26 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inProject, sidebarWorktreesOnly, needle, sidebarSort, projects]);
 
+  const pairedDevices = usePairedDevices();
+
   // Grouping preserves the sort order above — a group's position is wherever
   // its first (by that order) session lands, so switching sort still moves the
-  // groups sensibly instead of relying on project-list order.
+  // groups sensibly instead of relying on project-list order. By device is the
+  // exception: the Mac's group leads, then each phone by its latest chat.
   const groups = useMemo(() => {
     if (sidebarOrganize === "flat") return null;
-    const map = new Map<string, { key: string; label: string; projectId: number | null; sessions: SessionInfo[] }>();
+    type Group = {
+      key: string;
+      label: string;
+      projectId: number | null;
+      phone: boolean;
+      sessions: SessionInfo[];
+      /** What an empty group says instead of a list. */
+      note?: string;
+    };
+    const map = new Map<string, Group>();
+    const byProject = sidebarOrganize === "byProject";
     for (const session of rows) {
-      const byProject = sidebarOrganize === "byProject";
       const place = session.device ?? machine;
       const key = byProject ? `project:${session.projectId}` : `device:${place}`;
       let group = map.get(key);
@@ -159,15 +178,50 @@ export function Sidebar() {
           key,
           label: byProject ? projectNameOf(session.projectId) : place || "This device",
           projectId: byProject ? session.projectId : null,
+          phone: !byProject && session.device != null,
           sessions: [],
         };
         map.set(key, group);
       }
       group.sessions.push(session);
     }
-    return Array.from(map.values());
+    if (byProject) return Array.from(map.values());
+
+    // A paired phone with nothing to list still gets its group, so it is
+    // always findable — unless a search or a project is narrowing the list,
+    // where every phone would look empty for the wrong reason.
+    if (needle === "" && listedProject == null) {
+      for (const device of pairedDevices) {
+        const key = `device:${device.name}`;
+        if (map.has(key)) continue;
+        map.set(key, {
+          key,
+          label: device.name,
+          projectId: null,
+          phone: true,
+          sessions: [],
+          note: sessions.some((s) => s.device === device.name)
+            ? "Its chats are hidden by the Worktrees only filter"
+            : "No chats yet",
+        });
+      }
+    }
+    const latest = (group: Group) =>
+      group.sessions.reduce((at, s) => Math.max(at, s.startedUnixMs), 0);
+    const seen = (group: Group) =>
+      pairedDevices.find((d) => d.name === group.label)?.lastSeenMs ?? 0;
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.phone !== b.phone) return a.phone ? 1 : -1;
+      if (!a.phone) return 0;
+      // Phones with chats by their newest chat; ones with none after them,
+      // by when the phone was last seen.
+      const aEmpty = a.sessions.length === 0;
+      const bEmpty = b.sessions.length === 0;
+      if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+      return aEmpty ? seen(b) - seen(a) : latest(b) - latest(a);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, sidebarOrganize, machine, projects]);
+  }, [rows, sessions, sidebarOrganize, machine, projects, pairedDevices, needle, listedProject]);
 
   const rowProps = (session: SessionInfo) => {
     const project = projectNameOf(session.projectId);
@@ -184,13 +238,21 @@ export function Sidebar() {
       now,
       selected: session.id === snapshot?.activeSession,
       busy: session.busy,
+      // opencode's denials arrive after its turn has already ended, so a
+      // waiting row counts as much as the state does (the phone's "Needs you"
+      // group reads the same count).
+      awaiting: session.state === "awaiting_permission" || (session.pendingCount ?? 0) > 0,
+      unread: unread[session.id] === true,
       agent: session.agent,
       showHarness: sidebarShowHarness,
       cli: session.kind === "cli",
       branch,
       inWorktree: session.worktree != null,
+      // Under By device the group header already says it's a phone's.
+      phone: sidebarOrganize !== "byDevice" ? session.device : null,
       onClick: () => void selectSession(session.id),
-      onClose: () => void closeSession(session.id),
+      onArchive: () => void archiveSession(session.id),
+      onRename: (title: string) => void renameSession(session.id, title),
     };
   };
 
@@ -364,6 +426,14 @@ export function Sidebar() {
                     onClick={() => toggleGroupCollapsed(group.key)}
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
                   >
+                    {group.phone && (
+                      <Smartphone
+                        size={12}
+                        strokeWidth={2}
+                        aria-label="Phone"
+                        className="-mr-1 shrink-0 text-[var(--faint)]"
+                      />
+                    )}
                     <span className="min-w-0 truncate text-[12px] font-medium text-[var(--muted)]">
                       {collapsed ? `${group.label} (${group.sessions.length})` : group.label}
                     </span>
@@ -387,7 +457,12 @@ export function Sidebar() {
                     </button>
                   )}
                 </div>
-                {!collapsed && (
+                {!collapsed && group.sessions.length === 0 && (
+                  <div className="px-2 pt-1 pb-0.5 text-[12px] text-[var(--faint)]">
+                    {group.note ?? "No chats yet"}
+                  </div>
+                )}
+                {!collapsed && group.sessions.length > 0 && (
                   <div className="flex flex-col gap-0.5 pt-1">
                     {group.sessions.map((session) => (
                       <SessionRow key={session.id} {...rowProps(session)} />
@@ -404,7 +479,7 @@ export function Sidebar() {
             ))}
           </div>
         )}
-        {rows.length === 0 && (
+        {rows.length === 0 && !groups?.length && (
           <div className="px-2 py-1 text-[13px] text-[var(--faint)]">
             {inProject.length === 0
               ? listedProject == null
@@ -449,6 +524,31 @@ export function Sidebar() {
       </div>
     </aside>
   );
+}
+
+/** The phones paired with this Mac, kept current as they pair and unpair —
+ * the sidebar needs them for a phone that has not started a chat yet. */
+function usePairedDevices(): MobileDevice[] {
+  const [devices, setDevices] = useState<MobileDevice[]>([]);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      void api
+        .mobileStatus()
+        .then((status) => live && setDevices(status.devices))
+        .catch(() => {});
+    load();
+    let unlisten: (() => void) | undefined;
+    void listen("mobile-changed", load).then((stop) => {
+      if (live) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      live = false;
+      unlisten?.();
+    };
+  }, []);
+  return devices;
 }
 
 /** A clock that ticks once a minute, so "3m" on a card doesn't sit at "3m"
@@ -522,13 +622,17 @@ function SessionRow({
   now,
   selected,
   busy,
+  awaiting,
+  unread,
   agent,
   showHarness,
   cli,
   branch,
   inWorktree,
+  phone,
   onClick,
-  onClose,
+  onArchive,
+  onRename,
 }: {
   title: string;
   tooltip: string;
@@ -538,6 +642,11 @@ function SessionRow({
   now: number;
   selected: boolean;
   busy: boolean;
+  /** Blocked on the user — a permission, a question, a plan. Wins over
+   * `busy`, which is also set while it waits. */
+  awaiting?: boolean;
+  /** Something happened since this session was last on screen. */
+  unread?: boolean;
   agent: string;
   showHarness: boolean;
   /** This session is the agent's own CLI in a terminal, not a chat. */
@@ -545,40 +654,60 @@ function SessionRow({
   branch?: string | null;
   /** The branch belongs to a worktree of its own rather than the project's. */
   inWorktree?: boolean;
+  /** The paired phone that started this chat; `null` for one from this Mac. */
+  phone?: string | null;
   onClick: () => void;
-  onClose: () => void;
+  /** Out of the window, kept on disk (Settings → Archived), with an Undo. */
+  onArchive: () => void;
+  /** Double-clicking the title edits it in place. */
+  onRename: (title: string) => void;
 }) {
-  // The corner: what's happening now, swapped for Close while the pointer is
-  // on the card. Same slot either way, so nothing on the card shifts.
+  // The corner: what's happening now, swapped for Archive while the pointer
+  // is on the card. Same slot either way, so nothing on the card shifts. A
+  // session waiting on the user says so in its own colour and holds still —
+  // "Working" is only for an agent that really is.
   const corner = (
     <span className="flex h-[14px] shrink-0 items-center">
       <span className="flex items-center gap-1 text-[10px] font-medium text-[var(--faint)] group-hover:hidden">
-        {busy ? (
+        {awaiting ? (
+          <>
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--attention)]" />
+            <span className="text-[var(--attention)]">Needs you</span>
+          </>
+        ) : busy ? (
           <>
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--busy)]" />
             <span className="text-[var(--busy)]">Working</span>
           </>
         ) : (
-          <span title={`Started ${new Date(startedUnixMs).toLocaleString()}`}>
-            {shortAgo(startedUnixMs, now)}
-          </span>
+          <>
+            {unread && (
+              <span
+                title="New since you last looked"
+                className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
+              />
+            )}
+            <span title={`Started ${new Date(startedUnixMs).toLocaleString()}`}>
+              {shortAgo(startedUnixMs, now)}
+            </span>
+          </>
         )}
       </span>
       {/* Taller than the line it sits on, so it overflows the row's padding
         instead of making the card grow the moment the pointer arrives. */}
       <button
         type="button"
-        title="Close conversation"
+        title="Archive conversation — restore it from Settings → Archived"
         onClick={(e) => {
           // Stops the click reaching the card, which would select the
-          // conversation on its way to closing it.
+          // conversation on its way to archiving it.
           e.stopPropagation();
-          onClose();
+          onArchive();
         }}
         className="hidden h-[18px] cursor-pointer items-center gap-1 rounded-[5px] bg-[var(--bubble)] px-1.5 text-[10px] text-[var(--muted)] group-hover:flex hover:text-[var(--ink)]"
       >
-        <X size={11} strokeWidth={2} />
-        Close
+        <Archive size={11} strokeWidth={2} />
+        Archive
       </button>
     </span>
   );
@@ -614,15 +743,21 @@ function SessionRow({
             />
           </span>
         )}
-        <span
+        <EditableTitle
+          title={title}
+          onRename={onRename}
           className={`min-w-0 flex-1 truncate text-[13px] leading-[17px] ${
             selected
               ? "text-[var(--ink)]"
               : "text-[var(--ink)]/80 group-hover:text-[var(--ink)]"
           }`}
-        >
-          {title}
-        </span>
+          inputClassName="min-w-0 flex-1 rounded-md border border-[var(--accent)]/60 bg-[rgba(0,0,0,0.2)] px-1 text-[13px] leading-[17px] text-[var(--ink)] outline-none"
+        />
+        {phone != null && (
+          <span title={`Started on ${phone}`} className="shrink-0">
+            <Smartphone size={11} strokeWidth={2} className="text-[var(--faint)]" />
+          </span>
+        )}
         {cli && (
           <TerminalSquare size={11} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
         )}

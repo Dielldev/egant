@@ -31,6 +31,9 @@
   --bubble: rgba(255, 255, 255, 0.09);
   --busy: #7d93f0;
   --danger: #e07070;
+  /* A session waiting on the user — a permission, a question, a plan. Amber,
+   * fixed like --busy and --danger: it must read as "you", never as "working". */
+  --attention: #d8a657;
   /* Diff lines in tool cards (Edit/MultiEdit/Write). Fixed like --busy and
    * --danger above rather than redefined per palette. */
   --diff-add-bg: rgba(80, 200, 120, 0.12);

@@ -520,6 +520,11 @@ impl OpencodeTranslator {
                     input: display_input,
                     patterns,
                     always_patterns,
+                    // `opencode run` offers no rules of its own: "always"
+                    // here can only mean `--auto` from now on.
+                    suggestions: Vec::new(),
+                    description: None,
+                    blocked_path: None,
                 });
             }
         }

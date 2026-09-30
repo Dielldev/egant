@@ -1,13 +1,26 @@
-import { Check, Copy, FolderOpen } from "lucide-react";
+import { Check, ChevronDown, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { modShortcut } from "../lib/platform";
-import { permissionSummary, timeLabel, truncate } from "../lib/transcript";
-import type { AgentRequest, Entry, PendingPermission } from "../lib/types";
+import {
+  ASK_USER_QUESTION,
+  askQuestions,
+  describeAlwaysAllow,
+  isCardRequest,
+  isInteractiveTool,
+  permissionSummary,
+  planOf,
+  timeLabel,
+  truncate,
+} from "../lib/transcript";
+import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "../lib/types";
 import { useEgant } from "../store";
 import { Composer } from "./Composer";
 import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
+import { PlanCard } from "./PlanCard";
+import { QuestionCard } from "./QuestionCard";
 import { RunPill } from "./RunPill";
+import { SettledRequest } from "./SettledRequest";
 import { StatusLine } from "./StatusLine";
 import { ToolActivityGroup, ToolCard } from "./ToolCards";
 
@@ -155,6 +168,7 @@ export function TranscriptView() {
   const transcripts = useEgant((s) => s.transcripts);
   const openFolderDialog = useEgant((s) => s.openFolderDialog);
   const answerPermission = useEgant((s) => s.answerPermission);
+  const openFile = useEgant((s) => s.openFile);
   const error = useEgant((s) => s.error);
   const dismissError = useEgant((s) => s.dismissError);
 
@@ -194,6 +208,10 @@ export function TranscriptView() {
   const pendingList =
     transcript?.pendingList ??
     (transcript?.pending != null ? [transcript.pending] : []);
+  // A question or a plan is the agent asking the user something, not asking
+  // leave to act: each gets its own card.
+  const cardRequests = pendingList.filter(isCardRequest);
+  const tableRequests = pendingList.filter((p) => !isCardRequest(p));
 
   // The status line at the tail of the transcript covers the whole turn — the
   // gap before the first token included — so there is never a stretch of the
@@ -370,9 +388,27 @@ export function TranscriptView() {
             let i = 0;
             while (i < entries.length) {
               const entry = entries[i]!;
+              // A question or a plan stands on its own rather than folding
+              // into the activity around it: settled, it is a record of what
+              // was asked and answered; still open, it is the card below.
+              if (entry.kind === "tool" && isInteractiveTool(entry.name)) {
+                nodes.push(
+                  <SettledRequest
+                    key={i}
+                    entry={entry}
+                    onOpenPlan={(path) => openFile(active.id, path, path.split("/").pop() ?? path)}
+                  />,
+                );
+                i++;
+                continue;
+              }
               if (entry.kind === "tool") {
                 let j = i + 1;
-                while (j < entries.length && entries[j]!.kind === "tool") {
+                while (
+                  j < entries.length &&
+                  entries[j]!.kind === "tool" &&
+                  !isInteractiveTool((entries[j] as Extract<Entry, { kind: "tool" }>).name)
+                ) {
                   j++;
                 }
                 nodes.push(
@@ -415,12 +451,28 @@ export function TranscriptView() {
             }
             return nodes;
           })()}
-          {pendingList.length > 0 && (
+          {cardRequests.map((pending) =>
+            pending.toolName === ASK_USER_QUESTION ? (
+              <QuestionCard
+                key={pending.requestId}
+                questions={askQuestions(pending.input)}
+                onAnswer={(reply) => void answerPermission(active.id, pending.requestId, reply)}
+              />
+            ) : (
+              <PlanCard
+                key={pending.requestId}
+                {...planOf(pending.input)}
+                onAnswer={(reply) => void answerPermission(active.id, pending.requestId, reply)}
+                onOpenPlan={(path) => openFile(active.id, path, path.split("/").pop() ?? path)}
+              />
+            ),
+          )}
+          {tableRequests.length > 0 && (
             <PermissionTable
-              items={pendingList}
-              onAnswer={(requestId, decision) =>
-                void answerPermission(active.id, requestId, decision)
-              }
+              items={tableRequests}
+              agent={active.agent}
+              cwd={active.cwd}
+              onAnswer={(requestId, reply) => void answerPermission(active.id, requestId, reply)}
             />
           )}
           {/* Trailing the transcript, the way Claude Code puts it: directly
@@ -719,15 +771,21 @@ function CopyButton({ text }: { text: string }) {
 }
 
 /** One table row per outstanding request, like other agent apps: what the
- * agent wants, the exact resource, and Allow once / Allow always / Deny.
- * Allow on a turn-based wire (opencode) retries the turn with auto-approve;
- * on a live wire (Claude) it answers mid-turn. Deny just dismisses. */
+ * agent wants, the exact resource, and Allow once / Always allow / Deny.
+ * "Always allow" says what it saves: the rule the CLI suggested (Claude) —
+ * never a switch of mode — or, on opencode, which has no rules, that it stops
+ * asking in this chat. Allow on a turn-based wire (opencode) retries the turn
+ * with auto-approve; on a live wire (Claude) it answers mid-turn. */
 function PermissionTable({
   items,
+  agent,
+  cwd,
   onAnswer,
 }: {
   items: PendingPermission[];
-  onAnswer: (requestId: string, decision: "allow" | "allow-always" | "deny") => void;
+  agent: string;
+  cwd: string;
+  onAnswer: (requestId: string, reply: PermissionReply) => void;
 }) {
   return (
     <div className="composer flex w-full flex-col gap-2 rounded-xl p-3">
@@ -741,57 +799,140 @@ function PermissionTable({
       </div>
       <div className="flex w-full flex-col gap-1.5">
         {items.map((pending) => (
-          <div
+          <PermissionRow
             key={pending.requestId}
-            className="flex w-full flex-col gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5"
-          >
-            <div className="flex items-center gap-2">
-              <span className="shrink-0 rounded-md bg-[var(--bubble)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--ink)]">
-                {pending.toolName}
-              </span>
-              <span className="flex-1 truncate text-xs text-[var(--muted)]">
-                {truncate(permissionSummary(pending.input), 200)}
-              </span>
-            </div>
-            {(pending.patterns?.length > 0 || pending.alwaysPatterns?.length > 0) && (
-              <div className="font-mono text-[11px] text-[var(--faint)]">
-                {[...(pending.patterns ?? []), ...(pending.alwaysPatterns ?? [])]
-                  .filter((p, i, all) => p && all.indexOf(p) === i)
-                  .slice(0, 3)
-                  .join("  ·  ")}
-              </div>
-            )}
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => onAnswer(pending.requestId, "allow")}
-                className="cursor-pointer rounded-full bg-[#f2f2f5] px-3 py-1 text-xs text-[#0c0c0e] hover:opacity-85"
-              >
-                Allow once
-              </button>
-              <button
-                type="button"
-                title={
-                  pending.alwaysPatterns?.length > 0
-                    ? `Remember ${pending.alwaysPatterns.join(", ")}`
-                    : "Remember this approval for the rest of the run"
-                }
-                onClick={() => onAnswer(pending.requestId, "allow-always")}
-                className="cursor-pointer rounded-full bg-[var(--bubble)] px-3 py-1 text-xs text-[var(--ink)] hover:opacity-85"
-              >
-                Allow always
-              </button>
-              <button
-                type="button"
-                onClick={() => onAnswer(pending.requestId, "deny")}
-                className="cursor-pointer rounded-full bg-transparent px-3 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
-              >
-                Deny
-              </button>
-            </div>
-          </div>
+            pending={pending}
+            agent={agent}
+            cwd={cwd}
+            onAnswer={(reply) => onAnswer(pending.requestId, reply)}
+          />
         ))}
       </div>
+    </div>
+  );
+}
+
+function PermissionRow({
+  pending,
+  agent,
+  cwd,
+  onAnswer,
+}: {
+  pending: PendingPermission;
+  agent: string;
+  cwd: string;
+  onAnswer: (reply: PermissionReply) => void;
+}) {
+  const [denying, setDenying] = useState(false);
+  const [note, setNote] = useState("");
+  const always = describeAlwaysAllow(pending, agent);
+  // A note for the agent and "stop the turn" need a live channel to ride:
+  // opencode's denial has already happened by the time the row shows.
+  const live = agent !== "opencode";
+  const resource = permissionSummary(pending.input);
+  const description = pending.description?.trim() || null;
+  const root = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  const outside =
+    pending.blockedPath && !pending.blockedPath.startsWith(root) ? pending.blockedPath : null;
+
+  const deny = (stop: boolean) =>
+    onAnswer({ decision: "deny", feedback: note.trim() || undefined, stop });
+
+  return (
+    <div className="flex w-full flex-col gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 rounded-md bg-[var(--bubble)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--ink)]">
+          {pending.toolName}
+        </span>
+        <span className="flex-1 truncate text-xs text-[var(--muted)]" title={resource}>
+          {truncate(description ?? resource, 200)}
+        </span>
+      </div>
+      {description && (
+        <div className="truncate font-mono text-[11px] text-[var(--faint)]" title={resource}>
+          {truncate(resource, 300)}
+        </div>
+      )}
+      {outside && (
+        <div className="truncate text-[11px] text-[var(--faint)]" title={outside}>
+          Outside this project: <span className="font-mono">{outside}</span>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onAnswer({ decision: "allow" })}
+          className="cursor-pointer rounded-full bg-[#f2f2f5] px-3 py-1 text-xs text-[#0c0c0e] hover:opacity-85"
+        >
+          Allow once
+        </button>
+        {always && (
+          <button
+            type="button"
+            title={always.detail}
+            onClick={() => onAnswer({ decision: "allow-always" })}
+            className="max-w-[320px] cursor-pointer truncate rounded-full bg-[var(--bubble)] px-3 py-1 text-xs text-[var(--ink)] hover:opacity-85"
+          >
+            {always.label}
+          </button>
+        )}
+        <span className="flex items-center">
+          <button
+            type="button"
+            onClick={() => onAnswer({ decision: "deny" })}
+            className="cursor-pointer rounded-full bg-transparent py-1 pr-1 pl-3 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
+          >
+            Deny
+          </button>
+          {live && (
+            <button
+              type="button"
+              title="Deny with a note, or stop the turn"
+              aria-expanded={denying}
+              onClick={() => setDenying((v) => !v)}
+              className="cursor-pointer rounded-full p-1 text-[var(--faint)] hover:text-[var(--ink)]"
+            >
+              <ChevronDown
+                size={12}
+                strokeWidth={2}
+                className={`transition-transform ${denying ? "rotate-180" : ""}`}
+              />
+            </button>
+          )}
+        </span>
+      </div>
+      {denying && live && (
+        <div className="flex flex-col gap-1.5">
+          <input
+            autoFocus
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) deny(false);
+              if (e.key === "Escape") setDenying(false);
+            }}
+            placeholder="Tell Claude what to do instead…"
+            className="w-full rounded-md border border-[var(--border)] bg-[rgba(0,0,0,0.15)] px-2 py-1.5 text-xs text-[var(--ink)] outline-none placeholder:text-[var(--faint)] focus:border-[var(--accent)]"
+          />
+          <div className="flex justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => deny(false)}
+              className="cursor-pointer rounded-full bg-[var(--bubble)] px-3 py-1 text-xs text-[var(--ink)] hover:opacity-85"
+            >
+              {note.trim() ? "Deny with note" : "Deny"}
+            </button>
+            <button
+              type="button"
+              title="Refuse and end this turn, the way Stop does"
+              onClick={() => deny(true)}
+              className="cursor-pointer rounded-full bg-transparent px-3 py-1 text-xs text-[var(--danger)] hover:bg-[var(--hover)]"
+            >
+              Deny &amp; stop
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

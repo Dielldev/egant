@@ -10,6 +10,7 @@ import type {
   AgentModel,
   AgentStatus,
   AgentUpdate,
+  ArchivedSession,
   CheckoutPlan,
   ClaudeUsage,
   CloseResult,
@@ -26,7 +27,9 @@ import type {
   HistoryPage,
   MobilePairing,
   MobileStatus,
+  PermissionReply,
   PrDetail,
+  SendResult,
   PullRequest,
   RepoRef,
   RepoStatus,
@@ -82,6 +85,25 @@ export const api = {
     traced("close_session", `id=${id}`, () =>
       invoke<CloseResult>("close_session", { id, force }),
     ),
+  /** Takes a session out of the window but keeps it on disk (Settings →
+   * Archived), its worktree untouched. */
+  archiveSession: (id: number) =>
+    traced("archive_session", `id=${id}`, () => invoke<WindowState>("archive_session", { id })),
+  /** Renames a session; resolves to the title as saved (whitespace
+   * collapsed). Nothing generated replaces it afterwards. */
+  renameSession: (id: number, title: string) =>
+    traced("rename_session", `id=${id}`, () => invoke<string>("rename_session", { id, title })),
+  /** Brings an archived session back and selects it. */
+  unarchiveSession: (id: number) =>
+    traced("unarchive_session", `id=${id}`, () => invoke<WindowState>("unarchive_session", { id })),
+  listArchivedSessions: () =>
+    traced("list_archived_sessions", "", () => invoke<ArchivedSession[]>("list_archived_sessions")),
+  /** Deletes an archived session for good; its worktree goes the way a closed
+   * session's does (kept with a notice when it holds work, unless `force`). */
+  deleteArchivedSession: (id: number, force?: boolean) =>
+    traced("delete_archived_session", `id=${id}`, () =>
+      invoke<CloseResult>("delete_archived_session", { id, force }),
+    ),
   /** Removes a worktree that closing its session decided to keep. Takes the
    * worktree's own fields because the session that owned it is already gone. */
   discardWorktree: (worktree: WorktreeInfo) =>
@@ -100,19 +122,32 @@ export const api = {
    * not a `@path` mention left for the model to go read itself. */
   sendMessage: (id: number, text: string, images?: string[]) =>
     traced("send_message", `id=${id} ${preview(text)}`, () =>
-      invoke<string | null>("send_message", { id, text, images }),
+      invoke<SendResult>("send_message", { id, text, images }),
+    ),
+  /** Takes a queued message back out; resolves to its text, or `null` when it
+   * already went out. */
+  unqueueMessage: (id: number, queuedId: number) =>
+    traced("unqueue_message", `id=${id} queued=${queuedId}`, () =>
+      invoke<string | null>("unqueue_message", { id, queuedId }),
+    ),
+  /** Sends a queued message now, stopping the running turn if there is one. */
+  sendQueuedNow: (id: number, queuedId: number) =>
+    traced("send_queued_now", `id=${id} queued=${queuedId}`, () =>
+      invoke<SendResult>("send_queued_now", { id, queuedId }),
     ),
   interruptSession: (id: number) =>
     traced("interrupt_session", `id=${id}`, () => invoke<void>("interrupt_session", { id })),
-  answerPermission: (id: number, requestId: string, decision: string) =>
-    traced("answer_permission", `id=${id} decision=${decision}`, () =>
+  /** Answers one outstanding request; resolves to the session's new mode when
+   * the answer changed it (opencode's "always", an approved plan). */
+  answerPermission: (id: number, requestId: string, reply: PermissionReply) =>
+    traced("answer_permission", `id=${id} decision=${reply.decision}`, () =>
       // Tauri matches invoke payload keys against the command's Rust argument
       // names camelCased (`request_id` -> `requestId`); sending the
       // snake_case key here left the argument unbound on every call, so the
       // backend always fell through to "no decision" and never actually
       // answered a permission request — this is what looked like Allow/Deny
       // silently doing nothing.
-      invoke<string | null>("answer_permission", { id, requestId, decision }),
+      invoke<string | null>("answer_permission", { id, requestId, ...reply }),
     ),
   cyclePermissionMode: (id: number) =>
     traced("cycle_permission_mode", `id=${id}`, () =>

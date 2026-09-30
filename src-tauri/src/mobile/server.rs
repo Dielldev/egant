@@ -858,9 +858,12 @@ async fn send_message(
         text.len()
     );
     with_state(&ctx, move |app, state| {
-        let title = service::send_message(app, state, id, text, Vec::new(), &client.origin())
+        let outcome = service::send_message(app, state, id, text, Vec::new(), &client.origin())
             .map_err(ApiError::from_service)?;
-        Ok(Json(json!({ "title": title })))
+        // `queued`: the agent was busy, and the message waits for its turn.
+        Ok(Json(
+            json!({ "title": outcome.title, "queued": outcome.queued }),
+        ))
     })
     .await
 }
@@ -1063,7 +1066,7 @@ async fn create_session(
         // out is the phone's to try again in it, not a failed start.
         let (title, error) = match service::send_message(app, state, id, text, Vec::new(), &origin)
         {
-            Ok(title) => (title, None),
+            Ok(outcome) => (outcome.title, None),
             Err(error) => (None, Some(error)),
         };
         Ok(Json(json!({
@@ -1179,9 +1182,23 @@ fn check_message(text: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// One answer to a permission request, as the phone sends it: `decision`
+/// plus the fields that decision takes (see `PermissionAnswer::from_parts`).
+/// The answers' content is checked where the question is known — against the
+/// question actually asked, with the CLI's own size limits.
 #[derive(Deserialize)]
 struct PermissionBody {
     decision: String,
+    #[serde(default)]
+    answers: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    notes: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    feedback: Option<String>,
+    #[serde(default)]
+    stop: Option<bool>,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 async fn answer_permission(
@@ -1191,15 +1208,19 @@ async fn answer_permission(
     Path((id, request_id)): Path<(u64, String)>,
     Json(body): Json<PermissionBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let answer = PermissionAnswer::from_str_name(&body.decision).ok_or_else(|| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "decision must be allow, allow-always or deny",
-        )
-    })?;
+    let answer = PermissionAnswer::from_parts(
+        &body.decision,
+        body.answers,
+        body.notes,
+        body.feedback,
+        body.stop,
+        body.mode.as_deref(),
+    )
+    .map_err(|error| ApiError::new(StatusCode::BAD_REQUEST, error))?;
     log::info!(
-        "mobile: {} answered permission {request_id} in session {id}: {answer:?}",
-        device.name
+        "mobile: {} answered permission {request_id} in session {id}: {}",
+        device.name,
+        answer.kind()
     );
     with_state(&ctx, move |app, state| {
         let mode =

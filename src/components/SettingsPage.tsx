@@ -41,7 +41,8 @@ import type { NotifyKind } from "../lib/notify";
 import { isMac, modShortcut, windowBarPadClass } from "../lib/platform";
 import { shouldOpenUpward } from "../lib/popover";
 import { ACCENTS, DARK_THEMES, LIGHT_THEMES } from "../lib/themes";
-import type { AgentStatus } from "../lib/types";
+import { ageLabel } from "../lib/transcript";
+import type { AgentStatus, ArchivedSession } from "../lib/types";
 import type { ThemeName } from "cuelume";
 import { useEgant } from "../store";
 import type { BgEffect, GlassMode, SettingsSection } from "../store";
@@ -65,6 +66,7 @@ import {
   PhoneConnectDialog,
   usePhoneAccess,
 } from "./PhoneAccess";
+import { AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 
 /** Settings: the window behind the "Local only" profile. A left rail of
@@ -167,7 +169,7 @@ export function SettingsPage() {
           {hist[index] === "notifications" && <NotificationsSection />}
           {hist[index] === "shortcuts" && <ShortcutsSection />}
           {hist[index] === "appshots" && <Placeholder text="App snapshots will live here." />}
-          {hist[index] === "archived" && <Placeholder text="Archived sessions will live here." />}
+          {hist[index] === "archived" && <ArchivedSection />}
         </div>
       </main>
     </div>
@@ -1331,6 +1333,152 @@ function ShortcutsSection() {
       </Card>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Archived sessions
+// ---------------------------------------------------------------------------
+
+/** Conversations archived from the sidebar's corner button: out of the
+ * window, still on disk. Restore brings one back, selected and ready to
+ * resume; Delete forgets it for good, asking first, and gives back the
+ * worktree it ran in the way closing used to. */
+function ArchivedSection() {
+  const unarchiveSession = useEgant((s) => s.unarchiveSession);
+  const deleteArchivedSession = useEgant((s) => s.deleteArchivedSession);
+  const closeSettings = useEgant((s) => s.closeSettings);
+  const storeError = useEgant((s) => s.error);
+  const now = useNow(60_000);
+  const [rows, setRows] = useState<ArchivedSession[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [failed, setFailed] = useState<{ id: number; message: string } | null>(null);
+  const [confirming, setConfirming] = useState<number | null>(null);
+  const [working, setWorking] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listArchivedSessions()
+      .then((list) => {
+        if (alive) setRows(list);
+      })
+      .catch((error: unknown) => {
+        if (alive) setLoadError(String(error));
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const restore = async (row: ArchivedSession) => {
+    setWorking(row.id);
+    setFailed(null);
+    const ok = await unarchiveSession(row.id);
+    setWorking(null);
+    if (ok) closeSettings();
+    else setFailed({ id: row.id, message: useEgant.getState().error ?? storeError ?? "Couldn't restore it." });
+  };
+
+  const remove = async (row: ArchivedSession) => {
+    setWorking(row.id);
+    setFailed(null);
+    const ok = await deleteArchivedSession(row.id);
+    setWorking(null);
+    setConfirming(null);
+    if (ok) setRows((prev) => (prev ?? []).filter((r) => r.id !== row.id));
+    else setFailed({ id: row.id, message: useEgant.getState().error ?? "Couldn't delete it." });
+  };
+
+  return (
+    <div>
+      <SectionHead
+        title="Archived sessions"
+        count={rows && rows.length > 0 ? rows.length : undefined}
+        sub="Conversations you archived from the sidebar. Restore one to carry on where it left off, or delete it for good. A worktree it ran in is kept until you do."
+      />
+      {rows == null ? (
+        <Placeholder text={loadError ?? "Loading…"} />
+      ) : rows.length === 0 ? (
+        <Placeholder text="Nothing archived. Archive a conversation from its corner in the sidebar." />
+      ) : (
+        <Card>
+          {rows.map((row) => (
+            <div key={row.id} className="flex flex-col gap-1.5 px-4 py-3">
+              <div className="flex items-center gap-3.5">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)]">
+                  <ProviderGlyph
+                    provider={AGENT_PROVIDER[row.agent] ?? row.agent}
+                    size={15}
+                    color={AGENT_ACCENT[row.agent]}
+                  />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-semibold text-[var(--ink)]" title={row.title}>
+                    {row.title}
+                  </div>
+                  <div className="truncate text-[12px] text-[var(--muted)]" title={row.projectPath}>
+                    {row.projectName}
+                    {row.branch ? ` · ${row.branch}` : ""}
+                    {row.kind === "cli" ? " · CLI" : ""}
+                    {` · archived ${archivedAgo(row.archivedAtMs, now)}`}
+                  </div>
+                </div>
+                {confirming === row.id ? (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span className="text-[12px] text-[var(--muted)]">Delete for good?</span>
+                    <button
+                      type="button"
+                      disabled={working === row.id}
+                      onClick={() => setConfirming(null)}
+                      className="cursor-pointer rounded-md px-2 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={working === row.id}
+                      onClick={() => void remove(row)}
+                      className="cursor-pointer rounded-md px-2 py-1 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--hover)] disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={working === row.id}
+                      onClick={() => void restore(row)}
+                      className="cursor-pointer rounded-md bg-[var(--bubble)] px-2.5 py-1 text-[12px] text-[var(--ink)] hover:opacity-85 disabled:opacity-50"
+                    >
+                      Restore
+                    </button>
+                    <button
+                      type="button"
+                      disabled={working === row.id}
+                      onClick={() => setConfirming(row.id)}
+                      className="cursor-pointer rounded-md px-2 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--danger)]"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+              {failed?.id === row.id && (
+                <div className="pl-[50px] text-[12px] text-[var(--danger)]">{failed.message}</div>
+              )}
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/** `just now`, `5m ago`, `2d ago` — when a session went to the archive. */
+function archivedAgo(atMs: number, nowMs: number): string {
+  const age = ageLabel(atMs, nowMs);
+  return age === "now" ? "just now" : `${age} ago`;
 }
 
 function Placeholder({ text }: { text: string }) {

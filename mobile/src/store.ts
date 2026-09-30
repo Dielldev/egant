@@ -24,6 +24,7 @@ import type {
   DecisionRequest,
   DecisionResponse,
   PermissionDecision,
+  PermissionReply,
   SyncEnvelope,
   TranscriptState,
 } from "@egant/lib/types";
@@ -127,7 +128,11 @@ interface MobileStore {
   loadOlder: (id: number) => Promise<void>;
   send: (id: number, text: string) => Promise<void>;
   interrupt: (id: number) => Promise<void>;
-  answerPermission: (id: number, requestId: string, decision: PermissionDecision) => Promise<void>;
+  answerPermission: (
+    id: number,
+    requestId: string,
+    reply: PermissionReply | PermissionDecision,
+  ) => Promise<void>;
   answerDecision: (id: number, request: DecisionRequest, response: DecisionResponse) => Promise<void>;
   navigate: (session: number | null) => void;
   showToast: (text: string) => void;
@@ -521,20 +526,29 @@ export const useMobile = create<MobileStore>()((set, get) => {
     send: async (id, text) => {
       if (!text.trim()) return;
       // Echoed at once, the way the desktop does; the Mac's copy of the same
-      // message comes back tagged as this page's and is skipped.
+      // message comes back tagged as this page's and is skipped. Not while
+      // the agent is busy: the Mac queues it then, and it arrives as the
+      // app's own message once the running turn ends.
       const transcript = get().transcripts[id];
-      if (transcript) {
+      const busy = transcript != null && transcript.state !== "idle";
+      if (transcript && !busy) {
         set({
           transcripts: {
             ...get().transcripts,
             [id]: pushUser(transcript, text) as LoadedTranscript,
           },
         });
+        patchSession(id, { busy: true, state: "running", lastActivityMs: Date.now() });
       }
-      patchSession(id, { busy: true, state: "running", lastActivityMs: Date.now() });
       try {
         const reply = await api.send(id, text);
         if (reply.title) patchSession(id, { title: reply.title });
+        if (reply.queued) {
+          get().showToast("Queued — it goes out when the current turn ends.");
+        } else if (busy) {
+          // The turn ended in between and it went straight out, unechoed.
+          void get().openTranscript(id, true);
+        }
       } catch (error) {
         get().showToast(message(error));
         // The echo above may not have happened on the Mac: take its word.
@@ -550,7 +564,9 @@ export const useMobile = create<MobileStore>()((set, get) => {
       }
     },
 
-    answerPermission: async (id, requestId, decision) => {
+    answerPermission: async (id, requestId, replyOrDecision) => {
+      const reply: PermissionReply =
+        typeof replyOrDecision === "string" ? { decision: replyOrDecision } : replyOrDecision;
       const transcript = get().transcripts[id];
       if (transcript) {
         set({
@@ -561,8 +577,8 @@ export const useMobile = create<MobileStore>()((set, get) => {
         });
       }
       try {
-        const reply = await api.answerPermission(id, requestId, decision);
-        if (reply.permissionMode) patchSession(id, { permissionMode: reply.permissionMode });
+        const answered = await api.answerPermission(id, requestId, reply);
+        if (answered.permissionMode) patchSession(id, { permissionMode: answered.permissionMode });
       } catch (error) {
         get().showToast(message(error));
         void get().openTranscript(id, true);

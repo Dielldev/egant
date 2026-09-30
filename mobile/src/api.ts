@@ -8,6 +8,7 @@ import type {
   ClaudeUsage,
   DecisionResponse,
   PendingPermission,
+  PermissionReply,
   SessionUsage,
   TranscriptDto,
   TurnState,
@@ -230,8 +231,13 @@ export const api = {
       "GET",
       `/api/v1/sessions/${id}/transcript?limit=${limit}${before === undefined ? "" : `&before=${before}`}`,
     ),
+  /** `queued`: the agent was busy, and the message waits for the turn to end. */
   send: (id: number, text: string) =>
-    request<{ title: string | null }>("POST", `/api/v1/sessions/${id}/messages`, { text }),
+    request<{ title: string | null; queued?: boolean }>(
+      "POST",
+      `/api/v1/sessions/${id}/messages`,
+      { text },
+    ),
   interrupt: (id: number) => request<{ ok: boolean }>("POST", `/api/v1/sessions/${id}/interrupt`),
   runInfo: (id: number) => request<RunInfo>("GET", `/api/v1/sessions/${id}/run`),
   /** A link, good once and for a minute, that opens the chat's running site —
@@ -268,11 +274,13 @@ export const api = {
     }),
   setMode: (id: number, mode: string) =>
     request<{ permissionMode: string }>("POST", `/api/v1/sessions/${id}/mode`, { mode }),
-  answerPermission: (id: number, requestId: string, decision: "allow" | "allow-always" | "deny") =>
+  /** Answers one outstanding request: a bare decision, or a question's
+   * answers / a plan's verdict (see `PermissionReply`). */
+  answerPermission: (id: number, requestId: string, reply: PermissionReply) =>
     request<{ permissionMode: string | null }>(
       "POST",
       `/api/v1/sessions/${id}/permissions/${encodeURIComponent(requestId)}`,
-      { decision },
+      reply,
     ),
   answerDecision: (id: number, decisionId: string, response: DecisionResponse, text: string) =>
     request<{ title: string | null }>(

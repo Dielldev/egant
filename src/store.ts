@@ -30,9 +30,14 @@ import type {
   DiffScope,
   GitChange,
   GitChangeStatus,
+  PermissionDecision,
+  PermissionReply,
   RepoRef,
   SessionEventPayload,
+  QueuedMessage,
   SessionInfo,
+  SessionQueuePayload,
+  SessionTitledPayload,
   SyncEnvelope,
   TranscriptDto,
   TranscriptState,
@@ -53,14 +58,17 @@ export type SettingsSection =
   | "archived";
 
 /** Something the window has to say that the user didn't ask to see: a
- * worktree kept back rather than deleted with its session. Not an error — the
- * work was preserved on purpose — so it gets its own channel rather than
- * borrowing the red one. */
+ * worktree kept back rather than deleted with its session, a conversation
+ * just archived. Not an error — nothing went wrong — so it gets its own
+ * channel rather than borrowing the red one. */
 export interface Notice {
   text: string;
   /** Set when the notice is about a kept worktree, which the window then
    * offers to delete after all. */
   worktree: WorktreeInfo | null;
+  /** Set when the notice is about a conversation just archived, which the
+   * window then offers to bring back. */
+  undo?: { sessionId: number } | null;
 }
 
 /** Which side of the repository the next session runs on. `current` is the
@@ -671,6 +679,27 @@ interface EgantStore {
   createSession: (worktree?: WorktreeInfo) => Promise<void>;
   selectSession: (id: number) => Promise<void>;
   closeSession: (id: number) => Promise<void>;
+  /** Each session's queue: messages sent while its agent was busy, waiting
+   * for the turn to end. The backend's; mirrored from what it answers and
+   * from `session-queue`. */
+  queues: Record<number, QueuedMessage[]>;
+  /** Takes a queued message back out; resolves to its text, for the composer
+   * to put back when the user wants to edit it. */
+  unqueueMessage: (id: number, queuedId: number) => Promise<string | null>;
+  /** Sends a queued message now — stopping the running turn if need be. */
+  sendQueuedNow: (id: number, queuedId: number) => Promise<void>;
+  /** Renames a session to what the user typed. Shown at once; put back if
+   * the backend refuses it. */
+  renameSession: (id: number, title: string) => Promise<void>;
+  /** Out of the window, kept on disk — what the sidebar's corner button does,
+   * with Undo on the notice that follows. */
+  archiveSession: (id: number) => Promise<void>;
+  /** Back into the window, selected. Resolves to whether it came back; the
+   * reason it didn't is in `error`. */
+  unarchiveSession: (id: number) => Promise<boolean>;
+  /** Gone for good (Settings → Archived → Delete). Resolves like
+   * `unarchiveSession`. */
+  deleteArchivedSession: (id: number) => Promise<boolean>;
   selectPrevSession: () => Promise<void>;
   selectNextSession: () => Promise<void>;
   /** Send from the launch screen: opens a folder / session first if needed,
@@ -678,7 +707,13 @@ interface EgantStore {
   sendOnLaunch: (text: string, images?: string[]) => Promise<void>;
   send: (id: number, text: string, images?: string[]) => Promise<void>;
   interrupt: (id: number) => Promise<void>;
-  answerPermission: (id: number, requestId: string, decision: string) => Promise<void>;
+  /** Answers one outstanding request — a bare decision, or a reply carrying
+   * what that decision takes (answers, feedback, a mode). */
+  answerPermission: (
+    id: number,
+    requestId: string,
+    reply: PermissionReply | PermissionDecision,
+  ) => Promise<void>;
   /** Answers to `agent_request` entries the transcript fold pulled out of the
    * agent's own text — keyed `${sessionId}:${decisionId}` so a reload or a
    * session switch still shows the card as completed. The backend keeps the
@@ -686,6 +721,11 @@ interface EgantStore {
    * prompt answered on a paired phone shows as answered here too; this map
    * is the window's copy, also kept in localStorage (`loadDecisionResponses`). */
   decisionResponses: Record<string, DecisionResponse>;
+  /** Sessions with news since they were last on screen — a turn that
+   * finished, or a question waiting — while another conversation was open.
+   * This window's own reading, kept in localStorage (`egant.unread`); the
+   * sidebar draws a dot for each. */
+  unread: Record<number, true>;
   answerDecision: (
     sessionId: number,
     decision: DecisionRequest,
@@ -848,6 +888,29 @@ function loadDecisionResponses(): Record<string, DecisionResponse> {
     return out;
   } catch {
     return {};
+  }
+}
+
+const UNREAD_KEY = "egant.unread";
+
+function loadUnread(): Record<number, true> {
+  try {
+    const raw = localStorage.getItem(UNREAD_KEY);
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(ids)) return {};
+    const unread: Record<number, true> = {};
+    for (const id of ids) if (typeof id === "number") unread[id] = true;
+    return unread;
+  } catch {
+    return {};
+  }
+}
+
+function saveUnread(unread: Record<number, true>): void {
+  try {
+    localStorage.setItem(UNREAD_KEY, JSON.stringify(Object.keys(unread).map(Number)));
+  } catch {
+    // keep the in-memory copy
   }
 }
 
@@ -1144,6 +1207,18 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ transcripts: next });
     }
     if (snapshot.activeSession != null) void get().ensureTranscript(snapshot.activeSession);
+    // On screen is read — however it got there (a click, ⌘↑/↓, search, a
+    // new session) — and a session that no longer exists has nothing unread.
+    const unread = get().unread;
+    const stale = Object.keys(unread)
+      .map(Number)
+      .filter((id) => id === snapshot.activeSession || !alive.has(id));
+    if (stale.length > 0) {
+      const next = { ...unread };
+      for (const id of stale) delete next[id];
+      set({ unread: next });
+      saveUnread(next);
+    }
     // "All projects" stays as it is; an explicit project filter follows a
     // folder that was just added, so the first send lands in a list that shows
     // it instead of a filter that hides the new session.
@@ -1197,7 +1272,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
   /** Adopts a transcript snapshot, and the decision answers the backend keeps
    * with it — which may have been given on a paired phone. */
   function adoptTranscript(id: number, dto: TranscriptDto): void {
-    set({ transcripts: { ...get().transcripts, [id]: fromDto(dto) } });
+    set({
+      transcripts: { ...get().transcripts, [id]: fromDto(dto) },
+      queues: { ...get().queues, [id]: dto.queued ?? [] },
+    });
     const answered = Object.entries(dto.decisionResponses ?? {}).filter(
       ([decisionId]) => !get().decisionResponses[`${id}:${decisionId}`],
     );
@@ -1226,7 +1304,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         if (prev) {
           set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, envelope.payload.text) } });
         }
-        patchSession(id, { busy: true });
+        patchSession(id, { busy: true, state: "running" });
         break;
       case "permissions": {
         const { state, pending } = envelope.payload;
@@ -1241,7 +1319,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
           };
           set({ transcripts: { ...get().transcripts, [id]: next } });
         }
-        patchSession(id, { busy: state !== "idle" });
+        patchSession(id, {
+          busy: state !== "idle",
+          state,
+          pendingCount: pending.length,
+        });
         break;
       }
       case "decision": {
@@ -1325,10 +1407,24 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // The session rows derive their live Badges from the same fold.
     const patch: Partial<SessionInfo> = {
       busy: next.state !== "idle",
+      state: next.state,
+      pendingCount: (next.pendingList ?? []).length,
       model: next.model,
       totalCostUsd: next.totalCostUsd,
     };
+    // News for a conversation that isn't on screen: it finished, stalled on
+    // the user, or died. The open one is read by definition.
+    const news =
+      event.type === "turn_ended" || event.type === "permission_request" || event.type === "exited";
+    if (news && sessionId !== get().snapshot?.activeSession && !get().unread[sessionId]) {
+      const unread = { ...get().unread, [sessionId]: true as const };
+      set({ unread });
+      saveUnread(unread);
+    }
     if (event.type === "exited") patch.ended = true;
+    // The agent's own word on its mode — after an approved plan, or Claude
+    // entering plan mode by itself — so the chip never names a stale one.
+    if (event.type === "mode_changed") patch.permissionMode = event.mode;
     patchSession(sessionId, patch);
     // The agent has just stopped editing: whatever the Changes tab is showing
     // is now out of date. Cheaper and steadier than watching the filesystem,
@@ -1870,6 +1966,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
     },
     decisionResponses: loadDecisionResponses(),
+    unread: loadUnread(),
     starredModels: loadStarred(),
     toggleStarred: (agent, modelId) => {
       const key = starKey(agent, modelId);
@@ -2011,6 +2108,14 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const unlistenRenames = await listen<WorktreeRenamedPayload>("worktree-renamed", (e) =>
         onWorktreeRenamed(e.payload),
       );
+      // A title a small model wrote after a session's first turn.
+      const unlistenTitles = await listen<SessionTitledPayload>("session-titled", (e) =>
+        patchSession(e.payload.sessionId, { title: e.payload.title }),
+      );
+      // The app sent the next queued message; what is left waiting.
+      const unlistenQueues = await listen<SessionQueuePayload>("session-queue", (e) =>
+        set({ queues: { ...get().queues, [e.payload.sessionId]: e.payload.queued } }),
+      );
       // What a paired phone does to a session: its messages, its answers.
       const unlistenSync = await listen<SyncEnvelope>("session-sync", (e) =>
         onSessionSync(e.payload),
@@ -2019,6 +2124,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
       return () => {
         unlistenEvents();
         unlistenRenames();
+        unlistenTitles();
+        unlistenQueues();
         unlistenSync();
       };
     },
@@ -2155,6 +2262,90 @@ export const useEgant = create<EgantStore>()((set, get) => {
         if (result.notice) set({ notice: { text: result.notice, worktree: result.kept } });
       } catch (error) {
         fail(set, error);
+      }
+    },
+
+    queues: {},
+
+    unqueueMessage: async (id, queuedId) => {
+      const current = get().queues[id] ?? [];
+      set({ queues: { ...get().queues, [id]: current.filter((q) => q.id !== queuedId) } });
+      try {
+        return await api.unqueueMessage(id, queuedId);
+      } catch (error) {
+        set({ queues: { ...get().queues, [id]: current } });
+        fail(set, error);
+        return null;
+      }
+    },
+
+    sendQueuedNow: async (id, queuedId) => {
+      try {
+        // Stopping the turn to send this is the user's own doing: its end is
+        // no news worth a sound.
+        if ((get().transcripts[id]?.state ?? "idle") !== "idle") noteInterrupt(id);
+        const result = await api.sendQueuedNow(id, queuedId);
+        set({ queues: { ...get().queues, [id]: result.queue } });
+        if (!result.queued) adoptTranscript(id, await api.getTranscript(id));
+        if (result.title) patchSession(id, { title: result.title });
+      } catch (error) {
+        fail(set, error);
+      }
+    },
+
+    renameSession: async (id, title) => {
+      const before = get().snapshot?.sessions.find((s) => s.id === id)?.title;
+      const wanted = title.replace(/\s+/g, " ").trim();
+      if (!wanted || wanted === before) return;
+      patchSession(id, { title: wanted });
+      try {
+        patchSession(id, { title: await api.renameSession(id, wanted) });
+      } catch (error) {
+        if (before !== undefined) patchSession(id, { title: before });
+        fail(set, error);
+      }
+    },
+
+    archiveSession: async (id) => {
+      const title = get().snapshot?.sessions.find((s) => s.id === id)?.title ?? "conversation";
+      try {
+        applySnapshot(await api.archiveSession(id));
+        set({ notice: { text: `Archived “${title}”`, worktree: null, undo: { sessionId: id } } });
+      } catch (error) {
+        fail(set, error);
+      }
+    },
+
+    unarchiveSession: async (id) => {
+      try {
+        const snapshot = await api.unarchiveSession(id);
+        // Brought back to be looked at: off the launch screen, and into a
+        // list that shows it.
+        set({ startingNewSession: false, startingNewSessionWorktree: null });
+        applySnapshot(snapshot);
+        const session = snapshot.sessions.find((s) => s.id === id);
+        const listed = get().sidebarProject;
+        if (session && listed != null && listed !== session.projectId) {
+          get().setSidebarProject(session.projectId);
+        }
+        // The notice that offered this has done its job.
+        if (get().notice?.undo?.sessionId === id) set({ notice: null });
+        return true;
+      } catch (error) {
+        fail(set, error);
+        return false;
+      }
+    },
+
+    deleteArchivedSession: async (id) => {
+      try {
+        const result = await api.deleteArchivedSession(id);
+        applySnapshot(result.state);
+        if (result.notice) set({ notice: { text: result.notice, worktree: result.kept } });
+        return true;
+      } catch (error) {
+        fail(set, error);
+        return false;
       }
     },
 
@@ -2296,13 +2487,26 @@ export const useEgant = create<EgantStore>()((set, get) => {
       // echo below never flashes empty before the real transcript arrives.
       const echoText =
         text.trim() || (images?.length === 1 ? "Here's an image." : `Here are ${images?.length ?? 0} images.`);
-      // Echo immediately so the message appears on keypress.
+      // Echo immediately so the message appears on keypress — unless the
+      // agent is busy, when the backend queues it rather than dropping the
+      // bubble into the middle of the reply still streaming.
       const prev = get().transcripts[id] ?? emptyTranscript();
-      set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, echoText) } });
-      patchSession(id, { busy: true });
+      const busy = prev.state !== "idle";
+      if (!busy) {
+        set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, echoText) } });
+        patchSession(id, { busy: true, state: "running" });
+      }
       try {
-        const title = await api.sendMessage(id, text, images);
-        if (title) patchSession(id, { title });
+        const result = await api.sendMessage(id, text, images);
+        if (result.title) patchSession(id, { title: result.title });
+        if (result.queued) {
+          set({ queues: { ...get().queues, [id]: result.queue } });
+        } else if (busy) {
+          // The turn ended between the keypress and the send: it went out
+          // at once, with no echo here — take the backend's transcript.
+          adoptTranscript(id, await api.getTranscript(id));
+          patchSession(id, { busy: true, state: "running" });
+        }
       } catch (error) {
         fail(set, error);
       }
@@ -2321,7 +2525,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
     },
 
-    answerPermission: async (id, requestId, decision) => {
+    answerPermission: async (id, requestId, replyOrDecision) => {
+      const reply: PermissionReply =
+        typeof replyOrDecision === "string" ? { decision: replyOrDecision } : replyOrDecision;
+      const decision = reply.decision;
       // Stale rows (already resolved by an earlier click, or a snapshot that
       // arrived mid-answer) carry nothing to send — bail before touching IPC
       // so a double-click can never flash the error bar.
@@ -2336,22 +2543,28 @@ export const useEgant = create<EgantStore>()((set, get) => {
           transcripts: { ...get().transcripts, [id]: resolvePermission(prev, requestId) },
         });
       }
-      // "Allow always" flips the session to bypassPermissions — reflect it
-      // immediately so the mode chip reads the mode the agent runs under,
-      // then reconcile with whatever the backend reports.
-      if (decision === "allow-always") {
-        patchSession(id, { permissionMode: "bypassPermissions" });
-      }
+      // "Deny & stop" ends the turn the way Stop does; the failed turn end it
+      // produces is not news to the person who asked for it.
+      if (decision === "deny" && reply.stop) noteInterrupt(id);
+      // An answer the user wrote — a question's picks, a plan's verdict, a
+      // note for the agent — can be refused for what it says, and then they
+      // need to hear why. A bare Allow or Deny can only fail in transit.
+      const wroteSomething =
+        decision === "answer" || decision === "approve-plan" || reply.feedback != null;
       try {
-        const newMode = await api.answerPermission(id, requestId, decision);
+        // Only opencode's "always" and an approved plan change the mode, and
+        // the backend names the new one — nothing to guess at up front.
+        const newMode = await api.answerPermission(id, requestId, reply);
         if (newMode) patchSession(id, { permissionMode: newMode });
         adoptTranscript(id, await api.getTranscript(id));
       } catch (error) {
-        // Seamless, never red: the click already updated the UI optimistically
-        // and the backend treats already-answered rows as no-ops, so a failure
-        // here is a transport blip, not something to shout about. Re-sync
-        // quietly; the row comes back if the answer never landed.
+        // Otherwise seamless, never red: the click already updated the UI
+        // optimistically and the backend treats already-answered rows as
+        // no-ops, so a failure here is a transport blip, not something to
+        // shout about. Re-sync quietly; the row comes back if the answer
+        // never landed.
         log.error("store", `answer permission failed: ${String(error)}`, error);
+        if (wroteSomething) fail(set, error);
         try {
           adoptTranscript(id, await api.getTranscript(id));
         } catch {

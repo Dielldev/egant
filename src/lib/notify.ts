@@ -24,6 +24,7 @@ import {
 import { play, themes } from "cuelume";
 import type { ThemeName } from "cuelume";
 import { log } from "./logger";
+import { ASK_USER_QUESTION, EXIT_PLAN_MODE } from "./transcript";
 import type { HarnessEvent, TranscriptState } from "./types";
 
 /** The three things a session can tell the user. The names double as the
@@ -191,6 +192,12 @@ export function noticeFor(
     case "permission_request":
       // Several requests can pile up behind one stall: ping for the first.
       if ((before.pendingList ?? []).length > 0) return null;
+      if (event.tool_name === ASK_USER_QUESTION) {
+        return { kind: "input", body: "Has a question for you." };
+      }
+      if (event.tool_name === EXIT_PLAN_MODE) {
+        return { kind: "input", body: "Plan ready for your review." };
+      }
       return { kind: "input", body: `Needs your approval: ${event.tool_name}` };
     case "exited":
       // Closing a session or switching its model never reaches here — the

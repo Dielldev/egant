@@ -223,6 +223,7 @@ mod tests {
             meta: crate::state::SessionMeta {
                 id: 1,
                 title: "t".into(),
+                title_source: crate::state::TitleSource::User,
                 project_id: 0,
                 cwd: "/tmp".into(),
                 branch: None,
@@ -245,6 +246,8 @@ mod tests {
             turn_baseline: None,
             decisions: Default::default(),
             last_activity_ms: 1,
+            queued: Default::default(),
+            flush_next_end: false,
         }
     }
 

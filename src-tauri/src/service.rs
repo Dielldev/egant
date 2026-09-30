@@ -26,8 +26,8 @@ fn entry_count(state: &AppState, id: u64) -> usize {
         .map_or(0, |session| session.transcript.entries.len())
 }
 
-/// Sends a turn (reviving the agent first if it has exited), returning the
-/// session's new title when this turn named it. See [`sessions::send_text`].
+/// Sends a turn (reviving the agent first if it has exited), or queues it
+/// behind the one running. See [`sessions::send_text`].
 pub fn send_message(
     app: &AppHandle,
     state: &mut AppState,
@@ -35,12 +35,12 @@ pub fn send_message(
     text: String,
     images: Vec<PathBuf>,
     origin: &Origin,
-) -> Result<Option<String>, String> {
+) -> Result<sessions::SendOutcome, String> {
     let before = entry_count(state, id);
-    let title = sessions::send_text(app, state, id, text, images)?;
+    let outcome = sessions::send_text(app, state, id, text, images)?;
     sync::transcript_grew(app, state, id, before, origin);
     sync::session_touched(app, state, id, origin);
-    Ok(title)
+    Ok(outcome)
 }
 
 /// Starts a chat session in a project the Mac already has open, in `mode`.
@@ -182,13 +182,14 @@ pub fn answer_decision(
     let before = entry_count(state, id);
     let sent = send_message(app, state, id, text, Vec::new(), origin);
     // `send_text` can decline without an error (a session that ended under
-    // it); only a turn that actually landed counts as the answer going out.
+    // it); only a turn that actually landed — or joined the queue behind the
+    // one running, to go out when it ends — counts as the answer going out.
     let landed = entry_count(state, id) > before;
     match sent {
-        Ok(title) if landed => {
+        Ok(outcome) if landed || outcome.queued => {
             // `send_text` already saved the session, answer included.
             sync::decision(app, id, decision_id, &response, origin);
-            Ok(DecisionOutcome::Sent(title))
+            Ok(DecisionOutcome::Sent(outcome.title))
         }
         outcome => {
             if let Some(session) = state.sessions.get_mut(&id) {

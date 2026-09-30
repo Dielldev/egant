@@ -22,12 +22,16 @@ use egant_harness::{
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::dto::{EventDto, SessionEventPayload, WorktreeRenamedPayload};
-use crate::state::{AppState, SessionMeta};
+use crate::dto::{
+    EventDto, QueuedDto, SessionEventPayload, SessionQueuePayload, SessionTitledPayload,
+    WorktreeRenamedPayload,
+};
+use crate::state::{AppState, QueuedTurn, SessionMeta, TitleSource};
 use crate::worktrees::SessionWorktree;
 
 /// What the backend asks of a running agent.
@@ -49,23 +53,219 @@ pub enum SessionCommand {
     Shutdown,
 }
 
-/// How the user answered one row of the permission table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How the user answered one row of the permission table — or one of the
+/// agent's questions, which reach the table as requests for their own tool
+/// (see [`egant_harness::is_interactive_tool`]).
+#[derive(Debug, Clone, PartialEq)]
 pub enum PermissionAnswer {
     AllowOnce,
+    /// Approve, and don't ask again for this — Claude saves the rule it
+    /// suggested; opencode, which has no rules, stops asking altogether.
     AllowAlways,
-    Deny,
+    /// Refuse. `feedback` is what the agent reads instead of the stock
+    /// refusal; `stop` also ends the turn.
+    Deny {
+        feedback: Option<String>,
+        stop: bool,
+    },
+    /// Answers to an AskUserQuestion, keyed by the exact question text: a
+    /// label (or free text), or several labels for a multi-select question.
+    /// `notes` are per-question remarks the agent reads alongside.
+    Answer {
+        answers: serde_json::Map<String, serde_json::Value>,
+        notes: serde_json::Map<String, serde_json::Value>,
+    },
+    /// Approves an ExitPlanMode and carries on under `mode`.
+    ApprovePlan {
+        mode: PermissionMode,
+    },
 }
 
+/// The most text one answer (or note, or feedback) may carry, and all of an
+/// answer's text together — the CLI's own limits for an AskUserQuestion
+/// reply, applied here so an oversized one is a readable error rather than a
+/// refusal the agent reports as prose.
+const MAX_ANSWER_CHARS: usize = 8192;
+const MAX_ANSWERS_CHARS: usize = 32768;
+
 impl PermissionAnswer {
+    /// The answer's name, for logs that must not carry what the user wrote.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PermissionAnswer::AllowOnce => "allow",
+            PermissionAnswer::AllowAlways => "allow-always",
+            PermissionAnswer::Deny { stop: true, .. } => "deny-and-stop",
+            PermissionAnswer::Deny { .. } => "deny",
+            PermissionAnswer::Answer { .. } => "answer",
+            PermissionAnswer::ApprovePlan { .. } => "approve-plan",
+        }
+    }
+
     pub fn from_str_name(name: &str) -> Option<Self> {
         match name {
             "allow" | "allow-once" | "once" => Some(PermissionAnswer::AllowOnce),
             "allow-always" | "always" => Some(PermissionAnswer::AllowAlways),
-            "deny" | "reject" => Some(PermissionAnswer::Deny),
+            "deny" | "reject" => Some(PermissionAnswer::Deny {
+                feedback: None,
+                stop: false,
+            }),
             _ => None,
         }
     }
+
+    /// Builds an answer from what a client sent: the decision's name plus the
+    /// fields that decision takes. Shared by the window and the phone, so
+    /// both are held to the same shapes.
+    pub fn from_parts(
+        decision: &str,
+        answers: Option<serde_json::Map<String, serde_json::Value>>,
+        notes: Option<serde_json::Map<String, serde_json::Value>>,
+        feedback: Option<String>,
+        stop: Option<bool>,
+        mode: Option<&str>,
+    ) -> Result<Self, String> {
+        match decision {
+            "answer" => Ok(PermissionAnswer::Answer {
+                answers: answers.unwrap_or_default(),
+                notes: notes.unwrap_or_default(),
+            }),
+            "approve-plan" => {
+                let mode = mode
+                    .and_then(PermissionMode::from_cli_arg)
+                    .ok_or_else(|| "say which mode to carry on in".to_string())?;
+                if mode == PermissionMode::Plan {
+                    return Err("an approved plan can't stay in plan mode".to_string());
+                }
+                Ok(PermissionAnswer::ApprovePlan { mode })
+            }
+            other => match Self::from_str_name(other) {
+                Some(PermissionAnswer::Deny { .. }) => {
+                    let feedback = feedback
+                        .map(|text| text.trim().to_string())
+                        .filter(|text| !text.is_empty());
+                    if feedback
+                        .as_ref()
+                        .is_some_and(|text| text.chars().count() > MAX_ANSWER_CHARS)
+                    {
+                        return Err("that note is too long".to_string());
+                    }
+                    Ok(PermissionAnswer::Deny {
+                        feedback,
+                        stop: stop.unwrap_or(false),
+                    })
+                }
+                Some(answer) => Ok(answer),
+                None => Err(format!("unknown decision `{other}`")),
+            },
+        }
+    }
+}
+
+/// The input an answered AskUserQuestion runs with: the question exactly as
+/// asked, plus `answers` (and `annotations` for notes). Checked the way the
+/// CLI checks it — every key names a question, several labels only for a
+/// multi-select one, the size limits — because a reply it refuses is lost:
+/// the agent just reports that the answer didn't arrive.
+pub fn answered_question_input(
+    input: &serde_json::Value,
+    answers: &serde_json::Map<String, serde_json::Value>,
+    notes: &serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    use serde_json::Value;
+    let Some(original) = input.as_object() else {
+        return Err("this question arrived malformed".to_string());
+    };
+    if original.contains_key("answers") || original.contains_key("annotations") {
+        return Err("this question already carries answers".to_string());
+    }
+    // question text → (multi-select, option count)
+    let questions: std::collections::HashMap<&str, (bool, usize)> = original
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .filter_map(|q| {
+                    let text = q.get("question")?.as_str()?;
+                    let multi = q.get("multiSelect").and_then(Value::as_bool) == Some(true);
+                    let options = q
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len);
+                    Some((text, (multi, options)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if answers.is_empty() {
+        return Err("pick an answer first".to_string());
+    }
+
+    let mut total = 0usize;
+    let mut measure = |text: &str| -> Result<(), String> {
+        let chars = text.chars().count();
+        if chars > MAX_ANSWER_CHARS {
+            return Err("that answer is too long".to_string());
+        }
+        total += chars;
+        if total > MAX_ANSWERS_CHARS {
+            return Err("those answers are too long".to_string());
+        }
+        Ok(())
+    };
+    for (question, answer) in answers {
+        let Some(&(multi, options)) = questions.get(question.as_str()) else {
+            return Err("an answer names a question that wasn't asked".to_string());
+        };
+        match answer {
+            Value::String(text) => measure(text)?,
+            Value::Array(picks) => {
+                if !multi {
+                    return Err("that question takes one answer".to_string());
+                }
+                // Every option, plus one free-text "Other".
+                if picks.len() > options + 1 {
+                    return Err("too many answers for that question".to_string());
+                }
+                for pick in picks {
+                    let Some(text) = pick.as_str() else {
+                        return Err("an answer must be text".to_string());
+                    };
+                    measure(text)?;
+                }
+            }
+            _ => return Err("an answer must be text".to_string()),
+        }
+    }
+
+    let mut annotations = serde_json::Map::new();
+    for (question, note) in notes {
+        if !questions.contains_key(question.as_str()) {
+            return Err("a note names a question that wasn't asked".to_string());
+        }
+        let Some(text) = note.as_str().map(str::trim).filter(|text| !text.is_empty()) else {
+            continue;
+        };
+        measure(text)?;
+        annotations.insert(question.clone(), serde_json::json!({ "notes": text }));
+    }
+
+    let mut updated = original.clone();
+    updated.insert("answers".into(), Value::Object(answers.clone()));
+    if !annotations.is_empty() {
+        updated.insert("annotations".into(), Value::Object(annotations));
+    }
+    Ok(Value::Object(updated))
+}
+
+/// A `setMode` permission update, as an approval hands it to the CLI. The
+/// CLI calls `manual` by its internal name, `default`.
+fn set_mode_update(mode: PermissionMode) -> serde_json::Value {
+    let name = match mode {
+        PermissionMode::Manual => "default",
+        other => other.as_cli_arg(),
+    };
+    serde_json::json!({ "type": "setMode", "mode": name, "destination": "session" })
 }
 
 impl SessionCommand {
@@ -142,6 +342,7 @@ pub fn spawn_session(
     let meta = SessionMeta {
         id,
         title,
+        title_source: TitleSource::Placeholder,
         project_id,
         cwd: cwd.clone(),
         branch: worktree
@@ -203,6 +404,8 @@ pub fn spawn_session(
                     turn_baseline: None,
                     decisions: Default::default(),
                     last_activity_ms: unix_now_ms(),
+                    queued: Default::default(),
+                    flush_next_end: false,
                 },
             );
             state.order.push(id);
@@ -232,6 +435,8 @@ pub fn spawn_session(
             turn_baseline: None,
             decisions: Default::default(),
             last_activity_ms: unix_now_ms(),
+            queued: Default::default(),
+            flush_next_end: false,
         },
     );
     state.order.push(id);
@@ -309,6 +514,9 @@ pub fn spawn_cli_session(
     let meta = SessionMeta {
         id,
         title,
+        // "Pi CLI" is the name: no turns ever pass through here for a
+        // generated title to come from.
+        title_source: TitleSource::Generated,
         project_id,
         cwd: cwd.clone(),
         branch: worktree
@@ -344,6 +552,8 @@ pub fn spawn_cli_session(
             turn_baseline: None,
             decisions: Default::default(),
             last_activity_ms: unix_now_ms(),
+            queued: Default::default(),
+            flush_next_end: false,
         },
     );
     state.order.push(id);
@@ -447,6 +657,11 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                     ..
                 }
             );
+            // Whether a turn just ended, and cleanly: what the queue waits on.
+            let turn_end = match &event {
+                HarnessEvent::TurnEnded { is_error, .. } => Some(!is_error),
+                _ => None,
+            };
             {
                 let app_state = listener_app.state::<Mutex<AppState>>();
                 let mut guard = app_state.lock().unwrap();
@@ -467,16 +682,14 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                     );
                     break;
                 }
-                // An "Allow always" answer remembers patterns for the run. A
-                // live-channel request (Claude) matching one is approved
-                // without ever reaching the table — otherwise "always" would
-                // ask again every turn. Turn-based denials (opencode) are
-                // always shown: approval there means retrying with `--auto`,
-                // which the user triggers per table, not silently.
-                // Bypassed sessions never reach here: the CLI stops asking
-                // once `bypassPermissions` lands, so this is only the
-                // pattern-remembered fallback for sessions that haven't
-                // flipped yet.
+                // An "Allow always" answer the CLI had no rule to offer for
+                // is remembered here, as patterns, for the run. A live-channel
+                // request (Claude) matching one is approved without ever
+                // reaching the table — otherwise "always" would ask again
+                // every turn. Turn-based denials (opencode) are always shown:
+                // approval there means retrying with `--auto`, which the user
+                // triggers per table, not silently. A question or a plan is
+                // never answered for the user, whatever was remembered.
                 let auto_approved: Option<(String, String, serde_json::Value)> = match &event {
                     HarnessEvent::PermissionRequest {
                         request_id,
@@ -485,6 +698,7 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                         input,
                         ..
                     } if session.meta.agent != AgentId::Opencode
+                        && !egant_harness::is_interactive_tool(tool_name)
                         && matches_allowlist(patterns, tool_name, &session.allowed_patterns) =>
                     {
                         Some((request_id.clone(), tool_name.clone(), input.clone()))
@@ -502,6 +716,7 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                                 // Echo the original input: an `allow` without
                                 // `updatedInput` reads as a deny on older CLIs.
                                 updated_input: Some(input),
+                                updated_permissions: Vec::new(),
                             },
                         },
                     );
@@ -522,6 +737,12 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 let denied_wide_window = error_text
                     .filter(|text| looks_like_a_long_context_rejection(text))
                     .and_then(|_| session.meta.model.clone());
+                // The CLI's own word on its mode, after an approved plan or
+                // Claude entering plan mode by itself: the chip and a revived
+                // session must follow it, not what the host last asked for.
+                if let HarnessEvent::ModeChanged { mode } = &event {
+                    session.meta.permission_mode = *mode;
+                }
                 session.transcript.apply(event);
                 if ended {
                     session.meta.ended = true;
@@ -554,7 +775,10 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                 },
             );
             if turn_succeeded {
-                name_worktree(&listener_app, id);
+                name_session(&listener_app, id);
+            }
+            if let Some(clean) = turn_end {
+                flush_queue(&listener_app, id, clean);
             }
         }
     });
@@ -562,32 +786,45 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
     command_tx
 }
 
-/// Sessions whose worktree is being named right now, so a turn that ends
-/// while the title is still generating doesn't start a second one.
+/// Sessions being named right now, so a turn that ends while the title is
+/// still generating doesn't start a second one.
 static NAMING: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
 
-/// Renames a session's worktree after what the session is about, once a turn
-/// has finished: the placeholder `egant/quiet-quartz` becomes
+/// Names a session after what it is about, once a turn has finished: its
+/// title, while that is still the first message's opening line, and its
+/// worktree's placeholder branch — `egant/quiet-quartz` becomes
 /// `egant/fix-login-flow`.
 ///
-/// zeron's approach (`engine/src/titles.rs`): a throwaway, tool-less run of a
-/// small model titles the first prompt, and the prompt's own opening words
-/// stand in when that run fails. Off the listener and best-effort — a
-/// worktree that keeps its placeholder has only a less helpful name.
+/// zeron's approach (`engine/src/titles.rs`): one throwaway, tool-less run of
+/// a small model titles the first prompt, and serves both. Off the listener
+/// and best-effort. When that run fails, the title keeps its opening line —
+/// already a fair name — and the branch takes the prompt's opening words,
+/// which still say more than `quiet-quartz`.
 ///
-/// Every turn calls this. After the first it returns at the first check, since
-/// a renamed branch is no longer a placeholder — and that same check is what
-/// retries a session whose first attempt was declined or failed.
-fn name_worktree(app: &AppHandle, id: u64) {
+/// Every successful turn calls this. After the first it returns at the first
+/// check: a settled title and a renamed branch have nothing left to name. A
+/// branch whose rename was declined or failed is retried on the next turn; a
+/// title is settled either way, since each attempt costs a model call and the
+/// opening line stands on its own.
+fn name_session(app: &AppHandle, id: u64) {
     let job = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().unwrap();
         guard.sessions.get(&id).and_then(|session| {
+            // A CLI session's turns never pass through here, and its name is
+            // the agent's.
+            if session.meta.cli_agent.is_some() {
+                return None;
+            }
+            let retitle = session.meta.title_source == TitleSource::FirstLine;
             let worktree = session
                 .meta
                 .worktree
                 .clone()
-                .filter(SessionWorktree::has_placeholder_name)?;
+                .filter(SessionWorktree::has_placeholder_name);
+            if !retitle && worktree.is_none() {
+                return None;
+            }
             let prompt = session
                 .transcript
                 .entries
@@ -597,6 +834,7 @@ fn name_worktree(app: &AppHandle, id: u64) {
                     _ => None,
                 })?;
             Some((
+                retitle,
                 worktree,
                 prompt,
                 session.meta.agent,
@@ -604,7 +842,7 @@ fn name_worktree(app: &AppHandle, id: u64) {
             ))
         })
     };
-    let Some((worktree, prompt, agent, model)) = job else {
+    let Some((retitle, worktree, prompt, agent, model)) = job else {
         return;
     };
     if !NAMING
@@ -614,30 +852,121 @@ fn name_worktree(app: &AppHandle, id: u64) {
     {
         return;
     }
-    log::info!("session {id} naming worktree {}", worktree.branch);
+    log::info!(
+        "session {id} naming (title: {retitle}, worktree: {})",
+        worktree
+            .as_ref()
+            .map_or("-", |worktree| worktree.branch.as_str())
+    );
 
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let previous = worktree.clone();
         let outcome = tauri::async_runtime::spawn_blocking(move || {
-            let title = egant_harness::titles::generate(agent, model.as_deref(), &prompt)
-                .unwrap_or_else(|| opening_words(&prompt));
-            crate::worktrees::rename(&worktree, &title)
+            let generated = egant_harness::titles::generate(agent, model.as_deref(), &prompt);
+            let renamed = worktree.map(|worktree| {
+                let name = generated.clone().unwrap_or_else(|| opening_words(&prompt));
+                let result = crate::worktrees::rename(&worktree, &name);
+                (worktree, result)
+            });
+            (generated, renamed)
         })
         .await;
         match outcome {
-            Ok(Ok(Some(renamed))) => apply_worktree_rename(&app, &previous, &renamed),
-            Ok(Ok(None)) => log::info!("session {id} worktree {} left as is", previous.branch),
-            Ok(Err(error)) => log::warn!("session {id} worktree not renamed: {error}"),
-            Err(error) => log::error!("session {id} worktree naming task failed: {error}"),
+            Ok((generated, renamed)) => {
+                if retitle {
+                    apply_generated_title(&app, id, generated);
+                }
+                match renamed {
+                    Some((previous, Ok(Some(renamed)))) => {
+                        apply_worktree_rename(&app, &previous, &renamed)
+                    }
+                    Some((previous, Ok(None))) => {
+                        log::info!("session {id} worktree {} left as is", previous.branch)
+                    }
+                    Some((_, Err(error))) => {
+                        log::warn!("session {id} worktree not renamed: {error}")
+                    }
+                    None => {}
+                }
+            }
+            Err(error) => log::error!("session {id} naming task failed: {error}"),
         }
-        // Released only once the new name is in state, so a turn ending in
-        // between cannot see the old placeholder and start over.
+        // Released only once the new names are in state, so a turn ending in
+        // between cannot see the old ones and start over.
         NAMING
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&id);
     });
+}
+
+/// Puts a generated title on a session — unless the user renamed it while the
+/// title was being written — and tells the window and the phone. Without a
+/// title (the run failed) the opening line stays, settled all the same.
+fn apply_generated_title(app: &AppHandle, id: u64, generated: Option<String>) {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().unwrap();
+    let Some(session) = guard.sessions.get_mut(&id) else {
+        return;
+    };
+    if session.meta.title_source != TitleSource::FirstLine {
+        return; // renamed meanwhile: the user's words win
+    }
+    let titled = settle_generated_title(&mut session.meta, generated);
+    guard.persist_session(id);
+    let Some(title) = titled else {
+        return;
+    };
+    log::info!("session {id} titled");
+    crate::sync::session_touched(app, &guard, id, &crate::sync::Origin::Agent);
+    drop(guard);
+    // The window skips the agent's own `session` rows on the sync stream (it
+    // hears about turns through `session-event`), so a title the app wrote
+    // reaches it here — the way a renamed worktree does.
+    let _ = app.emit(
+        "session-titled",
+        SessionTitledPayload {
+            session_id: id,
+            title,
+        },
+    );
+}
+
+/// Settles a session's title once a generated one is back: takes it while
+/// the title is still the first message's opening line, and otherwise leaves
+/// what is there — above all a title the user typed. Returns the new title
+/// when there is one to announce.
+fn settle_generated_title(meta: &mut SessionMeta, generated: Option<String>) -> Option<String> {
+    if meta.title_source != TitleSource::FirstLine {
+        return None;
+    }
+    meta.title_source = TitleSource::Generated;
+    let title = generated.filter(|title| !title.trim().is_empty())?;
+    meta.title = title.clone();
+    Some(title)
+}
+
+/// The most a title may hold, in characters.
+const MAX_TITLE_CHARS: usize = 120;
+
+/// Renames a session to what the user typed, whitespace collapsed. Nothing
+/// the app generates replaces it afterwards.
+pub fn rename_session(state: &mut AppState, id: u64, title: &str) -> Result<String, String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err("a title needs some words".to_string());
+    }
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return Err("that title is too long".to_string());
+    }
+    let Some(session) = state.sessions.get_mut(&id) else {
+        return Err("unknown session".to_string());
+    };
+    log::info!("rename session {id}");
+    session.meta.title = title.clone();
+    session.meta.title_source = TitleSource::User;
+    state.persist_session(id);
+    Ok(title)
 }
 
 /// Puts a renamed worktree into every session running in it — the one that
@@ -736,6 +1065,9 @@ fn log_harness_event(id: u64, event: &HarnessEvent) {
         }
         HarnessEvent::PermissionRequest { tool_name, .. } => {
             log::info!("session {id} permission request: {tool_name}");
+        }
+        HarnessEvent::ModeChanged { mode } => {
+            log::info!("session {id} mode is now {}", mode.as_cli_arg());
         }
         HarnessEvent::ToolUse { name, .. } => {
             log::debug!("session {id} tool use: {name}");
@@ -992,15 +1324,20 @@ fn notice(app: &AppHandle, session: &mut crate::state::ManagedSession, id: u64, 
 /// A session with no live process behind it — because it exited, or because
 /// it was just restored from disk on launch — is revived first rather than
 /// silently dropping the message: see [`revive`].
+///
+/// A message sent while a turn is still running (or waiting on the user)
+/// waits in the session's queue instead, and goes out when that turn ends —
+/// see [`flush_queue`]. Echoing it now would put the bubble in the middle of
+/// the reply still streaming, reading as the question that reply answers.
 pub fn send_text(
     app: &AppHandle,
     state: &mut AppState,
     id: u64,
     text: String,
     images: Vec<PathBuf>,
-) -> Result<Option<String>, String> {
+) -> Result<SendOutcome, String> {
     if text.trim().is_empty() && images.is_empty() {
-        return Ok(None);
+        return Ok(SendOutcome::default());
     }
     // An image-only turn still needs something in the bubble — an empty one
     // would look broken — and a short caption gives the model a framing for
@@ -1061,6 +1398,13 @@ pub fn send_text(
             }
         }
     }
+    let (text, images) = match state.sessions.get_mut(&id) {
+        Some(session) => match enqueue_if_busy(session, text, images) {
+            Ok(outcome) => return Ok(outcome),
+            Err(unsent) => unsent,
+        },
+        None => (text, images),
+    };
     let needs_revive = state
         .sessions
         .get(&id)
@@ -1083,11 +1427,18 @@ pub fn send_text(
             return Err("unknown session".to_string());
         };
         if session.meta.ended {
-            return Ok(None);
+            return Ok(SendOutcome::default());
         }
-        if session.transcript.entries.is_empty() && session.meta.title.starts_with("New session") {
+        // The first message names the session until a generated title does
+        // (see `name_session`). A placeholder is what a fresh session has; the
+        // string check covers one saved before titles were tracked.
+        let placeholder = session.meta.title_source == TitleSource::Placeholder
+            || (session.meta.title_source != TitleSource::User
+                && session.meta.title.starts_with("New session"));
+        if session.transcript.entries.is_empty() && placeholder {
             let title = derive_title(&text);
             session.meta.title = title.clone();
+            session.meta.title_source = TitleSource::FirstLine;
             new_title = Some(title);
         }
         session.transcript.push_user(text.clone());
@@ -1097,7 +1448,186 @@ pub fn send_text(
         dispatch(session, SessionCommand::Send(text, images));
     }
     state.persist_session(id);
-    Ok(new_title)
+    Ok(SendOutcome {
+        title: new_title,
+        queued: false,
+    })
+}
+
+/// What sending a message did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SendOutcome {
+    /// The session's new title, when this turn named it.
+    pub title: Option<String>,
+    /// The agent was busy: the message waits in the queue.
+    pub queued: bool,
+}
+
+/// Queued messages' ids — unique across sessions, so the composer can name one.
+static NEXT_QUEUED_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Queues a message when the session's agent is busy — a turn running, or
+/// waiting on the user — and hands it back to be sent now otherwise. A
+/// session with no live process is never busy: sending revives it.
+fn enqueue_if_busy(
+    session: &mut crate::state::ManagedSession,
+    text: String,
+    images: Vec<PathBuf>,
+) -> Result<SendOutcome, (String, Vec<PathBuf>)> {
+    let live = session.commands.is_some() && !session.meta.ended;
+    if !(live && session.transcript.is_busy()) {
+        return Err((text, images));
+    }
+    let queued = QueuedTurn {
+        id: NEXT_QUEUED_ID.fetch_add(1, Ordering::Relaxed),
+        text,
+        images,
+    };
+    log::info!(
+        "session {} busy: queued message {} ({} waiting)",
+        session.meta.id,
+        queued.id,
+        session.queued.len() + 1
+    );
+    session.queued.push_back(queued);
+    session.last_activity_ms = unix_now_ms();
+    Ok(SendOutcome {
+        title: None,
+        queued: true,
+    })
+}
+
+/// The queued message a turn's end lets out, taken off the queue: after a
+/// clean end with nothing waiting on the user, or — once "Send now" asked for
+/// it — after any end. `None` leaves the queue as it is.
+fn next_to_flush(
+    session: &mut crate::state::ManagedSession,
+    clean_end: bool,
+) -> Option<QueuedTurn> {
+    let forced = std::mem::take(&mut session.flush_next_end);
+    if session.queued.is_empty() || session.transcript.is_busy() {
+        return None;
+    }
+    if !forced && (!clean_end || !session.transcript.pending_permissions.is_empty()) {
+        return None;
+    }
+    if forced && session.meta.agent != AgentId::Opencode {
+        // An interrupted turn has nobody left to answer its prompts.
+        session.transcript.clear_permissions();
+    }
+    session.queued.pop_front()
+}
+
+/// Sends the next queued message once a turn is over: a clean end, with
+/// nothing waiting on the user — or, after "Send now" interrupted the turn,
+/// however it ended. A turn that failed or was stopped otherwise leaves the
+/// queue where it is, for the user to send or edit.
+///
+/// Runs after the turn's end has reached the window, so the bubble lands
+/// behind it rather than ahead of the event that ends the turn it follows.
+/// It goes through [`send_text`], so a queued message gets everything a typed
+/// one would; clients hear about it as a user message from the app itself.
+fn flush_queue(app: &AppHandle, id: u64, clean_end: bool) {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().unwrap();
+    let Some(session) = guard.sessions.get_mut(&id) else {
+        return;
+    };
+    let Some(next) = next_to_flush(session, clean_end) else {
+        return;
+    };
+    log::info!("session {id} sending queued message {}", next.id);
+    let before = session.transcript.entries.len();
+    match send_text(app, &mut guard, id, next.text, next.images) {
+        Ok(outcome) => {
+            crate::sync::transcript_grew(app, &guard, id, before, &crate::sync::Origin::Agent);
+            crate::sync::session_touched(app, &guard, id, &crate::sync::Origin::Agent);
+            if let Some(title) = outcome.title {
+                // A queued first message is rare, but it names the session
+                // like any other first message.
+                let _ = app.emit(
+                    "session-titled",
+                    SessionTitledPayload {
+                        session_id: id,
+                        title,
+                    },
+                );
+            }
+        }
+        Err(error) => log::warn!("session {id} queued message not sent: {error}"),
+    }
+    let queue = guard.sessions.get(&id).map(queue_dto).unwrap_or_default();
+    drop(guard);
+    let _ = app.emit(
+        "session-queue",
+        SessionQueuePayload {
+            session_id: id,
+            queued: queue,
+        },
+    );
+}
+
+/// A session's queue as the composer shows it.
+pub fn queue_dto(session: &crate::state::ManagedSession) -> Vec<QueuedDto> {
+    session
+        .queued
+        .iter()
+        .map(|queued| QueuedDto {
+            id: queued.id,
+            text: queued.text.clone(),
+            image_count: queued.images.len(),
+        })
+        .collect()
+}
+
+/// Takes a message back out of the queue — to edit it, or to drop it.
+/// Returns its text, or `None` when it already went out.
+pub fn unqueue_message(
+    state: &mut AppState,
+    id: u64,
+    queued_id: u64,
+) -> Result<Option<String>, String> {
+    let Some(session) = state.sessions.get_mut(&id) else {
+        return Err("unknown session".to_string());
+    };
+    let Some(position) = session.queued.iter().position(|q| q.id == queued_id) else {
+        return Ok(None);
+    };
+    Ok(session.queued.remove(position).map(|queued| queued.text))
+}
+
+/// Sends a queued message now rather than when the turn ends. With nothing
+/// running, that is simply sending it; with a turn running, the turn is
+/// stopped and the message goes out as soon as it has.
+pub fn send_queued_now(
+    app: &AppHandle,
+    state: &mut AppState,
+    id: u64,
+    queued_id: u64,
+) -> Result<SendOutcome, String> {
+    let Some(session) = state.sessions.get_mut(&id) else {
+        return Err("unknown session".to_string());
+    };
+    let Some(position) = session.queued.iter().position(|q| q.id == queued_id) else {
+        return Ok(SendOutcome::default()); // already went out
+    };
+    let Some(queued) = session.queued.remove(position) else {
+        return Ok(SendOutcome::default());
+    };
+    if !session.transcript.is_busy() {
+        return send_text(app, state, id, queued.text, queued.images);
+    }
+    log::info!(
+        "session {id} sending queued message {} now: stopping the turn",
+        queued.id
+    );
+    session.queued.push_front(queued);
+    session.flush_next_end = true;
+    dispatch(session, SessionCommand::Interrupt);
+    Ok(SendOutcome {
+        title: None,
+        queued: true,
+    })
 }
 
 /// Records the tree the working directory was in as a turn begins, so the
@@ -1170,19 +1700,28 @@ pub fn interrupt(state: &mut AppState, id: u64) -> Result<(), String> {
 
 /// Answers one row of the permission table.
 ///
-/// - Claude (live approval channel): Allow/Allow-always approves this
-///   request mid-turn and the turn continues; Deny refuses it. Allow-always
-///   additionally flips the session to `bypassPermissions` so nothing else in
-///   this chat asks again (plus remembers patterns as a fallback for the
-///   window before the mode switch lands).
+/// - Claude (live approval channel): the answer goes back mid-turn and the
+///   turn continues.
+///   - Allow once approves the request as proposed.
+///   - Allow always also hands back the rule the CLI suggested for it
+///     (`Bash(git status:*)`, saved to the project) — or, when it suggested
+///     none, remembers the request's patterns for the run. The mode never
+///     changes: every other tool keeps asking.
+///   - Deny refuses it, with the user's feedback as the reason when there is
+///     some; `stop` also ends the turn.
+///   - A question (AskUserQuestion) is answered rather than allowed: its
+///     answers become part of the input it runs with. A plan (ExitPlanMode)
+///     is approved into the mode the user picked. Neither takes a plain
+///     Allow, which would run the question with nothing answered.
 /// - opencode (no live channel — denials arrive after the turn settled):
 ///   Allow sets `--auto` for a retry of the last turn; Allow-always sets
-///   `--auto` from here on and flips the mode chip to bypass; Deny just
-///   dismisses the row. The retry only happens when the turn already settled —
-///   a live turn keeps streaming.
+///   `--auto` from here on and flips the mode chip to bypass, since `--auto`
+///   is the only lever that wire has; Deny just dismisses the row. The retry
+///   only happens when the turn already settled — a live turn keeps
+///   streaming.
 ///
-/// Returns the new mode's CLI name when this answer changed it (i.e. on
-/// Allow-always → `bypassPermissions`), so the frontend can flip its switch
+/// Returns the new mode's CLI name when this answer changed it (opencode's
+/// Allow always, an approved plan), so the frontend can flip its switch
 /// without a separate round trip.
 pub fn answer_permission(
     state: &mut AppState,
@@ -1190,7 +1729,11 @@ pub fn answer_permission(
     request_id: &str,
     answer: PermissionAnswer,
 ) -> Result<Option<&'static str>, String> {
-    log::info!("answer permission session {id} {request_id} {answer:?}");
+    // The kind only: answers and feedback are the user's words.
+    log::info!(
+        "answer permission session {id} {request_id} {}",
+        answer.kind()
+    );
     let Some(session) = state.sessions.get_mut(&id) else {
         return Err("unknown session".to_string());
     };
@@ -1205,8 +1748,27 @@ pub fn answer_permission(
     let pending = session.transcript.pending_permissions[position].clone();
     let is_opencode = session.meta.agent == AgentId::Opencode;
 
+    match (&answer, pending.tool_name.as_str()) {
+        (PermissionAnswer::Deny { .. }, _)
+        | (PermissionAnswer::Answer { .. }, egant_harness::ASK_USER_QUESTION)
+        | (PermissionAnswer::ApprovePlan { .. }, egant_harness::EXIT_PLAN_MODE) => {}
+        (PermissionAnswer::Answer { .. }, _) => {
+            return Err("this request isn't a question".to_string());
+        }
+        (PermissionAnswer::ApprovePlan { .. }, _) => {
+            return Err("this request isn't a plan".to_string());
+        }
+        (_, egant_harness::ASK_USER_QUESTION) => {
+            return Err("answer the question instead".to_string());
+        }
+        (_, egant_harness::EXIT_PLAN_MODE) => {
+            return Err("approve the plan or keep planning instead".to_string());
+        }
+        _ => {}
+    }
+
     match answer {
-        PermissionAnswer::Deny => {
+        PermissionAnswer::Deny { feedback, stop } => {
             session.transcript.resolve_permission(request_id);
             if !is_opencode {
                 dispatch(
@@ -1214,7 +1776,9 @@ pub fn answer_permission(
                     SessionCommand::Permission {
                         request_id: pending.request_id,
                         decision: PermissionDecision::Deny {
-                            reason: "The user declined this action.".into(),
+                            reason: feedback
+                                .unwrap_or_else(|| "The user declined this action.".into()),
+                            interrupt: stop,
                         },
                     },
                 );
@@ -1245,6 +1809,7 @@ pub fn answer_permission(
                         // `updatedInput` reads as a deny on older CLIs.
                         decision: PermissionDecision::Allow {
                             updated_input: Some(pending.input),
+                            updated_permissions: Vec::new(),
                         },
                     },
                 );
@@ -1252,46 +1817,82 @@ pub fn answer_permission(
             state.persist_session(id);
             Ok(None)
         }
-        PermissionAnswer::AllowAlways => {
+        PermissionAnswer::AllowAlways if is_opencode => {
+            // `--auto` is all opencode has, so "always" can only mean it stops
+            // asking in this chat — which the chip then says.
             remember_patterns(session, &pending);
-            // "Always allow" means "stop asking in this chat": flip the
-            // session to bypassPermissions. The current request is still
-            // answered explicitly first (the CLI is blocked on it), then the
-            // mode switch lands right behind it on the same ordered channel.
             session.meta.permission_mode = egant_harness::PermissionMode::BypassPermissions;
-            if is_opencode {
-                session.transcript.clear_permissions();
-                dispatch(session, SessionCommand::ApproveAlways);
-                dispatch(
-                    session,
-                    SessionCommand::SetPermissionMode(
-                        egant_harness::PermissionMode::BypassPermissions,
-                    ),
-                );
-                retry_last_turn(session);
-            } else {
-                session.transcript.resolve_permission(request_id);
-                dispatch(
-                    session,
-                    SessionCommand::Permission {
-                        request_id: pending.request_id,
-                        decision: PermissionDecision::AllowAlways {
-                            patterns: vec![],
-                            updated_input: Some(pending.input),
-                        },
-                    },
-                );
-                dispatch(
-                    session,
-                    SessionCommand::SetPermissionMode(
-                        egant_harness::PermissionMode::BypassPermissions,
-                    ),
-                );
-            }
+            session.transcript.clear_permissions();
+            dispatch(session, SessionCommand::ApproveAlways);
+            dispatch(
+                session,
+                SessionCommand::SetPermissionMode(egant_harness::PermissionMode::BypassPermissions),
+            );
+            retry_last_turn(session);
             state.persist_session(id);
             Ok(Some(
                 egant_harness::PermissionMode::BypassPermissions.as_cli_arg(),
             ))
+        }
+        PermissionAnswer::AllowAlways => {
+            // The CLI's own rule when it offered one; it saves it and stops
+            // asking for exactly that. Without one, the request's patterns
+            // stand in for the rest of the run (see the listener).
+            let update = egant_harness::always_allow_update(&pending.suggestions);
+            if update.is_none() {
+                remember_patterns(session, &pending);
+            }
+            session.transcript.resolve_permission(request_id);
+            dispatch(
+                session,
+                SessionCommand::Permission {
+                    request_id: pending.request_id,
+                    decision: PermissionDecision::Allow {
+                        updated_input: Some(pending.input),
+                        updated_permissions: update.into_iter().collect(),
+                    },
+                },
+            );
+            state.persist_session(id);
+            Ok(None)
+        }
+        PermissionAnswer::Answer { answers, notes } => {
+            // Checked before the row goes: a refused answer leaves the
+            // question up to be answered again.
+            let input = answered_question_input(&pending.input, &answers, &notes)?;
+            session.transcript.resolve_permission(request_id);
+            dispatch(
+                session,
+                SessionCommand::Permission {
+                    request_id: pending.request_id,
+                    decision: PermissionDecision::Allow {
+                        updated_input: Some(input),
+                        updated_permissions: Vec::new(),
+                    },
+                },
+            );
+            state.persist_session(id);
+            Ok(None)
+        }
+        PermissionAnswer::ApprovePlan { mode } => {
+            session.transcript.resolve_permission(request_id);
+            // The switch rides the approval — the CLI's own way, applied with
+            // the plan — and is sent once more on its own behind it, the
+            // request egant already uses for the mode picker.
+            dispatch(
+                session,
+                SessionCommand::Permission {
+                    request_id: pending.request_id,
+                    decision: PermissionDecision::Allow {
+                        updated_input: Some(pending.input),
+                        updated_permissions: vec![set_mode_update(mode)],
+                    },
+                },
+            );
+            session.meta.permission_mode = mode;
+            dispatch(session, SessionCommand::SetPermissionMode(mode));
+            state.persist_session(id);
+            Ok(Some(mode.as_cli_arg()))
         }
     }
 }
@@ -1330,7 +1931,10 @@ pub fn answer_permission_legacy(
         if allow {
             PermissionAnswer::AllowOnce
         } else {
-            PermissionAnswer::Deny
+            PermissionAnswer::Deny {
+                feedback: None,
+                stop: false,
+            }
         },
     )
 }
@@ -1453,24 +2057,110 @@ pub fn set_permission_mode(
 #[must_use]
 pub fn close_session(state: &mut AppState, id: u64) -> Option<SessionWorktree> {
     log::info!("close session {id}");
-    let Some(position) = state.order.iter().position(|sid| *sid == id) else {
-        return None;
+    let session = detach_session(state, id)?;
+    // Closing is still meant to forget a session for good — persistence only
+    // changes what quitting the app does, not what closing a tab does.
+    crate::persist::delete_session(id);
+    session.meta.worktree
+}
+
+/// Archives a session: its agent stops and it leaves the window, but what was
+/// saved of it stays on disk, marked archived, to be restored or deleted
+/// from Settings → Archived. Its worktree stays as it is, so a restored
+/// session resumes where it ran.
+///
+/// The last save happens before the row goes — the file is keyed by the
+/// project's path, which only the row still knows — and a save that fails
+/// leaves the session open rather than taking it out of the window on the
+/// strength of a file that says nothing about it.
+pub fn archive_session(state: &mut AppState, id: u64) -> Result<(), String> {
+    log::info!("archive session {id}");
+    if !state.sessions.contains_key(&id) {
+        return Err("unknown session".to_string());
+    }
+    if !state.persist_session_with(id, Some(unix_now_ms())) {
+        return Err("couldn't save this session to the archive — it's still open".to_string());
+    }
+    detach_session(state, id);
+    Ok(())
+}
+
+/// Brings an archived session back into the window and selects it. It comes
+/// back ended, like any session restored at launch: its next message resumes
+/// the agent.
+pub fn unarchive_session(state: &mut AppState, id: u64) -> Result<(), String> {
+    log::info!("unarchive session {id}");
+    if state.sessions.contains_key(&id) {
+        return Ok(());
+    }
+    let Some(mut persisted) = crate::persist::load_session(id) else {
+        return Err("that archived session is gone".to_string());
     };
+    let project_path = persisted.meta.project_path.clone();
+    persisted.meta.archived_at_ms = None;
+    let Some(session) = crate::state::restore_session(&state.projects, persisted) else {
+        return Err(format!(
+            "its project isn't open — open {} first",
+            project_path.display()
+        ));
+    };
+    let project_id = session.meta.project_id;
+    let started = session.meta.started_unix_ms;
+    state.sessions.insert(id, session);
+    // Back where it was in time: the window's order is chronological.
+    let position = state
+        .order
+        .iter()
+        .position(|other| {
+            state
+                .sessions
+                .get(other)
+                .is_some_and(|other| other.meta.started_unix_ms > started)
+        })
+        .unwrap_or(state.order.len());
+    state.order.insert(position, id);
+    state.active_session = Some(id);
+    state.active_project = Some(project_id);
+    // Saved again without the mark, so it stays restored after a relaunch.
+    state.persist_session(id);
+    Ok(())
+}
+
+/// Deletes an archived session for good. Returns its worktree, when it had
+/// one, for the caller to give back off-thread — the same hand-off as
+/// [`close_session`].
+pub fn delete_archived_session(id: u64) -> Result<Option<SessionWorktree>, String> {
+    log::info!("delete archived session {id}");
+    let Some(persisted) = crate::persist::load_session(id) else {
+        return Ok(None); // already gone
+    };
+    if persisted.meta.archived_at_ms.is_none() {
+        return Err("that session isn't archived".to_string());
+    }
+    crate::persist::delete_session(id);
+    Ok(persisted.meta.worktree)
+}
+
+/// Takes a session out of the window: shuts its agent down, drops its row and
+/// keeps the selection somewhere sensible. What happens to what was saved of
+/// it is the caller's business — closing deletes it, archiving keeps it.
+pub(crate) fn detach_session(
+    state: &mut AppState,
+    id: u64,
+) -> Option<crate::state::ManagedSession> {
+    let position = state.order.iter().position(|sid| *sid == id)?;
     let active_index = state
         .active_session
         .and_then(|active| state.order.iter().position(|sid| *sid == active));
 
     state.order.remove(position);
-    let mut worktree = None;
-    if let Some(session) = state.sessions.remove(&id) {
-        worktree = session.meta.worktree;
-        if let Some(commands) = session.commands {
-            let _ = commands.try_send(SessionCommand::Shutdown);
-        }
+    let session = state.sessions.remove(&id);
+    if let Some(commands) = session
+        .as_ref()
+        .and_then(|session| session.commands.as_ref())
+    {
+        let _ = commands.try_send(SessionCommand::Shutdown);
     }
-    // Closing is still meant to forget a session for good — persistence only
-    // changes what quitting the app does, not what closing a tab does.
-    crate::persist::delete_session(id);
 
     // Keep the selection on the same visual position where possible, and never
     // leave it past the end.
@@ -1493,7 +2183,7 @@ pub fn close_session(state: &mut AppState, id: u64) -> Option<SessionWorktree> {
             }
         }
     }
-    worktree
+    session
 }
 
 fn dispatch(session: &mut crate::state::ManagedSession, command: SessionCommand) {
@@ -1716,8 +2406,10 @@ fn _sender_is_send() {
 #[cfg(test)]
 mod tests {
     use super::{
-        PermissionAnswer, derive_title, harness_event_error_text, looks_like_a_bad_model_error,
-        looks_like_a_long_context_rejection, matches_allowlist,
+        MAX_ANSWER_CHARS, PermissionAnswer, PermissionDecision, answer_permission,
+        answered_question_input, derive_title, harness_event_error_text,
+        looks_like_a_bad_model_error, looks_like_a_long_context_rejection, matches_allowlist,
+        set_mode_update,
     };
     use egant_harness::HarnessEvent;
 
@@ -1858,8 +2550,567 @@ mod tests {
         );
         assert_eq!(
             PermissionAnswer::from_str_name("deny"),
-            Some(PermissionAnswer::Deny)
+            Some(PermissionAnswer::Deny {
+                feedback: None,
+                stop: false
+            })
         );
         assert_eq!(PermissionAnswer::from_str_name("maybe"), None);
+    }
+
+    /// A session with `pending` outstanding, wired to a channel the test
+    /// reads to see exactly what would reach the agent. The state has no
+    /// projects on purpose: `persist_session` then has nowhere to write, so
+    /// no test ever touches the real sessions folder.
+    fn waiting_on(
+        agent: egant_harness::AgentId,
+        pending: egant_harness::PendingPermission,
+    ) -> (
+        crate::state::AppState,
+        async_channel::Receiver<super::SessionCommand>,
+    ) {
+        let (tx, rx) = async_channel::unbounded();
+        let mut transcript = egant_harness::Transcript::new();
+        transcript.state = egant_harness::TurnState::AwaitingPermission;
+        transcript.pending_permissions.push(pending.clone());
+        transcript.pending_permission = Some(pending);
+        let session = crate::state::ManagedSession {
+            meta: crate::state::SessionMeta {
+                id: 1,
+                title: "t".into(),
+                title_source: crate::state::TitleSource::User,
+                project_id: 0,
+                cwd: std::path::PathBuf::from("/tmp/egant-test"),
+                branch: None,
+                started_unix_ms: 1,
+                agent,
+                cli_agent: None,
+                model: None,
+                variant: None,
+                context: None,
+                permission_mode: egant_harness::PermissionMode::Auto,
+                worktree: None,
+                device: None,
+                ended: false,
+            },
+            transcript,
+            commands: Some(tx),
+            allowed_patterns: Vec::new(),
+            last_user_text: None,
+            last_user_images: Vec::new(),
+            turn_baseline: None,
+            decisions: Default::default(),
+            last_activity_ms: 0,
+            queued: Default::default(),
+            flush_next_end: false,
+        };
+        let state = crate::state::AppState {
+            projects: Vec::new(),
+            active_project: None,
+            next_project_id: 0,
+            sessions: std::collections::HashMap::from([(1, session)]),
+            order: vec![1],
+            active_session: Some(1),
+            next_session_id: 2,
+            settings: crate::settings::Settings::default(),
+            sidebar_visible: true,
+            bad_models: Default::default(),
+        };
+        (state, rx)
+    }
+
+    fn pending(
+        tool: &str,
+        input: serde_json::Value,
+        suggestions: Vec<serde_json::Value>,
+    ) -> egant_harness::PendingPermission {
+        let (patterns, always_patterns) = egant_harness::permission_patterns(tool, &input);
+        egant_harness::PendingPermission {
+            request_id: "r1".into(),
+            tool_name: tool.into(),
+            input,
+            patterns,
+            always_patterns,
+            suggestions,
+            description: None,
+            blocked_path: None,
+        }
+    }
+
+    /// The decision the session sent the agent for its one request.
+    fn sent_decision(rx: &async_channel::Receiver<super::SessionCommand>) -> PermissionDecision {
+        match rx.try_recv().expect("a command was sent") {
+            super::SessionCommand::Permission { decision, .. } => decision,
+            _ => panic!("expected a permission answer first"),
+        }
+    }
+
+    #[test]
+    fn always_allow_on_claude_saves_the_rule_and_keeps_the_mode() {
+        let suggestions = vec![
+            serde_json::json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "git status:*"}],
+                               "behavior": "allow", "destination": "localSettings"}),
+            serde_json::json!({"type": "setMode", "mode": "acceptEdits", "destination": "session"}),
+        ];
+        let (mut state, rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending(
+                "Bash",
+                serde_json::json!({"command": "git status"}),
+                suggestions,
+            ),
+        );
+        let changed =
+            answer_permission(&mut state, 1, "r1", PermissionAnswer::AllowAlways).unwrap();
+        assert_eq!(changed, None, "no mode change to report");
+        let session = &state.sessions[&1];
+        assert_eq!(
+            session.meta.permission_mode,
+            egant_harness::PermissionMode::Auto
+        );
+        assert!(session.transcript.pending_permissions.is_empty());
+        // The CLI's rule does the remembering, not egant's patterns.
+        assert!(session.allowed_patterns.is_empty());
+        match sent_decision(&rx) {
+            PermissionDecision::Allow {
+                updated_input,
+                updated_permissions,
+            } => {
+                assert_eq!(updated_input.unwrap()["command"], "git status");
+                assert_eq!(updated_permissions.len(), 1);
+                assert_eq!(updated_permissions[0]["type"], "addRules");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // And nothing behind it switches the mode.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn always_allow_without_a_suggested_rule_remembers_the_patterns() {
+        let (mut state, rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending(
+                "Read",
+                serde_json::json!({"file_path": "/tmp/a/b.rs"}),
+                Vec::new(),
+            ),
+        );
+        answer_permission(&mut state, 1, "r1", PermissionAnswer::AllowAlways).unwrap();
+        let session = &state.sessions[&1];
+        assert_eq!(
+            session.meta.permission_mode,
+            egant_harness::PermissionMode::Auto
+        );
+        assert!(session.allowed_patterns.iter().any(|p| p == "/tmp/a/*"));
+        assert!(matches!(
+            sent_decision(&rx),
+            PermissionDecision::Allow { ref updated_permissions, .. } if updated_permissions.is_empty()
+        ));
+    }
+
+    #[test]
+    fn a_question_is_answered_never_just_allowed() {
+        let question = serde_json::json!({"questions": [{
+            "question": "Which color?", "header": "Color", "multiSelect": false,
+            "options": [{"label": "Red", "description": ""}, {"label": "Blue", "description": ""}]
+        }]});
+        let (mut state, rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending(egant_harness::ASK_USER_QUESTION, question, Vec::new()),
+        );
+        for answer in [PermissionAnswer::AllowOnce, PermissionAnswer::AllowAlways] {
+            assert!(answer_permission(&mut state, 1, "r1", answer).is_err());
+        }
+        // A refused answer leaves the question up.
+        assert_eq!(state.sessions[&1].transcript.pending_permissions.len(), 1);
+        assert!(rx.try_recv().is_err());
+
+        let answers = serde_json::json!({"Which color?": "Blue"})
+            .as_object()
+            .cloned()
+            .unwrap();
+        answer_permission(
+            &mut state,
+            1,
+            "r1",
+            PermissionAnswer::Answer {
+                answers,
+                notes: Default::default(),
+            },
+        )
+        .unwrap();
+        match sent_decision(&rx) {
+            PermissionDecision::Allow { updated_input, .. } => {
+                assert_eq!(updated_input.unwrap()["answers"]["Which color?"], "Blue");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_approved_plan_switches_the_mode() {
+        let (mut state, rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending(
+                egant_harness::EXIT_PLAN_MODE,
+                serde_json::json!({"plan": "# Plan", "planFilePath": "/tmp/p.md"}),
+                Vec::new(),
+            ),
+        );
+        assert!(answer_permission(&mut state, 1, "r1", PermissionAnswer::AllowOnce).is_err());
+        let changed = answer_permission(
+            &mut state,
+            1,
+            "r1",
+            PermissionAnswer::ApprovePlan {
+                mode: egant_harness::PermissionMode::AcceptEdits,
+            },
+        )
+        .unwrap();
+        assert_eq!(changed, Some("acceptEdits"));
+        assert_eq!(
+            state.sessions[&1].meta.permission_mode,
+            egant_harness::PermissionMode::AcceptEdits
+        );
+        match sent_decision(&rx) {
+            PermissionDecision::Allow {
+                updated_input,
+                updated_permissions,
+            } => {
+                assert_eq!(updated_input.unwrap()["plan"], "# Plan");
+                assert_eq!(updated_permissions[0]["type"], "setMode");
+                assert_eq!(updated_permissions[0]["mode"], "acceptEdits");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(super::SessionCommand::SetPermissionMode(
+                egant_harness::PermissionMode::AcceptEdits
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_deny_hands_the_agent_the_users_words_and_can_stop_the_turn() {
+        let (mut state, rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending(
+                "Bash",
+                serde_json::json!({"command": "rm -rf build"}),
+                Vec::new(),
+            ),
+        );
+        answer_permission(
+            &mut state,
+            1,
+            "r1",
+            PermissionAnswer::Deny {
+                feedback: Some("Use `cargo clean` instead.".into()),
+                stop: true,
+            },
+        )
+        .unwrap();
+        match sent_decision(&rx) {
+            PermissionDecision::Deny { reason, interrupt } => {
+                assert_eq!(reason, "Use `cargo clean` instead.");
+                assert!(interrupt);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opencode_always_allow_still_means_stop_asking() {
+        let (mut state, _rx) = waiting_on(
+            egant_harness::AgentId::Opencode,
+            pending(
+                "Read",
+                serde_json::json!({"filePath": "/tmp/x"}),
+                Vec::new(),
+            ),
+        );
+        let changed =
+            answer_permission(&mut state, 1, "r1", PermissionAnswer::AllowAlways).unwrap();
+        assert_eq!(changed, Some("bypassPermissions"));
+        assert_eq!(
+            state.sessions[&1].meta.permission_mode,
+            egant_harness::PermissionMode::BypassPermissions
+        );
+    }
+
+    #[test]
+    fn a_message_sent_mid_turn_waits_without_touching_the_transcript() {
+        let (mut state, _rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending("Bash", serde_json::json!({"command": "ls"}), Vec::new()),
+        );
+        let session = state.sessions.get_mut(&1).unwrap();
+        session.transcript.pending_permissions.clear();
+        session.transcript.state = egant_harness::TurnState::Running;
+        let before = session.transcript.entries.len();
+
+        let outcome = super::enqueue_if_busy(session, "and also this".into(), Vec::new()).unwrap();
+        assert!(outcome.queued);
+        assert_eq!(session.transcript.entries.len(), before, "no bubble yet");
+        assert_eq!(session.queued.len(), 1);
+
+        // Idle, it goes straight out instead.
+        session.transcript.state = egant_harness::TurnState::Idle;
+        assert!(super::enqueue_if_busy(session, "now".into(), Vec::new()).is_err());
+        assert_eq!(session.queued.len(), 1);
+
+        // A session with no process behind it is revived, never queued.
+        session.transcript.state = egant_harness::TurnState::Running;
+        session.commands = None;
+        assert!(super::enqueue_if_busy(session, "later".into(), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_turns_end_lets_out_one_message_and_only_when_it_ended_cleanly() {
+        let (mut state, _rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending("Bash", serde_json::json!({"command": "ls"}), Vec::new()),
+        );
+        let session = state.sessions.get_mut(&1).unwrap();
+        session.transcript.pending_permissions.clear();
+        session.transcript.state = egant_harness::TurnState::Running;
+        for text in ["first", "second"] {
+            super::enqueue_if_busy(session, text.into(), Vec::new()).unwrap();
+        }
+        session.transcript.state = egant_harness::TurnState::Idle;
+
+        // A failed or stopped turn leaves the queue for the user.
+        assert!(super::next_to_flush(session, false).is_none());
+        assert_eq!(session.queued.len(), 2);
+
+        // A clean end lets out exactly the oldest.
+        assert_eq!(super::next_to_flush(session, true).unwrap().text, "first");
+        assert_eq!(session.queued.len(), 1);
+
+        // Something waiting on the user holds the queue back...
+        session.transcript.pending_permissions.push(pending(
+            "Bash",
+            serde_json::json!({"command": "ls"}),
+            Vec::new(),
+        ));
+        assert!(super::next_to_flush(session, true).is_none());
+
+        // ...unless "Send now" stopped the turn, which lets it out whatever
+        // the end, and clears the prompts nobody is left to answer.
+        session.flush_next_end = true;
+        assert_eq!(super::next_to_flush(session, false).unwrap().text, "second");
+        assert!(session.transcript.pending_permissions.is_empty());
+        assert!(!session.flush_next_end, "the request is used up");
+    }
+
+    #[test]
+    fn a_generated_title_replaces_only_the_opening_line() {
+        let (mut state, _rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending("Bash", serde_json::json!({"command": "ls"}), Vec::new()),
+        );
+        let meta = &mut state.sessions.get_mut(&1).unwrap().meta;
+
+        meta.title = "Fix the grid it overlaps the sidebar at…".into();
+        meta.title_source = crate::state::TitleSource::FirstLine;
+        assert_eq!(
+            super::settle_generated_title(meta, Some("Fix Sidebar Grid Overlap".into())),
+            Some("Fix Sidebar Grid Overlap".into())
+        );
+        assert_eq!(meta.title, "Fix Sidebar Grid Overlap");
+        assert_eq!(meta.title_source, crate::state::TitleSource::Generated);
+
+        // A run that came back empty settles the opening line instead of
+        // trying again every turn.
+        meta.title = "Opening line".into();
+        meta.title_source = crate::state::TitleSource::FirstLine;
+        assert_eq!(super::settle_generated_title(meta, None), None);
+        assert_eq!(meta.title, "Opening line");
+        assert_eq!(meta.title_source, crate::state::TitleSource::Generated);
+
+        // What the user typed is never replaced.
+        meta.title = "My name for it".into();
+        meta.title_source = crate::state::TitleSource::User;
+        assert_eq!(
+            super::settle_generated_title(meta, Some("Other".into())),
+            None
+        );
+        assert_eq!(meta.title, "My name for it");
+    }
+
+    #[test]
+    fn a_rename_is_the_users_and_stays_tidy() {
+        let (mut state, _rx) = waiting_on(
+            egant_harness::AgentId::Claude,
+            pending("Bash", serde_json::json!({"command": "ls"}), Vec::new()),
+        );
+        assert_eq!(
+            super::rename_session(&mut state, 1, "  Ship   the  archive \n").unwrap(),
+            "Ship the archive"
+        );
+        assert_eq!(
+            state.sessions[&1].meta.title_source,
+            crate::state::TitleSource::User
+        );
+        assert!(super::rename_session(&mut state, 1, "   ").is_err());
+        assert!(super::rename_session(&mut state, 1, &"x".repeat(121)).is_err());
+        assert!(super::rename_session(&mut state, 9, "Nope").is_err());
+    }
+
+    #[test]
+    fn a_deny_carries_trimmed_feedback_and_the_stop_flag() {
+        let answer = PermissionAnswer::from_parts(
+            "deny",
+            None,
+            None,
+            Some("  use probe-z.txt instead  ".into()),
+            Some(true),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            answer,
+            PermissionAnswer::Deny {
+                feedback: Some("use probe-z.txt instead".into()),
+                stop: true
+            }
+        );
+        // Blank feedback is no feedback: the stock refusal goes out instead.
+        let answer =
+            PermissionAnswer::from_parts("deny", None, None, Some("   ".into()), None, None)
+                .unwrap();
+        assert_eq!(
+            answer,
+            PermissionAnswer::Deny {
+                feedback: None,
+                stop: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_plan_is_approved_into_a_mode_other_than_plan() {
+        assert_eq!(
+            PermissionAnswer::from_parts(
+                "approve-plan",
+                None,
+                None,
+                None,
+                None,
+                Some("acceptEdits")
+            ),
+            Ok(PermissionAnswer::ApprovePlan {
+                mode: egant_harness::PermissionMode::AcceptEdits
+            })
+        );
+        assert!(
+            PermissionAnswer::from_parts("approve-plan", None, None, None, None, Some("plan"))
+                .is_err()
+        );
+        assert!(
+            PermissionAnswer::from_parts("approve-plan", None, None, None, None, None).is_err()
+        );
+        assert!(PermissionAnswer::from_parts("perhaps", None, None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn manual_is_default_inside_a_mode_update() {
+        assert_eq!(
+            set_mode_update(egant_harness::PermissionMode::Manual)["mode"],
+            "default"
+        );
+        assert_eq!(
+            set_mode_update(egant_harness::PermissionMode::AcceptEdits)["mode"],
+            "acceptEdits"
+        );
+    }
+
+    /// The question the CLI actually asked in the capture this was built from.
+    fn color_question(multi: bool) -> serde_json::Value {
+        serde_json::json!({"questions": [{
+            "question": "Which color do you prefer?",
+            "header": "Color",
+            "options": [
+                {"label": "Red", "description": "The color red"},
+                {"label": "Blue", "description": "The color blue"}
+            ],
+            "multiSelect": multi
+        }]})
+    }
+
+    fn map(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn an_answer_echoes_the_question_and_adds_the_pick() {
+        let input = color_question(false);
+        let answered = answered_question_input(
+            &input,
+            &map(serde_json::json!({"Which color do you prefer?": "Blue"})),
+            &map(serde_json::json!({"Which color do you prefer?": "  for the header  "})),
+        )
+        .unwrap();
+        // The CLI refuses any change to what it asked, so it goes back as is.
+        assert_eq!(answered["questions"], input["questions"]);
+        assert_eq!(answered["answers"]["Which color do you prefer?"], "Blue");
+        assert_eq!(
+            answered["annotations"]["Which color do you prefer?"]["notes"],
+            "for the header"
+        );
+    }
+
+    #[test]
+    fn answers_are_held_to_the_clis_rules() {
+        let single = color_question(false);
+        let none = serde_json::Map::new();
+        // Nothing picked.
+        assert!(answered_question_input(&single, &none, &none).is_err());
+        // A question nobody asked.
+        assert!(
+            answered_question_input(&single, &map(serde_json::json!({"Why?": "Red"})), &none)
+                .is_err()
+        );
+        // Several picks for a single-select question.
+        assert!(
+            answered_question_input(
+                &single,
+                &map(serde_json::json!({"Which color do you prefer?": ["Red", "Blue"]})),
+                &none
+            )
+            .is_err()
+        );
+        // Too long.
+        let long = "x".repeat(MAX_ANSWER_CHARS + 1);
+        assert!(
+            answered_question_input(
+                &single,
+                &map(serde_json::json!({"Which color do you prefer?": long})),
+                &none
+            )
+            .is_err()
+        );
+
+        // Several picks are fine where the question allows them — up to every
+        // option plus one free-text answer.
+        let multi = color_question(true);
+        assert!(
+            answered_question_input(
+                &multi,
+                &map(serde_json::json!({"Which color do you prefer?": ["Red", "Blue", "Green"]})),
+                &none
+            )
+            .is_ok()
+        );
+        assert!(
+            answered_question_input(
+                &multi,
+                &map(serde_json::json!({"Which color do you prefer?": ["Red", "Blue", "Green", "Teal"]})),
+                &none
+            )
+            .is_err()
+        );
     }
 }

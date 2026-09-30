@@ -122,6 +122,14 @@ impl ClaudeOptions {
             "stream-json".into(),
             "--permission-prompts".into(),
             "host".into(),
+            // What the Agent SDK passes when its host answers prompts. It is
+            // what the CLI checks before registering the tools that need a
+            // person — AskUserQuestion, EnterPlanMode, ExitPlanMode — so
+            // without it Plan mode has no way to hand a plan back. (Measured
+            // on 2.1.276: without it the tool list lacks all three, and
+            // `manual` mode denies writes outright instead of asking.)
+            "--permission-prompt-tool".into(),
+            "stdio".into(),
             "--permission-mode".into(),
             self.permission_mode.as_cli_arg().into(),
         ];
@@ -340,18 +348,13 @@ impl Harness for ClaudeCode {
         decision: PermissionDecision,
     ) -> Result<()> {
         let response = match decision {
-            PermissionDecision::Allow { updated_input } => {
-                HostControlResponse::allow(request_id, updated_input)
+            PermissionDecision::Allow {
+                updated_input,
+                updated_permissions,
+            } => HostControlResponse::allow(request_id, updated_input, updated_permissions),
+            PermissionDecision::Deny { reason, interrupt } => {
+                HostControlResponse::deny(request_id, reason, interrupt)
             }
-            // The wire has no "always" reply: approve this one like an
-            // allow (with the original input echoed back — omitting
-            // `updatedInput` reads as a deny on older CLIs). Remembering the
-            // pattern for future turns happens in the session layer, which
-            // auto-answers the next match or flips to bypassPermissions.
-            PermissionDecision::AllowAlways { updated_input, .. } => {
-                HostControlResponse::allow(request_id, updated_input)
-            }
-            PermissionDecision::Deny { reason } => HostControlResponse::deny(request_id, reason),
         };
         self.write(&HostMessage::ControlResponse { response }).await
     }
@@ -499,15 +502,24 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
             if let Ok(mut slot) = session_id.lock() {
                 *slot = Some(system.session_id.clone());
             }
-            if system.subtype != "init" {
-                return Vec::new();
+            match system.subtype.as_str() {
+                "init" => vec![HarnessEvent::Ready {
+                    session_id: system.session_id,
+                    model: system.model,
+                    cwd: system.cwd,
+                    tools: system.tools,
+                }],
+                // The CLI saying which mode it now runs under — after an
+                // approved plan switched it, say, or Claude entered plan mode
+                // on its own. A name this build doesn't know changes nothing.
+                "status" => system
+                    .permission_mode
+                    .as_deref()
+                    .and_then(PermissionMode::from_cli_arg)
+                    .map(|mode| vec![HarnessEvent::ModeChanged { mode }])
+                    .unwrap_or_default(),
+                _ => Vec::new(),
             }
-            vec![HarnessEvent::Ready {
-                session_id: system.session_id,
-                model: system.model,
-                cwd: system.cwd,
-                tools: system.tools,
-            }]
         }
 
         CliMessage::Assistant(turn) => {
@@ -612,7 +624,12 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
 
         CliMessage::ControlRequest(envelope) => match envelope.request {
             ControlRequest::CanUseTool {
-                tool_name, input, ..
+                tool_name,
+                input,
+                permission_suggestions,
+                description,
+                blocked_path,
+                ..
             } => {
                 let (patterns, always_patterns) = crate::permission_patterns(&tool_name, &input);
                 vec![HarnessEvent::PermissionRequest {
@@ -621,6 +638,9 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
                     input,
                     patterns,
                     always_patterns,
+                    suggestions: permission_suggestions,
+                    description: description.filter(|text| !text.trim().is_empty()),
+                    blocked_path: blocked_path.filter(|path| !path.trim().is_empty()),
                 }]
             }
             ControlRequest::Unknown => Vec::new(),
@@ -661,6 +681,112 @@ mod tests {
         assert!(args.contains(&"--include-partial-messages".to_string()));
         // Permission prompts must reach the app, not a terminal.
         assert!(args.contains(&"host".to_string()));
+        // And through the SDK's own channel, which is what registers
+        // AskUserQuestion and ExitPlanMode at all.
+        let index = args
+            .iter()
+            .position(|a| a == "--permission-prompt-tool")
+            .expect("the stdio prompt tool is always passed");
+        assert_eq!(args[index + 1], "stdio");
+    }
+
+    /// Captured from CLI 2.1.276 with `--permission-prompt-tool stdio`.
+    const CAN_USE_ASK: &str = r#"{"type":"control_request","request_id":"e4739f12-be94-411b-8ebb-d7088332e4a5","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","display_name":"AskUserQuestion","input":{"questions":[{"question":"Which color do you prefer?","header":"Color","options":[{"label":"Red","description":"The color red"},{"label":"Blue","description":"The color blue"}],"multiSelect":false}]},"tool_use_id":"toolu_01V8MLEHC3DetLrn8pygcytE","requires_user_interaction":true}}"#;
+
+    /// Same run, in plan mode. `plan` arrives filled in from the plan file.
+    const CAN_USE_EXIT_PLAN: &str = r##"{"type":"control_request","request_id":"bd22c487-4219-4e54-883e-f829c6fe54f2","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","display_name":"ExitPlanMode","input":{"plan":"# Plan\n\nCreate `plan-probe.txt` with the contents `hi`.\n","planFilePath":"/Users/x/.claude/plans/plan-how-to-create-peppy-sphinx.md"},"tool_use_id":"toolu_01AV7AFkErfdi2FQ3G4Ysa8V","requires_user_interaction":true}}"##;
+
+    /// What the CLI said right after that plan was approved with a
+    /// `setMode acceptEdits` update.
+    const STATUS_ACCEPT_EDITS: &str = r#"{"type":"system","subtype":"status","status":null,"permissionMode":"acceptEdits","uuid":"a0ce193f-dc6e-4d4a-ae40-836204f8acd3","session_id":"4ae3d58e-29f9-4072-9607-e02230e3fd2e"}"#;
+
+    #[test]
+    fn a_question_arrives_as_a_request_for_its_own_tool() {
+        let message = serde_json::from_str(CAN_USE_ASK).unwrap();
+        match &translate(message, &Mutex::new(None))[0] {
+            HarnessEvent::PermissionRequest {
+                tool_name,
+                input,
+                suggestions,
+                ..
+            } => {
+                assert_eq!(tool_name, crate::ASK_USER_QUESTION);
+                assert!(crate::is_interactive_tool(tool_name));
+                assert_eq!(
+                    input["questions"][0]["question"],
+                    "Which color do you prefer?"
+                );
+                assert!(suggestions.is_empty());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_plan_arrives_with_its_text() {
+        let message = serde_json::from_str(CAN_USE_EXIT_PLAN).unwrap();
+        match &translate(message, &Mutex::new(None))[0] {
+            HarnessEvent::PermissionRequest {
+                tool_name, input, ..
+            } => {
+                assert_eq!(tool_name, crate::EXIT_PLAN_MODE);
+                assert!(input["plan"].as_str().unwrap().starts_with("# Plan"));
+                assert!(input["planFilePath"].as_str().is_some());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_status_frame_reports_the_mode_the_cli_now_runs_under() {
+        let message = serde_json::from_str(STATUS_ACCEPT_EDITS).unwrap();
+        let events = translate(message, &Mutex::new(None));
+        assert!(matches!(
+            events.as_slice(),
+            [HarnessEvent::ModeChanged {
+                mode: PermissionMode::AcceptEdits
+            }]
+        ));
+
+        // `manual` is `default` inside the CLI.
+        let message = serde_json::from_str(
+            r#"{"type":"system","subtype":"status","status":null,"permissionMode":"default","session_id":"s"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            translate(message, &Mutex::new(None)).as_slice(),
+            [HarnessEvent::ModeChanged {
+                mode: PermissionMode::Manual
+            }]
+        ));
+
+        // A status without a mode (compaction progress, say) is no mode news.
+        let message = serde_json::from_str(
+            r#"{"type":"system","subtype":"status","status":"compacting","session_id":"s"}"#,
+        )
+        .unwrap();
+        assert!(translate(message, &Mutex::new(None)).is_empty());
+    }
+
+    #[test]
+    fn a_permission_request_keeps_the_clis_suggestions_and_description() {
+        let message = serde_json::from_str(
+            r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch a.txt"},"description":"Create file a.txt","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch a.txt"}],"behavior":"allow","destination":"localSettings"},{"type":"setMode","mode":"acceptEdits","destination":"session"}],"blocked_path":"/tmp/p/a.txt","tool_use_id":"t1"}}"#,
+        )
+        .unwrap();
+        match &translate(message, &Mutex::new(None))[0] {
+            HarnessEvent::PermissionRequest {
+                suggestions,
+                description,
+                blocked_path,
+                ..
+            } => {
+                assert_eq!(suggestions.len(), 2);
+                assert_eq!(description.as_deref(), Some("Create file a.txt"));
+                assert_eq!(blocked_path.as_deref(), Some("/tmp/p/a.txt"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

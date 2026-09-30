@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
-    ChangeDto, ClaudeUsageDto, CloseResultDto, CommitDto, CommitRefDto, ConflictBlockDto,
-    ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, RepoRefDto, RepoStatusDto,
-    StateDto, TranscriptDto, UnmergedFileDto, WorktreeDto,
+    ArchivedSessionDto, ChangeDto, ClaudeUsageDto, CloseResultDto, CommitDto, CommitRefDto,
+    ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, RepoRefDto,
+    RepoStatusDto, SendResultDto, StateDto, TranscriptDto, UnmergedFileDto, WorktreeDto,
 };
 use crate::service::{self, DecisionOutcome};
 use crate::sessions;
@@ -428,31 +428,141 @@ async fn close_session(
         worktree
     };
 
-    let mut notice = None;
-    let mut kept = None;
-    if let Some(worktree) = worktree {
-        let force = force.unwrap_or(false);
-        let dto = worktree_dto(&worktree);
-        let released =
-            tauri::async_runtime::spawn_blocking(move || worktrees::release(&worktree, force))
-                .await
-                .map_err(|error| error.to_string())?;
-        match released {
-            // The expected outcomes, neither worth a line on screen: the
-            // checkout went with the conversation, or it was never egant's.
-            Released::Removed { .. } | Released::NotOurs => {}
-            Released::Kept { why, path } => {
-                notice = Some(format!("Kept the worktree at {} — {why}.", path.display()));
-                kept = Some(dto);
-            }
-        }
-    }
+    let (notice, kept) = release_closed_worktree(worktree, force.unwrap_or(false)).await?;
 
     let snapshot = state.lock().unwrap().snapshot();
     Ok(CloseResultDto {
         state: snapshot,
         notice,
         kept,
+    })
+}
+
+/// Archives a session: out of the window and its agent stopped, but kept on
+/// disk to be restored or deleted from Settings → Archived. What the sidebar's
+/// corner button does, with an Undo right after.
+#[tauri::command]
+fn archive_session(app: AppHandle, state: BackendState<'_>, id: u64) -> Result<StateDto, String> {
+    let mut guard = state.lock().unwrap();
+    sessions::archive_session(&mut guard, id).map_err(|error| {
+        log::error!("archive_session {id} failed: {error}");
+        error
+    })?;
+    // For a phone listing it, an archived session is simply gone.
+    sync::session_removed(&app, id, &Origin::Desktop);
+    Ok(guard.snapshot())
+}
+
+/// Renames a session to what the user typed; nothing generated replaces it
+/// afterwards. Answers with the title as saved (whitespace collapsed).
+#[tauri::command]
+fn rename_session(
+    app: AppHandle,
+    state: BackendState<'_>,
+    id: u64,
+    title: String,
+) -> Result<String, String> {
+    let mut guard = state.lock().unwrap();
+    let title = sessions::rename_session(&mut guard, id, &title)?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
+    Ok(title)
+}
+
+/// Brings an archived session back and selects it (Undo, or Restore in
+/// Settings → Archived).
+#[tauri::command]
+fn unarchive_session(app: AppHandle, state: BackendState<'_>, id: u64) -> Result<StateDto, String> {
+    let mut guard = state.lock().unwrap();
+    sessions::unarchive_session(&mut guard, id).map_err(|error| {
+        log::error!("unarchive_session {id} failed: {error}");
+        error
+    })?;
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
+    Ok(guard.snapshot())
+}
+
+/// Every archived session, most recently archived first. Read off the main
+/// thread: it opens one file per session.
+#[tauri::command]
+async fn list_archived_sessions() -> Result<Vec<ArchivedSessionDto>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::persist::list_archived()
+            .into_iter()
+            .map(|meta| ArchivedSessionDto {
+                id: meta.id,
+                title: meta.title,
+                project_name: egant_harness::project_display_name(&meta.project_path),
+                project_path: meta.project_path.display().to_string(),
+                kind: if meta.cli_agent.is_some() {
+                    "cli"
+                } else {
+                    "chat"
+                },
+                agent: meta
+                    .cli_agent
+                    .unwrap_or_else(|| meta.agent.as_str().to_string()),
+                started_unix_ms: meta.started_unix_ms,
+                archived_at_ms: meta.archived_at_ms.unwrap_or_default(),
+                branch: meta
+                    .worktree
+                    .as_ref()
+                    .map(|worktree| worktree.branch.clone())
+                    .or(meta.branch),
+                worktree: meta.worktree.as_ref().map(worktree_dto),
+                device: meta.device,
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Deletes an archived session for good, giving its worktree back the way
+/// closing did: a checkout holding work is kept, with a notice saying where,
+/// unless `force` — the notice's "Delete it anyway".
+#[tauri::command]
+async fn delete_archived_session(
+    state: BackendState<'_>,
+    id: u64,
+    force: Option<bool>,
+) -> Result<CloseResultDto, String> {
+    let worktree =
+        tauri::async_runtime::spawn_blocking(move || sessions::delete_archived_session(id))
+            .await
+            .map_err(|error| error.to_string())??;
+    let (notice, kept) = release_closed_worktree(worktree, force.unwrap_or(false)).await?;
+    let snapshot = state.lock().unwrap().snapshot();
+    Ok(CloseResultDto {
+        state: snapshot,
+        notice,
+        kept,
+    })
+}
+
+/// Gives back the worktree of a session that was just forgotten, off the UI
+/// thread. Answers with what the user should hear: nothing when the checkout
+/// went with the conversation (or was never egant's), or where it was kept
+/// and why.
+async fn release_closed_worktree(
+    worktree: Option<SessionWorktree>,
+    force: bool,
+) -> Result<(Option<String>, Option<WorktreeDto>), String> {
+    let Some(worktree) = worktree else {
+        return Ok((None, None));
+    };
+    let dto = worktree_dto(&worktree);
+    let released =
+        tauri::async_runtime::spawn_blocking(move || worktrees::release(&worktree, force))
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(match released {
+        // The expected outcomes, neither worth a line on screen: the
+        // checkout went with the conversation, or it was never egant's.
+        Released::Removed { .. } | Released::NotOurs => (None, None),
+        Released::Kept { why, path } => (
+            Some(format!("Kept the worktree at {} — {why}.", path.display())),
+            Some(dto),
+        ),
     })
 }
 
@@ -510,7 +620,7 @@ fn send_message(
     id: u64,
     text: String,
     images: Option<Vec<String>>,
-) -> Result<Option<String>, String> {
+) -> Result<SendResultDto, String> {
     let images: Vec<PathBuf> = images
         .unwrap_or_default()
         .into_iter()
@@ -522,9 +632,63 @@ fn send_message(
         images.len()
     );
     let mut guard = state.lock().unwrap();
-    service::send_message(&app, &mut guard, id, text, images, &Origin::Desktop).map_err(|error| {
-        log::error!("send_message session {id} failed: {error}");
-        error
+    let outcome = service::send_message(&app, &mut guard, id, text, images, &Origin::Desktop)
+        .map_err(|error| {
+            log::error!("send_message session {id} failed: {error}");
+            error
+        })?;
+    Ok(SendResultDto {
+        title: outcome.title,
+        queued: outcome.queued,
+        queue: guard
+            .sessions
+            .get(&id)
+            .map(sessions::queue_dto)
+            .unwrap_or_default(),
+    })
+}
+
+/// Takes a queued message back out — to edit it, or to drop it. Answers with
+/// its text (for the composer), or `null` when it already went out.
+#[tauri::command]
+fn unqueue_message(
+    state: BackendState<'_>,
+    id: u64,
+    queued_id: u64,
+) -> Result<Option<String>, String> {
+    let mut guard = state.lock().unwrap();
+    sessions::unqueue_message(&mut guard, id, queued_id)
+}
+
+/// Sends a queued message now: straight away when nothing is running, or by
+/// stopping the turn that is and sending it the moment that turn ends.
+#[tauri::command]
+fn send_queued_now(
+    app: AppHandle,
+    state: BackendState<'_>,
+    id: u64,
+    queued_id: u64,
+) -> Result<SendResultDto, String> {
+    let mut guard = state.lock().unwrap();
+    let before = guard
+        .sessions
+        .get(&id)
+        .map_or(0, |session| session.transcript.entries.len());
+    let outcome = sessions::send_queued_now(&app, &mut guard, id, queued_id)?;
+    if outcome.queued {
+        sync::interrupted(&app, id, &Origin::Desktop);
+    } else {
+        sync::transcript_grew(&app, &guard, id, before, &Origin::Desktop);
+    }
+    sync::session_touched(&app, &guard, id, &Origin::Desktop);
+    Ok(SendResultDto {
+        title: outcome.title,
+        queued: outcome.queued,
+        queue: guard
+            .sessions
+            .get(&id)
+            .map(sessions::queue_dto)
+            .unwrap_or_default(),
     })
 }
 
@@ -538,7 +702,12 @@ fn interrupt_session(app: AppHandle, state: BackendState<'_>, id: u64) -> Result
     })
 }
 
+/// Answers one outstanding request. `decision` is `allow`, `allow-always` or
+/// `deny` for an ordinary tool — a deny may carry `feedback` for the agent
+/// and `stop` to end the turn — `answer` with `answers` (and `notes`) for a
+/// question, or `approve-plan` with the `mode` to carry on in for a plan.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn answer_permission(
     app: AppHandle,
     state: BackendState<'_>,
@@ -547,17 +716,32 @@ fn answer_permission(
     decision: Option<String>,
     // Back-compat with frontends calling `answer_permission(id, allow)`.
     allow: Option<bool>,
+    answers: Option<serde_json::Map<String, serde_json::Value>>,
+    notes: Option<serde_json::Map<String, serde_json::Value>>,
+    feedback: Option<String>,
+    stop: Option<bool>,
+    mode: Option<String>,
 ) -> Result<Option<String>, String> {
     let mut guard = state.lock().unwrap();
     if let (Some(request_id), Some(decision)) = (request_id, decision) {
         log::info!("answer_permission session {id} {request_id} {decision}");
-        let Some(answer) = sessions::PermissionAnswer::from_str_name(&decision) else {
+        let known = sessions::PermissionAnswer::from_str_name(&decision).is_some()
+            || matches!(decision.as_str(), "answer" | "approve-plan");
+        if !known {
             // No-op, not an error: an unknown decision string (e.g. a newer
             // frontend than this backend) must not flash the red bar — the
             // row stays and the user can click again.
             log::warn!("answer_permission unknown decision `{decision}`; ignoring");
             return Ok(None);
-        };
+        }
+        let answer = sessions::PermissionAnswer::from_parts(
+            &decision,
+            answers,
+            notes,
+            feedback,
+            stop,
+            mode.as_deref(),
+        )?;
         service::answer_permission(&app, &mut guard, id, &request_id, answer, &Origin::Desktop)
             .map(|mode| mode.map(str::to_owned))
     } else if let Some(allow) = allow {
@@ -645,6 +829,7 @@ fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, Str
     };
     let mut dto = TranscriptDto::from(&session.transcript);
     dto.decision_responses = session.decisions.clone();
+    dto.queued = sessions::queue_dto(session);
     Ok(dto)
 }
 
@@ -1579,8 +1764,15 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         create_cli_session,
         select_session,
         close_session,
+        archive_session,
+        unarchive_session,
+        rename_session,
+        list_archived_sessions,
+        delete_archived_session,
         discard_worktree,
         send_message,
+        unqueue_message,
+        send_queued_now,
         interrupt_session,
         answer_permission,
         cycle_permission_mode,

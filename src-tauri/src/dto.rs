@@ -79,6 +79,28 @@ pub struct PendingDto {
     pub input: Value,
     pub patterns: Vec<String>,
     pub always_patterns: Vec<String>,
+    /// The CLI's own "don't ask again" options, which an "always" answer
+    /// hands back (see `egant_harness::always_allow_update`).
+    pub suggestions: Vec<Value>,
+    /// What the call does, in the agent's words.
+    pub description: Option<String>,
+    /// The path that made the agent ask, when one did.
+    pub blocked_path: Option<String>,
+}
+
+impl From<&egant_harness::PendingPermission> for PendingDto {
+    fn from(pending: &egant_harness::PendingPermission) -> Self {
+        Self {
+            request_id: pending.request_id.clone(),
+            tool_name: pending.tool_name.clone(),
+            input: pending.input.clone(),
+            patterns: pending.patterns.clone(),
+            always_patterns: pending.always_patterns.clone(),
+            suggestions: pending.suggestions.clone(),
+            description: pending.description.clone(),
+            blocked_path: pending.blocked_path.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +123,36 @@ pub struct TranscriptDto {
     /// prompt's id. Kept by the backend rather than one window, so every
     /// device sees a prompt answered wherever it was answered.
     pub decision_responses: std::collections::BTreeMap<String, Value>,
+    /// Messages waiting for the running turn to end, oldest first.
+    pub queued: Vec<QueuedDto>,
+}
+
+/// One message waiting its turn, as the composer shows it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedDto {
+    pub id: u64,
+    pub text: String,
+    pub image_count: usize,
+}
+
+/// The payload of the `session-queue` window event: a session's queue after
+/// the app sent the next message in it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQueuePayload {
+    pub session_id: u64,
+    pub queued: Vec<QueuedDto>,
+}
+
+/// What sending a message did, for the window: the session's new title when
+/// it named the session, and its queue when the message joined it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendResultDto {
+    pub title: Option<String>,
+    pub queued: bool,
+    pub queue: Vec<QueuedDto>,
 }
 
 /// What a session has spent, for the meter under the composer. Mirrors
@@ -164,13 +216,7 @@ pub fn pending_list(transcript: &Transcript) -> Vec<PendingDto> {
     let pending_list: Vec<PendingDto> = transcript
         .pending_permissions
         .iter()
-        .map(|pending| PendingDto {
-            request_id: pending.request_id.clone(),
-            tool_name: pending.tool_name.clone(),
-            input: pending.input.clone(),
-            patterns: pending.patterns.clone(),
-            always_patterns: pending.always_patterns.clone(),
-        })
+        .map(PendingDto::from)
         .collect();
     // Backfill from the legacy single slot when the list is empty (a
     // transcript restored from disk written before the table existed
@@ -179,13 +225,7 @@ pub fn pending_list(transcript: &Transcript) -> Vec<PendingDto> {
         transcript
             .pending_permission
             .as_ref()
-            .map(|pending| PendingDto {
-                request_id: pending.request_id.clone(),
-                tool_name: pending.tool_name.clone(),
-                input: pending.input.clone(),
-                patterns: pending.patterns.clone(),
-                always_patterns: pending.always_patterns.clone(),
-            })
+            .map(PendingDto::from)
             .into_iter()
             .collect()
     } else {
@@ -208,6 +248,7 @@ impl From<&Transcript> for TranscriptDto {
             last_turn_ms: transcript.last_turn_ms,
             usage: SessionUsageDto::from(&transcript.usage),
             decision_responses: Default::default(),
+            queued: Vec::new(),
         }
     }
 }
@@ -263,6 +304,13 @@ pub enum EventDto {
         patterns: Vec<String>,
         #[serde(default)]
         always_patterns: Vec<String>,
+        suggestions: Vec<Value>,
+        description: Option<String>,
+        blocked_path: Option<String>,
+    },
+    /// The mode the agent now runs under, by its CLI flag name.
+    ModeChanged {
+        mode: &'static str,
     },
     TurnEnded {
         result: Option<String>,
@@ -324,12 +372,21 @@ impl From<&HarnessEvent> for EventDto {
                 input,
                 patterns,
                 always_patterns,
+                suggestions,
+                description,
+                blocked_path,
             } => EventDto::PermissionRequest {
                 request_id: request_id.clone(),
                 tool_name: tool_name.clone(),
                 input: input.clone(),
                 patterns: patterns.clone(),
                 always_patterns: always_patterns.clone(),
+                suggestions: suggestions.clone(),
+                description: description.clone(),
+                blocked_path: blocked_path.clone(),
+            },
+            HarnessEvent::ModeChanged { mode } => EventDto::ModeChanged {
+                mode: mode.as_cli_arg(),
             },
             HarnessEvent::TurnEnded {
                 result,
@@ -365,6 +422,15 @@ impl From<&HarnessEvent> for EventDto {
 pub struct SessionEventPayload {
     pub session_id: u64,
     pub event: EventDto,
+}
+
+/// The payload of the `session-titled` window event: a session's first turn
+/// was titled by a small model, replacing the first message's opening line.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTitledPayload {
+    pub session_id: u64,
+    pub title: String,
 }
 
 /// The payload of the `worktree-renamed` window event: a session's first turn
@@ -416,7 +482,15 @@ pub struct SessionDto {
     /// started on this machine.
     pub device: Option<String>,
     pub ended: bool,
+    /// A turn is in flight or blocked on the user — the composer's stop
+    /// button. `state` says which.
     pub busy: bool,
+    /// `idle`, `running` or `awaiting_permission`: what the sidebar row says
+    /// — "Working" only while the agent really is, "Needs you" while it
+    /// waits on an answer.
+    pub state: &'static str,
+    /// Requests waiting on the user (permissions, questions, plans).
+    pub pending_count: usize,
     pub model: Option<String>,
     pub total_cost_usd: f64,
 }
@@ -482,6 +556,27 @@ pub struct RepoRefDto {
     /// The worktree this branch is checked out in, if any — which is what
     /// makes it startable without any git running at all.
     pub worktree_path: Option<String>,
+}
+
+/// One archived session, as Settings → Archived lists it. Read from disk: an
+/// archived session has no row in the window's state.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedSessionDto {
+    pub id: u64,
+    pub title: String,
+    /// The folder it belongs to — restoring needs that project open.
+    pub project_path: String,
+    pub project_name: String,
+    /// As on a session row: a harness, or a catalog agent for a CLI session.
+    pub agent: String,
+    pub kind: &'static str,
+    pub started_unix_ms: u64,
+    pub archived_at_ms: u64,
+    pub branch: Option<String>,
+    /// The worktree kept for it, when it ran in one.
+    pub worktree: Option<WorktreeDto>,
+    pub device: Option<String>,
 }
 
 /// Closing a session answers with the fresh snapshot and, when there was a

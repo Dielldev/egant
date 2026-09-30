@@ -105,6 +105,10 @@ pub fn save_projects(paths: &[PathBuf]) {
 pub struct PersistedMeta {
     pub id: u64,
     pub title: String,
+    /// Where the title came from (see `TitleSource`). `#[serde(default)]`:
+    /// sessions saved before it was recorded read as settled, never retitled.
+    #[serde(default)]
+    pub title_source: crate::state::TitleSource,
     pub project_path: PathBuf,
     pub cwd: PathBuf,
     pub branch: Option<String>,
@@ -133,6 +137,11 @@ pub struct PersistedMeta {
     /// sessions written before it was recorded still load, as the Mac's own.
     #[serde(default)]
     pub device: Option<String>,
+    /// When the session was archived: it stays on disk, out of the window,
+    /// until it is restored or deleted (Settings → Archived). Never written
+    /// for a live session, so a file only carries the key while archived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,13 +175,16 @@ fn session_path(id: u64) -> Option<PathBuf> {
 /// also being followed shortly by a coarser event that saves it anyway, and
 /// if it is, losing the last few in-flight words is a fair trade against
 /// disk I/O on every token).
+///
+/// Returns whether the file was written — which archiving needs to know
+/// before it takes a session out of the window.
 pub fn save_session(
     meta: &PersistedMeta,
     transcript: &Transcript,
     decisions: &BTreeMap<String, serde_json::Value>,
-) {
+) -> bool {
     let Some(path) = session_path(meta.id) else {
-        return;
+        return false;
     };
     let record = PersistedSession {
         meta: meta.clone(),
@@ -181,12 +193,17 @@ pub fn save_session(
         modified_ms: 0,
     };
     match serde_json::to_string(&record) {
-        Ok(text) => {
-            if let Err(error) = write_atomic(&path, &text) {
+        Ok(text) => match write_atomic(&path, &text) {
+            Ok(()) => true,
+            Err(error) => {
                 log::warn!("could not write {}: {error}", path.display());
+                false
             }
+        },
+        Err(error) => {
+            log::warn!("could not serialize session {}: {error}", meta.id);
+            false
         }
-        Err(error) => log::warn!("could not serialize session {}: {error}", meta.id),
     }
 }
 
@@ -202,10 +219,11 @@ pub fn delete_session(id: u64) {
     }
 }
 
-/// Every session left over from previous runs, oldest first (by
-/// `started_unix_ms`) so restoring them rebuilds the same chronological order
-/// they were created in. A single corrupt file is skipped and logged rather
-/// than losing every other session in the directory.
+/// Every session left over from previous runs, archived ones included, oldest
+/// first (by `started_unix_ms`) so restoring them rebuilds the same
+/// chronological order they were created in. A single corrupt file is
+/// skipped and logged rather than losing every other session in the
+/// directory.
 pub fn load_sessions() -> Vec<PersistedSession> {
     let Some(dir) = sessions_dir() else {
         return Vec::new();
@@ -217,29 +235,63 @@ pub fn load_sessions() -> Vec<PersistedSession> {
     let mut sessions: Vec<PersistedSession> = entries
         .flatten()
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|entry| {
-            let path = entry.path();
-            let text = std::fs::read_to_string(&path).ok()?;
-            match serde_json::from_str::<PersistedSession>(&text) {
-                Ok(mut session) => {
-                    session.modified_ms = entry
-                        .metadata()
-                        .and_then(|metadata| metadata.modified())
-                        .ok()
-                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map_or(0, |since| since.as_millis() as u64);
-                    Some(session)
-                }
-                Err(error) => {
-                    log::warn!("ignoring unreadable session at {}: {error}", path.display());
-                    None
-                }
-            }
-        })
+        .filter_map(|entry| read_session(&entry.path()))
         .collect();
 
     sessions.sort_by_key(|s| s.meta.started_unix_ms);
     sessions
+}
+
+/// One session's file, with `modified_ms` read back from the filesystem.
+fn read_session(path: &Path) -> Option<PersistedSession> {
+    let text = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<PersistedSession>(&text) {
+        Ok(mut session) => {
+            session.modified_ms = std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_millis() as u64);
+            Some(session)
+        }
+        Err(error) => {
+            log::warn!("ignoring unreadable session at {}: {error}", path.display());
+            None
+        }
+    }
+}
+
+/// One saved session, by id — what restoring an archived one reads.
+pub fn load_session(id: u64) -> Option<PersistedSession> {
+    read_session(&session_path(id)?)
+}
+
+/// The archived sessions' metadata, most recently archived first. Only the
+/// `meta` object is materialized — the transcripts behind them can be long,
+/// and the list shows none of them.
+pub fn list_archived() -> Vec<PersistedMeta> {
+    #[derive(Deserialize)]
+    struct MetaOnly {
+        meta: PersistedMeta,
+    }
+    let Some(dir) = sessions_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut archived: Vec<PersistedMeta> = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| {
+            let text = std::fs::read_to_string(entry.path()).ok()?;
+            serde_json::from_str::<MetaOnly>(&text).ok()
+        })
+        .map(|file| file.meta)
+        .filter(|meta| meta.archived_at_ms.is_some())
+        .collect();
+    archived.sort_by_key(|meta| std::cmp::Reverse(meta.archived_at_ms));
+    archived
 }
 
 #[cfg(test)]
@@ -284,6 +336,7 @@ mod tests {
         let meta = PersistedMeta {
             id: 7,
             title: "Fix the grid".into(),
+            title_source: crate::state::TitleSource::Generated,
             project_path: PathBuf::from("/tmp/project"),
             cwd: PathBuf::from("/tmp/project"),
             branch: Some("main".into()),
@@ -296,6 +349,7 @@ mod tests {
             permission_mode: PermissionMode::Auto,
             worktree: None,
             device: None,
+            archived_at_ms: None,
         };
 
         let text = serde_json::to_string(&PersistedSession {
@@ -321,6 +375,7 @@ mod tests {
         let meta = PersistedMeta {
             id: 3,
             title: "Old session".into(),
+            title_source: crate::state::TitleSource::Generated,
             project_path: PathBuf::from("/tmp/project"),
             cwd: PathBuf::from("/tmp/project"),
             branch: None,
@@ -333,6 +388,7 @@ mod tests {
             permission_mode: PermissionMode::Auto,
             worktree: None,
             device: None,
+            archived_at_ms: None,
         };
         let mut value = serde_json::to_value(&PersistedSession {
             meta,
@@ -351,6 +407,41 @@ mod tests {
         let back: PersistedSession = serde_json::from_value(value).expect("deserializes");
         assert_eq!(back.meta.cli_agent, None);
         assert_eq!(back.meta.agent, AgentId::Claude);
+    }
+
+    /// A live session's file never names the archive at all — older builds
+    /// read it exactly as before — and an archived one says when.
+    #[test]
+    fn the_archive_mark_is_only_written_while_archived() {
+        let meta = PersistedMeta {
+            id: 4,
+            title: "Tidy the sidebar".into(),
+            title_source: crate::state::TitleSource::Generated,
+            project_path: PathBuf::from("/tmp/project"),
+            cwd: PathBuf::from("/tmp/project"),
+            branch: None,
+            started_unix_ms: 1,
+            agent: AgentId::Claude,
+            cli_agent: None,
+            model: None,
+            variant: None,
+            context: None,
+            permission_mode: PermissionMode::Auto,
+            worktree: None,
+            device: None,
+            archived_at_ms: None,
+        };
+        let live = serde_json::to_value(&meta).unwrap();
+        assert!(live.get("archived_at_ms").is_none());
+
+        let archived = serde_json::to_value(PersistedMeta {
+            archived_at_ms: Some(99),
+            ..meta
+        })
+        .unwrap();
+        assert_eq!(archived["archived_at_ms"], 99);
+        let back: PersistedMeta = serde_json::from_value(archived).unwrap();
+        assert_eq!(back.archived_at_ms, Some(99));
     }
 
     #[test]

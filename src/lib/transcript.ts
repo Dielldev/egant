@@ -5,11 +5,14 @@
 // token instead of a full snapshot per token.
 
 import type {
+  AskQuestion,
   DecisionOption,
   DecisionRequest,
   DecisionResponse,
   Entry,
   HarnessEvent,
+  PendingPermission,
+  PermissionUpdate,
   SessionUsage,
   TranscriptDto,
   TranscriptState,
@@ -250,12 +253,15 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
     }
 
     case "permission_request": {
-      const incoming = {
+      const incoming: PendingPermission = {
         requestId: event.request_id,
         toolName: event.tool_name,
         input: event.input,
         patterns: event.patterns ?? [],
         alwaysPatterns: event.always_patterns ?? [],
+        suggestions: event.suggestions ?? [],
+        description: event.description ?? null,
+        blockedPath: event.blocked_path ?? null,
       };
       // Re-asks replace; new ids append — the table holds every outstanding
       // prompt, and `pending` mirrors the first for legacy readers.
@@ -291,6 +297,11 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
         ...s,
         entries: [...s.entries, { kind: "notice", text: event.message, isError: true }],
       };
+
+    // The mode belongs to the session row, not the conversation: the store
+    // patches the row from the same event.
+    case "mode_changed":
+      return prev;
 
     case "context_update": {
       const usage = { ...s.usage, contextTokens: event.context_tokens };
@@ -498,6 +509,149 @@ export function formatDecisionReply(prompt: DecisionRequest, response: DecisionR
   const lines = [`Decision — ${prompt.title}`, `Selected: ${picks.length > 0 ? picks.join(", ") : "(none)"}`];
   if (response.customText) lines.push(`Note: ${response.customText}`);
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Permission requests: questions, plans, and what "always allow" saves
+// ---------------------------------------------------------------------------
+
+/** Claude's built-in tools whose permission request is really a question for
+ * the person. Mirrors `egant_harness::{ASK_USER_QUESTION, EXIT_PLAN_MODE}`. */
+export const ASK_USER_QUESTION = "AskUserQuestion";
+export const EXIT_PLAN_MODE = "ExitPlanMode";
+
+export function isInteractiveTool(toolName: string): boolean {
+  return toolName === ASK_USER_QUESTION || toolName === EXIT_PLAN_MODE;
+}
+
+/** Whether a pending request gets a card of its own (a question, a plan)
+ * rather than a row in the permission table. A question whose input isn't
+ * the tool's shape stays in the table, where it can at least be refused. */
+export function isCardRequest(pending: PendingPermission): boolean {
+  return (
+    isInteractiveTool(pending.toolName) &&
+    (pending.toolName !== ASK_USER_QUESTION || askQuestions(pending.input).length > 0)
+  );
+}
+
+/** The one suggestion an "always allow" answer applies — the rule the CLI
+ * proposed, else access to the directory it named, never a mode switch. The
+ * backend makes the same pick (`egant_harness::always_allow_update`); this is
+ * so the button can say what it will save. */
+export function alwaysAllowUpdate(suggestions: PermissionUpdate[] | undefined): PermissionUpdate | null {
+  const list = suggestions ?? [];
+  return (
+    list.find((s) => s.type === "addRules") ?? list.find((s) => s.type === "addDirectories") ?? null
+  );
+}
+
+/** Where a permission update is kept, as a few words after the rule. */
+function destinationLabel(destination: string | undefined): string {
+  switch (destination) {
+    case "localSettings":
+      return "in this project";
+    case "projectSettings":
+      return "in this project, for everyone";
+    case "userSettings":
+      return "in every project";
+    case "session":
+      return "for this chat";
+    default:
+      return "";
+  }
+}
+
+/** What "Always allow" will do for one request, in the button's words and a
+ * fuller tooltip. `null` when the request has nothing wider to approve. */
+export function describeAlwaysAllow(
+  pending: PendingPermission,
+  agent: string,
+): { label: string; detail: string } | null {
+  if (agent === "opencode") {
+    return {
+      label: "Always allow",
+      detail: "opencode can't save a rule: this stops it asking for anything in this chat (Bypass permissions).",
+    };
+  }
+  const update = alwaysAllowUpdate(pending.suggestions);
+  if (update?.type === "addRules") {
+    const rule = update.rules?.[0];
+    if (rule) {
+      const text = rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName;
+      const where = destinationLabel(update.destination);
+      return {
+        label: `Always allow ${text}`,
+        detail: `Saves ${text} as an allowed rule${where ? ` ${where}` : ""}, so it won't ask for it again. Everything else still asks.`,
+      };
+    }
+  }
+  if (update?.type === "addDirectories" && update.directories?.[0]) {
+    const dir = update.directories[0];
+    const where = destinationLabel(update.destination);
+    return {
+      label: "Always allow this folder",
+      detail: `Allows working in ${dir}${where ? ` ${where}` : ""}.`,
+    };
+  }
+  // No rule offered: the backend remembers this request's patterns for the
+  // rest of the run instead (`remember_patterns`).
+  const patterns = [...(pending.patterns ?? []), ...(pending.alwaysPatterns ?? [])].filter(
+    (p, i, all) => p && all.indexOf(p) === i,
+  );
+  return {
+    label: "Allow for this chat",
+    detail:
+      patterns.length > 0
+        ? `Won't ask again for ${patterns.join(", ")} until the app restarts.`
+        : "Won't ask again for this until the app restarts.",
+  };
+}
+
+/** The questions of an AskUserQuestion request, or `[]` when its input isn't
+ * the shape the tool takes. */
+export function askQuestions(input: unknown): AskQuestion[] {
+  const questions = (input as { questions?: unknown } | null)?.questions;
+  if (!Array.isArray(questions)) return [];
+  return questions.flatMap((raw): AskQuestion[] => {
+    if (raw === null || typeof raw !== "object") return [];
+    const q = raw as Record<string, unknown>;
+    if (typeof q.question !== "string" || !Array.isArray(q.options)) return [];
+    const options = q.options.flatMap((o): AskQuestion["options"] => {
+      if (o === null || typeof o !== "object") return [];
+      const opt = o as Record<string, unknown>;
+      if (typeof opt.label !== "string") return [];
+      return [{ label: opt.label, description: typeof opt.description === "string" ? opt.description : undefined }];
+    });
+    return [
+      {
+        question: q.question,
+        header: typeof q.header === "string" ? q.header : undefined,
+        options,
+        multiSelect: q.multiSelect === true,
+      },
+    ];
+  });
+}
+
+/** The plan an ExitPlanMode request carries, and the file it was written to. */
+export function planOf(input: unknown): { plan: string | null; path: string | null } {
+  const obj = (input ?? {}) as Record<string, unknown>;
+  return {
+    plan: typeof obj.plan === "string" && obj.plan.trim() !== "" ? obj.plan : null,
+    path: typeof obj.planFilePath === "string" ? obj.planFilePath : null,
+  };
+}
+
+/** The picks the CLI reported back for an answered question, parsed from the
+ * tool's result (`"Which color?"="Blue"`). Keyed by question text. */
+export function answeredPicks(output: string | null | undefined): Record<string, string> {
+  const picks: Record<string, string> = {};
+  if (!output) return picks;
+  const re = /"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"/g;
+  for (const match of output.matchAll(re)) {
+    picks[match[1]!] = match[2]!;
+  }
+  return picks;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,12 @@
 import {
   ArrowUp,
+  Clock,
   Folder,
   FolderTree,
   GitBranch,
   Loader2,
   Paperclip,
+  Pencil,
   Square,
   TerminalSquare,
   TriangleAlert,
@@ -64,6 +66,9 @@ export function Composer({
   const catalog = useEgant((s) => s.catalog);
   const chatUiAgents = useEgant((s) => s.chatUiAgents);
   const askCliLaunch = useEgant((s) => s.askCliLaunch);
+  const queue = useEgant((s) => (sessionId == null ? undefined : s.queues[sessionId]));
+  const unqueueMessage = useEgant((s) => s.unqueueMessage);
+  const sendQueuedNow = useEgant((s) => s.sendQueuedNow);
 
   const [text, setText] = useState("");
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
@@ -266,7 +271,11 @@ export function Composer({
         }
       }}
       placeholder={
-        cliAgent ? `${cliAgentName} runs in its own terminal` : "Do anything…"
+        cliAgent
+          ? `${cliAgentName} runs in its own terminal`
+          : busy
+            ? "Queue a message…"
+            : "Do anything…"
       }
       className="block max-h-[240px] w-full resize-none bg-transparent text-[15px] leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--muted)] disabled:opacity-50"
     />
@@ -308,6 +317,65 @@ export function Composer({
               className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-[var(--stage)] text-[var(--muted)] opacity-0 hover:text-[var(--ink)] group-hover:opacity-100"
             >
               <X size={10} strokeWidth={2.5} />
+            </button>
+          </div>
+        ))}
+      </div>
+    ) : null;
+
+  // Messages sent while the agent works wait here, oldest first, until the
+  // turn ends — then the backend sends the next one. Each can go out now
+  // (stopping the turn), come back into the box to be edited, or be dropped.
+  // Editing is left off one that carries images, which the box can't hold.
+  const editQueued = async (queuedId: number) => {
+    if (sessionId == null) return;
+    const queuedText = await unqueueMessage(sessionId, queuedId);
+    if (queuedText == null) return;
+    setText((prev) => (prev.trim() ? `${queuedText}\n${prev}` : queuedText));
+    requestAnimationFrame(() => areaRef.current?.focus());
+  };
+  const queueRow =
+    sessionId != null && queue && queue.length > 0 ? (
+      <div className="mb-1.5 flex flex-col gap-1 px-1">
+        {queue.map((queued) => (
+          <div
+            key={queued.id}
+            className="row-in flex min-w-0 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] py-1.5 pr-1.5 pl-3 text-[12.5px]"
+          >
+            <Clock size={12} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
+            <span className="min-w-0 flex-1 truncate text-[var(--muted)]" title={queued.text}>
+              {queued.text}
+            </span>
+            {queued.imageCount > 0 && (
+              <span className="shrink-0 text-[11px] text-[var(--faint)]">
+                +{queued.imageCount} image{queued.imageCount === 1 ? "" : "s"}
+              </span>
+            )}
+            <button
+              type="button"
+              title={busy ? "Send now — stops the current turn first" : "Send now"}
+              onClick={() => void sendQueuedNow(sessionId, queued.id)}
+              className="shrink-0 cursor-pointer rounded-md px-1.5 py-0.5 text-[11px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              Send now
+            </button>
+            {queued.imageCount === 0 && (
+              <button
+                type="button"
+                title="Edit — back into the box"
+                onClick={() => void editQueued(queued.id)}
+                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+              >
+                <Pencil size={12} strokeWidth={2} />
+              </button>
+            )}
+            <button
+              type="button"
+              title="Remove from the queue"
+              onClick={() => void unqueueMessage(sessionId, queued.id)}
+              className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <X size={12} strokeWidth={2} />
             </button>
           </div>
         ))}
@@ -427,6 +495,7 @@ export function Composer({
 
   return (
     <div ref={wrapRef} className="w-full min-w-0">
+      {queueRow}
       {/* One DOM for both widths — only classes change — so the text box is
         never remounted (and never loses focus or its caret) as the column is
         dragged across the breakpoint. */}
