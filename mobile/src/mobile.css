@@ -24,6 +24,13 @@ body {
   font-family:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-size: 15px;
+  /* SF Pro, tuned: it switches to its Display cut on its own at large sizes;
+   * a touch of negative tracking and grayscale smoothing is what makes it
+   * read as the system's own. */
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "calt", "kern";
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
 }
@@ -72,6 +79,7 @@ html[data-theme="light"] {
   --raised-2: color-mix(in srgb, var(--stage) 84%, var(--ink) 16%);
   --hairline: color-mix(in srgb, var(--ink) 9%, transparent);
   --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .safe-top {
@@ -219,7 +227,161 @@ html[data-theme="light"] {
   background: var(--stage);
 }
 
+/* The new chat's picture: the top 40% of the screen, dissolving into the
+ * page from its lower half. A mask rather than a colour, so it melts into
+ * black or white alike. */
+.hero {
+  -webkit-mask-image: linear-gradient(to bottom, #000 42%, rgba(0, 0, 0, 0.55) 68%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 42%, rgba(0, 0, 0, 0.55) 68%, transparent 100%);
+  animation: hero-in 0.9s ease-out backwards;
+}
+.hero-image {
+  animation: hero-settle 1.6s var(--ease-ios) backwards;
+}
+.hero-glow {
+  background: radial-gradient(
+    120% 90% at 50% 0%,
+    color-mix(in srgb, var(--ink) 16%, transparent),
+    transparent 72%
+  );
+}
+@keyframes hero-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes hero-settle {
+  from {
+    transform: scale(1.08);
+  }
+}
+
+/* Over a picture, the bar's buttons are white whichever scheme the page is in. */
+.on-hero {
+  --ink: #ffffff;
+  --muted: rgba(255, 255, 255, 0.72);
+  --faint: rgba(255, 255, 255, 0.5);
+  --hover: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+.greeting {
+  letter-spacing: -0.032em;
+}
+.word-in {
+  animation: word-in 0.8s var(--ease-ios) backwards;
+}
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+/* The composer comes up from the bottom edge. */
+.rise-in {
+  animation: rise-in 0.75s var(--ease-ios) backwards;
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(36px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Glass on a phone: a lighter lift than the desktop's, and a brighter edge
+ * once it has the cursor. */
+.composer {
+  box-shadow:
+    0 10px 36px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 var(--hover);
+  transition:
+    border-color 0.25s ease,
+    box-shadow 0.35s var(--ease-ios);
+}
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  box-shadow:
+    0 14px 44px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 var(--hover);
+}
+
+/* A menu opening from the + grows out of it. */
+.pop-in {
+  transform-origin: bottom left;
+  animation: pop-in 0.34s var(--ease-spring) backwards;
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A usage bar fills from empty when it appears. */
+.bar-grow {
+  animation: bar-grow 0.9s var(--ease-ios) backwards;
+}
+@keyframes bar-grow {
+  from {
+    width: 0;
+  }
+}
+
+/* The filter menu drops from its button, top right. */
+.pop-in-top {
+  transform-origin: top right;
+  animation: pop-in-top 0.3s var(--ease-spring) backwards;
+}
+@keyframes pop-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Send arriving (or turning into Stop): the disc pops in. */
+.swap-in {
+  animation: swap-in 0.3s var(--ease-spring) backwards;
+}
+@keyframes swap-in {
+  from {
+    opacity: 0.4;
+    transform: scale(0.6) rotate(-40deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .hero,
+  .hero-image,
+  .word-in,
+  .rise-in,
+  .pop-in,
+  .pop-in-top,
+  .swap-in,
+  .bar-grow,
   .sheet,
   .drawer-slide,
   .page-in,

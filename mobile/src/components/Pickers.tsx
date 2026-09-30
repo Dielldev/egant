@@ -1,4 +1,4 @@
-import { AlertTriangle, RotateCw, Search, ShieldOff } from "lucide-react";
+import { AlertTriangle, Folder, RotateCw, Search, ShieldOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { SHORT_NAMES, fallbackName, variantLabel } from "@egant/lib/agents";
 import { MODE_INFO, NUMBERED_MODES } from "@egant/lib/modes";
@@ -371,7 +371,7 @@ export function ProjectSheet({ open, onClose }: { open: boolean; onClose: () => 
             {projects.map((project) => (
               <Choice
                 key={project.id}
-                leading={<ProjectDot hue={project.hue} />}
+                leading={<ProjectIcon />}
                 label={project.name}
                 detail={chatsLabel(counts.get(project.id) ?? 0)}
                 selected={current === project.id}
@@ -390,11 +390,8 @@ function chatsLabel(n: number): string {
   return n === 1 ? "1 chat" : `${n} chats`;
 }
 
-export function ProjectDot({ size = 10 }: { hue?: number; size?: number }) {
-  return (
-    <span
-      className="inline-block shrink-0 rounded-full bg-[var(--faint)]"
-      style={{ width: size, height: size }}
-    />
-  );
+/** A project is a folder on the Mac; this is its mark wherever the phone
+ * names one. */
+export function ProjectIcon({ size = 18 }: { size?: number }) {
+  return <Folder size={size} strokeWidth={1.9} className="shrink-0" />;
 }

@@ -1,6 +1,8 @@
 import {
   ChevronRight,
   FolderOpen,
+  Gauge,
+  ImagePlus,
   LogOut,
   Monitor,
   Plus,
@@ -8,10 +10,11 @@ import {
   Shield,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { fallbackName, variantLabel } from "@egant/lib/agents";
 import { modeLabel } from "@egant/lib/transcript";
+import { clearHero, setHero, useHero } from "../hero";
 import { usePrefs } from "../prefs";
 import type { Scheme } from "../prefs";
 import { pickAgent, pickProject, useMobile } from "../store";
@@ -36,6 +39,7 @@ export function SettingsScreen() {
   const catalogs = useMobile((s) => s.models);
   const loadModels = useMobile((s) => s.loadModels);
   const forget = useMobile((s) => s.forget);
+  const openUsage = useMobile((s) => s.openUsage);
   const prefs = usePrefs();
   const [sheet, setSheet] = useState<SheetName>(null);
 
@@ -108,6 +112,15 @@ export function SettingsScreen() {
             />
           </Group>
 
+          <Group label="Usage">
+            <Row
+              icon={<Gauge size={18} strokeWidth={2} />}
+              label="Limits and context"
+              value="Claude 5-hour, weekly"
+              onClick={openUsage}
+            />
+          </Group>
+
           <Group label="Appearance">
             <div className="px-3 py-3">
               <Segmented<Scheme>
@@ -120,6 +133,18 @@ export function SettingsScreen() {
                 onChange={(value) => prefs.set({ scheme: value })}
               />
             </div>
+          </Group>
+
+          <Group
+            label="Home image"
+            note="Fills the top of a new chat and fades into the page. It stays on this phone."
+          >
+            <HeroPicker />
+            <Toggle
+              label="Show on new chats"
+              checked={prefs.heroEnabled}
+              onChange={(heroEnabled) => prefs.set({ heroEnabled })}
+            />
           </Group>
 
           <Group label="Chats">
@@ -208,6 +233,70 @@ export function SettingsScreen() {
           </button>
         </div>
       </Sheet>
+    </div>
+  );
+}
+
+/** The picture across a new chat's top: a preview of it, and the two things
+ * to do with it — choose one from the photos, or take it away. */
+function HeroPicker() {
+  const image = useHero((s) => s.image);
+  const showToast = useMobile((s) => s.showToast);
+  const input = useRef<HTMLInputElement>(null);
+  const [working, setWorking] = useState(false);
+
+  const choose = async (file: File | undefined) => {
+    if (!file) return;
+    setWorking(true);
+    try {
+      await setHero(file);
+      usePrefs.getState().set({ heroEnabled: true });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "That picture could not be used.");
+    } finally {
+      setWorking(false);
+      if (input.current) input.current.value = "";
+    }
+  };
+
+  return (
+    <div className="border-b border-[var(--hairline)] p-3">
+      <div className="relative h-[120px] overflow-hidden rounded-[14px] bg-[var(--raised-2)]">
+        {image ? (
+          <img src={image} alt="" className="fade-up h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-[14px] text-[var(--faint)]">
+            No picture yet
+          </div>
+        )}
+      </div>
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          disabled={working}
+          onClick={() => input.current?.click()}
+          className="press flex h-10 flex-1 items-center justify-center gap-2 rounded-full bg-[var(--ink)] text-[15px] font-semibold text-[var(--stage)] disabled:opacity-60"
+        >
+          <ImagePlus size={17} strokeWidth={2.2} />
+          {working ? "Preparing…" : image ? "Change picture" : "Choose picture"}
+        </button>
+        {image && (
+          <button
+            type="button"
+            onClick={clearHero}
+            className="press h-10 rounded-full bg-[var(--raised-2)] px-5 text-[15px] font-medium text-[var(--ink)]"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => void choose(event.target.files?.[0])}
+      />
     </div>
   );
 }

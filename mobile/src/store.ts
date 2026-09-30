@@ -35,6 +35,7 @@ import type {
   PreviewTarget,
   TranscriptWindow,
 } from "./api";
+import { useCheckouts } from "./checkouts";
 import { usePrefs } from "./prefs";
 
 /** The agents egant drives itself — the only ones a phone can chat with. */
@@ -98,6 +99,7 @@ interface MobileStore {
   /** What was typed into a new chat that could not start, handed back. */
   homeDraft: string;
   settingsOpen: boolean;
+  usageOpen: boolean;
   epoch: string;
   /** The newest envelope the list has applied. */
   seq: number;
@@ -141,6 +143,8 @@ interface MobileStore {
   setSessionMode: (id: number, mode: string) => Promise<void>;
   openSettings: () => void;
   closeSettings: () => void;
+  openUsage: () => void;
+  closeUsage: () => void;
   /** Shows a chat's running website (or the page a tapped link named) in the app. */
   openPreview: (sessionId: number, target?: PreviewTarget) => Promise<void>;
   /** Asks for a fresh link to the same page: the old one was good once. */
@@ -358,6 +362,7 @@ export const useMobile = create<MobileStore>()((set, get) => {
     starting: null,
     homeDraft: "",
     settingsOpen: window.history.state?.egantSettings === true,
+    usageOpen: window.history.state?.egantUsage === true,
     epoch: "",
     seq: 0,
     transcripts: {},
@@ -447,6 +452,7 @@ export const useMobile = create<MobileStore>()((set, get) => {
         seq: 0,
         epoch: "",
         settingsOpen: false,
+        usageOpen: false,
       });
     },
 
@@ -659,10 +665,16 @@ export const useMobile = create<MobileStore>()((set, get) => {
       const agent = pickAgent(prefs.agent, defaultAgent);
       const model = prefs.models[agent] || null;
       const variant = prefs.variants[agent] || null;
+      // A worktree the Mac has since lost is caught by the Mac itself; one it
+      // has told us is gone is not even asked for.
+      const branch = prefs.checkouts[String(project.id)];
+      const known = useCheckouts.getState().byProject[project.id]?.checkouts;
+      const gone = branch != null && known != null && !known.some((c) => c.branch === branch);
       set({ starting: { text, agent, model, projectId: project.id }, homeDraft: "" });
       try {
         const reply = await api.createSession({
           projectId: project.id,
+          checkout: branch && !gone ? { kind: "worktree", branch } : { kind: "project" },
           agent,
           model,
           variant,
@@ -729,6 +741,24 @@ export const useMobile = create<MobileStore>()((set, get) => {
       else set({ settingsOpen: false });
     },
 
+    // Usage is a history entry of its own, the same way, so the back gesture
+    // closes it and lands on whatever opened it.
+    openUsage: () => {
+      if (get().usageOpen) return;
+      window.history.pushState(
+        { ...(window.history.state ?? {}), egantUsage: true },
+        "",
+        window.location.hash || "#/",
+      );
+      set({ usageOpen: true });
+    },
+
+    closeUsage: () => {
+      if (!get().usageOpen) return;
+      if (window.history.state?.egantUsage === true) window.history.back();
+      else set({ usageOpen: false });
+    },
+
     openPreview: async (sessionId, target = {}) => {
       if (get().previewBusy) return;
       set({ previewBusy: true });
@@ -783,6 +813,7 @@ window.addEventListener("popstate", () => {
   useMobile.setState((state) => ({
     openSession: sessionFromHash(),
     settingsOpen: window.history.state?.egantSettings === true,
+    usageOpen: window.history.state?.egantUsage === true,
     // Forward to a preview that was closed shows nothing: its link was good
     // once, and is long spent.
     preview: window.history.state?.egantPreview === true ? state.preview : null,

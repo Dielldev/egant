@@ -1,16 +1,29 @@
-import { Monitor, Search, Settings, SquarePen, TerminalSquare, X } from "lucide-react";
+import {
+  Check,
+  Monitor,
+  Search,
+  Settings,
+  SlidersHorizontal,
+  SquarePen,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { useNow } from "@egant/components/useNow";
+import { SHORT_NAMES, fallbackName } from "@egant/lib/agents";
 import type { MobileSession } from "../api";
 import { useMobile } from "../store";
 import { AgentGlyph, Mark, shortAgo } from "./bits";
 import { InstallHint } from "./InstallHint";
-import { ProjectDot } from "./Pickers";
+import { ProjectIcon } from "./Pickers";
+
+type Status = "all" | "working" | "needs";
 
 /** Every chat on the Mac, full screen over the page: close, search and a new
- * chat up top, the ones blocked on an answer first, then the rest by
- * when they were last active — and this Mac, with Settings, at the foot. */
+ * chat up top, filters for project, state and agent under them, the ones
+ * blocked on an answer first, then the rest by when they were last active —
+ * and this Mac, with Settings, at the foot. */
 export function Drawer({ onClose }: { onClose: () => void }) {
   const sessions = useMobile((s) => s.sessions);
   const openSession = useMobile((s) => s.openSession);
@@ -21,11 +34,39 @@ export function Drawer({ onClose }: { onClose: () => void }) {
   const device = useMobile((s) => s.device);
   const now = useNow(30_000);
   const [query, setQuery] = useState("");
+  const [projectId, setProjectId] = useState<number | null>(null);
+  const [status, setStatus] = useState<Status>("all");
+  const [agent, setAgent] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // What there is to filter by: the projects and agents that have chats.
+  const projects = new Map<number, { name: string; hue: number; count: number }>();
+  const agents = new Map<string, number>();
+  for (const s of sessions) {
+    const known = projects.get(s.projectId);
+    projects.set(s.projectId, {
+      name: s.projectName,
+      hue: s.projectHue,
+      count: (known?.count ?? 0) + 1,
+    });
+    agents.set(s.agent, (agents.get(s.agent) ?? 0) + 1);
+  }
+  const workingCount = sessions.filter((s) => s.busy && s.pendingCount === 0).length;
+  const needsCount = sessions.filter((s) => s.pendingCount > 0).length;
+  // A filter whose chats are all gone is no filter at all.
+  const project = projectId != null && projects.has(projectId) ? projectId : null;
+  const agentFilter = agent != null && agents.has(agent) ? agent : null;
+  const filtering = project != null || status !== "all" || agentFilter != null;
 
   const q = query.trim().toLowerCase();
   const matching = [...sessions]
     .filter(
-      (s) => !q || s.title.toLowerCase().includes(q) || s.projectName.toLowerCase().includes(q),
+      (s) =>
+        (!q || s.title.toLowerCase().includes(q) || s.projectName.toLowerCase().includes(q)) &&
+        (project == null || s.projectId === project) &&
+        (agentFilter == null || s.agent === agentFilter) &&
+        (status === "all" ||
+          (status === "needs" ? s.pendingCount > 0 : s.busy && s.pendingCount === 0)),
     )
     .sort((a, b) => b.lastActivityMs - a.lastActivityMs);
   const needsYou = matching.filter((s) => s.pendingCount > 0);
@@ -65,6 +106,99 @@ export function Drawer({ onClose }: { onClose: () => void }) {
               </button>
             )}
           </label>
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              aria-label="Filter chats"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((was) => !was)}
+              className={`press relative flex h-10 w-10 items-center justify-center rounded-full text-[var(--ink)] active:bg-[var(--hover)] ${
+                menuOpen ? "bg-[var(--raised-2)]" : ""
+              }`}
+            >
+              <SlidersHorizontal size={19} strokeWidth={1.9} />
+              {filtering && (
+                <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full border-2 border-[var(--stage)] bg-[var(--ink)]" />
+              )}
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
+                <div
+                  role="menu"
+                  className="pop-in-top no-scrollbar absolute top-full right-0 z-40 mt-2 max-h-[min(70vh,560px)] w-[min(300px,calc(100vw-24px))] overflow-y-auto rounded-[22px] border border-[var(--hairline)] bg-[var(--raised)] py-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.35)]"
+                >
+                  <MenuSection label="Project">
+                    <MenuItem selected={project == null} onClick={() => setProjectId(null)}>
+                      All projects
+                    </MenuItem>
+                    {[...projects.entries()].map(([id, info]) => (
+                      <MenuItem
+                        key={id}
+                        selected={project === id}
+                        detail={info.count}
+                        icon={<ProjectIcon size={16} />}
+                        onClick={() => setProjectId(project === id ? null : id)}
+                      >
+                        {info.name}
+                      </MenuItem>
+                    ))}
+                  </MenuSection>
+                  <MenuSection label="State">
+                    <MenuItem selected={status === "all"} onClick={() => setStatus("all")}>
+                      Any
+                    </MenuItem>
+                    <MenuItem
+                      selected={status === "working"}
+                      detail={workingCount}
+                      onClick={() => setStatus(status === "working" ? "all" : "working")}
+                    >
+                      Working
+                    </MenuItem>
+                    <MenuItem
+                      selected={status === "needs"}
+                      detail={needsCount}
+                      onClick={() => setStatus(status === "needs" ? "all" : "needs")}
+                    >
+                      Needs you
+                    </MenuItem>
+                  </MenuSection>
+                  {agents.size > 1 && (
+                    <MenuSection label="Agent">
+                      <MenuItem selected={agentFilter == null} onClick={() => setAgent(null)}>
+                        All agents
+                      </MenuItem>
+                      {[...agents.entries()].map(([id, count]) => (
+                        <MenuItem
+                          key={id}
+                          selected={agentFilter === id}
+                          detail={count}
+                          icon={<AgentGlyph agent={id} size={13} />}
+                          onClick={() => setAgent(agentFilter === id ? null : id)}
+                        >
+                          {SHORT_NAMES[id] ?? fallbackName(id)}
+                        </MenuItem>
+                      ))}
+                    </MenuSection>
+                  )}
+                  {filtering && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProjectId(null);
+                        setStatus("all");
+                        setAgent(null);
+                        setMenuOpen(false);
+                      }}
+                      className="mt-1 w-full border-t border-[var(--hairline)] px-4 py-3 text-left text-[15px] font-medium text-[var(--danger)] active:bg-[var(--hover)]"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           <button
             type="button"
             aria-label="New chat"
@@ -74,10 +208,34 @@ export function Drawer({ onClose }: { onClose: () => void }) {
             <SquarePen size={20} strokeWidth={1.9} />
           </button>
         </div>
+
+        {filtering && (
+          <div className="no-scrollbar flex gap-1.5 overflow-x-auto px-3 pb-2">
+            {project != null && (
+              <Applied
+                icon={<ProjectIcon size={13} />}
+                label={projects.get(project)?.name ?? ""}
+                onClear={() => setProjectId(null)}
+              />
+            )}
+            {status !== "all" && (
+              <Applied
+                label={status === "working" ? "Working" : "Needs you"}
+                onClear={() => setStatus("all")}
+              />
+            )}
+            {agentFilter != null && (
+              <Applied
+                label={SHORT_NAMES[agentFilter] ?? fallbackName(agentFilter)}
+                onClear={() => setAgent(null)}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3">
-        {!q && (
+        {!q && !filtering && (
           <button
             type="button"
             onClick={() => open(null)}
@@ -120,9 +278,22 @@ export function Drawer({ onClose }: { onClose: () => void }) {
         ))}
         {matching.length === 0 && (
           <div className="px-6 py-12 text-center text-[14px] leading-relaxed text-[var(--muted)]">
-            {q
+            {q || filtering
               ? "No chats match."
               : `No chats on ${machine || "your Mac"} yet. Start one and it shows up here.`}
+            {filtering && (
+              <button
+                type="button"
+                onClick={() => {
+                  setProjectId(null);
+                  setStatus("all");
+                  setAgent(null);
+                }}
+                className="press mx-auto mt-3 block rounded-full bg-[var(--raised-2)] px-4 py-1.5 text-[14px] font-medium text-[var(--ink)]"
+              >
+                Clear filters
+              </button>
+            )}
           </div>
         )}
         <div className="px-1 pt-2">
@@ -167,6 +338,64 @@ export function Drawer({ onClose }: { onClose: () => void }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function MenuSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="border-b border-[var(--hairline)] pb-1 last:border-b-0">
+      <div className="px-4 pt-2.5 pb-1 text-[12px] font-semibold tracking-[0.06em] text-[var(--faint)] uppercase">
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function MenuItem({
+  selected,
+  detail,
+  icon,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  detail?: number;
+  icon?: ReactNode;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      onClick={onClick}
+      className="flex min-h-[46px] w-full items-center gap-3 px-4 py-2 text-left active:bg-[var(--hover)]"
+    >
+      {icon && <span className="flex w-4 shrink-0 items-center justify-center text-[var(--muted)]">{icon}</span>}
+      <span className="min-w-0 flex-1 truncate text-[16px] text-[var(--ink)]">{children}</span>
+      {detail != null && <span className="text-[14px] tabular-nums text-[var(--faint)]">{detail}</span>}
+      <span className="flex w-5 shrink-0 justify-end text-[var(--ink)]">
+        {selected && <Check size={18} strokeWidth={2.4} />}
+      </span>
+    </button>
+  );
+}
+
+/** A filter that is on, shown under the search box; a tap takes it off. */
+function Applied({ label, icon, onClear }: { label: string; icon?: ReactNode; onClear: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClear}
+      aria-label={`Remove filter ${label}`}
+      className="press fade-up flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-[var(--raised-2)] pr-2 pl-2.5 text-[13px] font-medium text-[var(--ink)]"
+    >
+      {icon}
+      <span className="max-w-[160px] truncate">{label}</span>
+      <X size={13} strokeWidth={2.4} className="text-[var(--muted)]" />
+    </button>
   );
 }
 
@@ -220,7 +449,7 @@ function Row({
         ) : null}
       </span>
       <span className="flex w-full min-w-0 items-center gap-1.5 text-[12.5px] leading-4 text-[var(--muted)]">
-        <ProjectDot hue={session.projectHue} size={7} />
+        <ProjectIcon size={12} />
         <span className="min-w-0 truncate">{session.projectName}</span>
         <span className="text-[var(--faint)]">·</span>
         <span className="shrink-0 opacity-80">

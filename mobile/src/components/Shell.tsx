@@ -6,6 +6,7 @@ import { Drawer } from "./Drawer";
 import { Home } from "./Home";
 import { SettingsScreen } from "./SettingsScreen";
 import { Toast } from "./Toast";
+import { UsagePage } from "./UsagePage";
 
 /** How far from the left edge a swipe has to start to pull the drawer out —
  * anywhere further in belongs to what is on screen (a code block's own
@@ -19,6 +20,7 @@ export function Shell() {
   const openSession = useMobile((s) => s.openSession);
   const starting = useMobile((s) => s.starting);
   const settingsOpen = useMobile((s) => s.settingsOpen);
+  const usageOpen = useMobile((s) => s.usageOpen);
   const needsYou = useMobile((s) =>
     s.sessions.some((session) => session.pendingCount > 0 && session.id !== s.openSession),
   );
@@ -46,11 +48,11 @@ export function Shell() {
   // Anything that opens a page closes the drawer over it.
   useEffect(() => {
     setOpen(false);
-  }, [openSession, settingsOpen]);
+  }, [openSession, settingsOpen, usageOpen]);
 
   const onTouchStart = (event: TouchEvent) => {
     const touch = event.touches[0];
-    if (!touch || settingsOpen) return;
+    if (!touch || settingsOpen || usageOpen) return;
     if (!open && touch.clientX > EDGE_PX) return;
     gesture.current = { x0: touch.clientX, y0: touch.clientY, base: open ? width : 0, axis: null };
   };
@@ -109,6 +111,7 @@ export function Shell() {
       </aside>
 
       {settingsOpen && <SettingsScreen />}
+      {usageOpen && <UsagePage />}
       <Toast />
     </div>
   );

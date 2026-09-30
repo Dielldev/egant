@@ -27,11 +27,12 @@ import { usePrefs } from "../prefs";
 import { useMobile } from "../store";
 import type { LoadedTranscript, StartingChat } from "../store";
 import { StatusLine, agentLabel } from "./bits";
-import { Composer, ToolbarChip } from "./Composer";
+import { Composer } from "./Composer";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { IconButton, MenuIcon, SessionTitle, TopBar } from "./Header";
 import { ModeSheet, ModelSheet, modelName } from "./Pickers";
 import { RunPill } from "./RunPill";
+import { UsageStrip } from "./UsagePage";
 
 /** How close to the bottom still counts as "at the bottom" — the desktop's
  * own rule, so a streaming reply keeps the view pinned the same way. */
@@ -633,6 +634,7 @@ function ChatComposer({ session, transcript }: { session: MobileSession; transcr
 
   return (
     <>
+      <UsageStrip agent={session.agent} usage={transcript.usage} />
       <Composer
         value={text}
         onChange={setText}
@@ -644,32 +646,35 @@ function ChatComposer({ session, transcript }: { session: MobileSession; transcr
         disabled={ended}
         busy={busy}
         onStop={() => void interrupt(session.id)}
-        toolbar={
-          <>
-            <ToolbarChip
-              icon={
-                mode === "bypassPermissions" ? (
-                  <ShieldOff size={14} strokeWidth={2} />
-                ) : (
-                  <Shield size={14} strokeWidth={2} />
-                )
-              }
-              label={modeLabel(mode)}
-              tone={mode === "bypassPermissions" ? "warn" : undefined}
-              onClick={() => setModeSheet(true)}
-            />
-            {place && (
-              <span className="flex h-8 min-w-0 shrink items-center gap-1.5 px-1.5 text-[12.5px] text-[var(--faint)]">
-                {session.worktree ? (
-                  <FolderGit2 size={13} strokeWidth={2} className="shrink-0" />
-                ) : (
-                  <GitBranch size={13} strokeWidth={2} className="shrink-0" />
-                )}
-                <span className="min-w-0 truncate">{place}</span>
-              </span>
-            )}
-          </>
-        }
+        menu={[
+          {
+            key: "mode",
+            icon:
+              mode === "bypassPermissions" ? (
+                <ShieldOff size={18} strokeWidth={2} />
+              ) : (
+                <Shield size={18} strokeWidth={2} />
+              ),
+            label: "Permissions",
+            value: modeLabel(mode),
+            tone: mode === "bypassPermissions" ? "warn" : undefined,
+            onClick: () => setModeSheet(true),
+          },
+          ...(place
+            ? [
+                {
+                  key: "place",
+                  icon: session.worktree ? (
+                    <FolderGit2 size={18} strokeWidth={2} />
+                  ) : (
+                    <GitBranch size={18} strokeWidth={2} />
+                  ),
+                  label: session.worktree ? "Worktree" : "Branch",
+                  value: place,
+                },
+              ]
+            : []),
+        ]}
       />
       <ModeSheet
         open={modeSheet}

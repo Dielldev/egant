@@ -5,6 +5,7 @@
 
 import type {
   AgentModel,
+  ClaudeUsage,
   DecisionResponse,
   PendingPermission,
   SessionUsage,
@@ -118,8 +119,40 @@ export interface MobileState {
   wallpaper: string | null;
 }
 
+/** Where a chat runs: the project's folder, or a worktree that already
+ * exists, named by its branch. */
+export type CheckoutChoice = { kind: "project" } | { kind: "worktree"; branch: string };
+
+/** One place a chat can run, and how far it is from the main branch. */
+export interface Checkout {
+  kind: "project" | "worktree";
+  /** `null` on a detached HEAD. */
+  branch: string | null;
+  /** A worktree's short name (the branch without egant's prefix). */
+  name?: string;
+  /** Files with uncommitted changes. */
+  dirty: number;
+  /** Commits it has that the main branch doesn't. `null` when unknown. */
+  ahead: number | null;
+  /** Commits on the main branch it doesn't have yet. */
+  behind: number | null;
+  /** The project folder's remote branch, when it has one. */
+  upstream?: string | null;
+}
+
+export interface CheckoutList {
+  isRepo: boolean;
+  /** What "behind" is measured against, e.g. `origin/main`. */
+  mainRef?: string | null;
+  lastFetchedUnix?: number | null;
+  /** The remote could not be reached for a fresh reading. */
+  fetchError?: string | null;
+  checkouts: Checkout[];
+}
+
 export interface NewChat {
   projectId: number;
+  checkout: CheckoutChoice;
   agent: string;
   model: string | null;
   variant: string | null;
@@ -192,6 +225,8 @@ export const api = {
     request<{ device: { id: string; name: string } }>("POST", "/api/v1/pair", { code }),
   unpair: () => request<{ ok: boolean }>("POST", "/api/v1/unpair"),
   state: () => request<MobileState>("GET", "/api/v1/state"),
+  /** Claude's plan usage; `claude` is `null` when the Mac is not signed in. */
+  usage: () => request<{ claude: ClaudeUsage | null }>("GET", "/api/v1/usage"),
   transcript: (id: number, before?: number, limit = 60) =>
     request<TranscriptWindow>(
       "GET",
@@ -223,6 +258,11 @@ export const api = {
       "/api/v1/sessions",
       chat,
     ),
+  /** The project's folder and its worktrees; `fetch` brings the remote up to date first. */
+  checkouts: (projectId: number, fetch: boolean) =>
+    request<CheckoutList>("GET", `/api/v1/projects/${projectId}/checkouts${fetch ? "?fetch=1" : ""}`),
+  /** Fast-forwards the project's folder to its remote branch. */
+  pull: (projectId: number) => request<CheckoutList>("POST", `/api/v1/projects/${projectId}/pull`),
   setModel: (id: number, model: string | null, variant: string | null) =>
     request<{ session: MobileSession | null }>("POST", `/api/v1/sessions/${id}/model`, {
       model,

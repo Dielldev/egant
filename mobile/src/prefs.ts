@@ -21,6 +21,11 @@ export interface Prefs {
   mode: string;
   /** Project a new chat runs in; `null` is the most recently used one. */
   project: number | null;
+  /** Worktree a new chat runs in, per project (its id) — the branch. Absent
+   * is the project's own folder. */
+  checkouts: Record<string, string>;
+  /** The picture across the top of a new chat (the one chosen in Settings). */
+  heroEnabled: boolean;
 }
 
 const PREFS_KEY = "egant.phone.prefs";
@@ -34,6 +39,8 @@ const DEFAULTS: Prefs = {
   variants: {},
   mode: "auto",
   project: null,
+  checkouts: {},
+  heroEnabled: true,
 };
 
 function load(): Prefs {
