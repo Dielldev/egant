@@ -635,12 +635,15 @@ async fn project_pull(
 
 async fn project_folder(ctx: &Ctx, id: usize) -> Result<PathBuf, ApiError> {
     with_state(ctx, move |_, state| {
-        state.project(id).map(|project| project.fs_path()).ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "That project isn't open on your Mac any more.",
-            )
-        })
+        state
+            .project(id)
+            .map(|project| project.fs_path())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "That project isn't open on your Mac any more.",
+                )
+            })
     })
     .await
 }

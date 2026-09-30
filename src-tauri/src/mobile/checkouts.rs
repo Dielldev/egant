@@ -39,7 +39,9 @@ fn dirty_count(path: &Path) -> usize {
 /// Whether `path` is the project's folder or inside it. Compared resolved, so
 /// a symlinked home or `/private/var` doesn't hide a worktree that is there.
 fn inside(project: &Path, path: &Path) -> bool {
-    let project = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    let project = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     path.starts_with(project)
 }
@@ -201,7 +203,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("egant-checkouts-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("egant-checkouts-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -218,9 +221,27 @@ mod tests {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-m", "one"]);
         let inside_tree = repo.join(".wt/feature");
-        git(&repo, &["worktree", "add", "-b", "egant/feature", inside_tree.to_str().unwrap()]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "egant/feature",
+                inside_tree.to_str().unwrap(),
+            ],
+        );
         let elsewhere = root.join("other");
-        git(&repo, &["worktree", "add", "-b", "other-tool/x", elsewhere.to_str().unwrap()]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "other-tool/x",
+                elsewhere.to_str().unwrap(),
+            ],
+        );
         std::fs::write(inside_tree.join("b.txt"), "b").unwrap();
 
         let listed = list(&repo, false);
@@ -236,7 +257,10 @@ mod tests {
         assert_eq!(checkouts[1]["dirty"], 1);
 
         let found = worktree_path(&repo, "egant/feature").unwrap();
-        assert_eq!(found.canonicalize().unwrap(), inside_tree.canonicalize().unwrap());
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            inside_tree.canonicalize().unwrap()
+        );
         // Another tool's worktree is not the project's to run in, even by name.
         assert!(worktree_path(&repo, "other-tool/x").is_err());
         assert!(worktree_path(&repo, "main").is_err());
