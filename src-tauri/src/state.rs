@@ -59,6 +59,11 @@ pub struct SessionMeta {
     /// which is what puts the agent, the file tree, the terminals and the
     /// Changes tab all on the same side of the repository.
     pub worktree: Option<crate::worktrees::SessionWorktree>,
+    /// The paired phone that started this session, by the name it was paired
+    /// under. `None` for everything started on this Mac. The sidebar's "By
+    /// device" grouping reads it, so a chat begun on the phone is listed
+    /// under the phone.
+    pub device: Option<String>,
     pub ended: bool,
 }
 
@@ -215,6 +220,7 @@ impl AppState {
                 context: persisted.meta.context,
                 permission_mode: persisted.meta.permission_mode,
                 worktree,
+                device: persisted.meta.device,
                 ended: true,
             };
             next_session_id = next_session_id.max(meta.id + 1);
@@ -314,6 +320,7 @@ impl AppState {
             context: session.meta.context,
             permission_mode: session.meta.permission_mode,
             worktree: session.meta.worktree.clone(),
+            device: session.meta.device.clone(),
         };
         persist::save_session(&meta, &session.transcript, &session.decisions);
     }
@@ -505,6 +512,7 @@ fn session_dto(session: &ManagedSession) -> SessionDto {
                 base: worktree.base.clone(),
                 repo_root: worktree.repo_root.display().to_string(),
             }),
+        device: meta.device.clone(),
         ended: meta.ended,
         busy: session.transcript.is_busy(),
         model: session.transcript.model.clone(),
@@ -542,6 +550,7 @@ mod tests {
                     context: None,
                     permission_mode: PermissionMode::Auto,
                     worktree: None,
+                    device: None,
                     ended: false,
                 },
                 transcript: Transcript::new(),
@@ -611,6 +620,7 @@ mod tests {
                     context: None,
                     permission_mode: PermissionMode::Auto,
                     worktree: None,
+                    device: None,
                     ended: true,
                 },
                 transcript: Transcript::new(),

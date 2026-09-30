@@ -59,6 +59,7 @@ pub fn start_session(
     variant: Option<String>,
     mode: PermissionMode,
     worktree: Option<SessionWorktree>,
+    device: Option<String>,
     origin: &Origin,
 ) -> Result<u64, String> {
     let selection = (state.active_session, state.active_project);
@@ -67,6 +68,9 @@ pub fn start_session(
     )?;
     if !matches!(origin, Origin::Desktop) {
         (state.active_session, state.active_project) = selection;
+    }
+    if let Some(session) = state.sessions.get_mut(&id) {
+        session.meta.device = device;
     }
     if mode != PermissionMode::Auto {
         sessions::set_permission_mode(state, id, mode)?;

@@ -925,9 +925,19 @@ async fn create_session(
         agent.as_str()
     );
     let origin = client.origin();
+    let device_name = device.name.clone();
     with_state(&ctx, move |app, state| {
         let id = service::start_session(
-            app, state, project_id, agent, model, variant, mode, worktree, &origin,
+            app,
+            state,
+            project_id,
+            agent,
+            model,
+            variant,
+            mode,
+            worktree,
+            Some(device_name),
+            &origin,
         )
         .map_err(ApiError::from_service)?;
         // The session exists from here on: a first message that could not go

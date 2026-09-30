@@ -156,6 +156,7 @@ pub fn spawn_session(
         context,
         permission_mode: PermissionMode::Auto,
         worktree,
+        device: None,
         ended: false,
     };
 
@@ -324,6 +325,7 @@ pub fn spawn_cli_session(
         context: None,
         permission_mode: PermissionMode::Auto,
         worktree,
+        device: None,
         // Live for as long as the row exists: "ended" is a statement about a
         // harness, and there isn't one. The terminal reports its own CLI's
         // exit, in the terminal, where it happened.

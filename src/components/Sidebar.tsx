@@ -151,12 +151,13 @@ export function Sidebar() {
     const map = new Map<string, { key: string; label: string; projectId: number | null; sessions: SessionInfo[] }>();
     for (const session of rows) {
       const byProject = sidebarOrganize === "byProject";
-      const key = byProject ? `project:${session.projectId}` : `device:${machine}`;
+      const place = session.device ?? machine;
+      const key = byProject ? `project:${session.projectId}` : `device:${place}`;
       let group = map.get(key);
       if (!group) {
         group = {
           key,
-          label: byProject ? projectNameOf(session.projectId) : machine || "This device",
+          label: byProject ? projectNameOf(session.projectId) : place || "This device",
           projectId: byProject ? session.projectId : null,
           sessions: [],
         };
@@ -175,8 +176,10 @@ export function Sidebar() {
       catalog.find((c) => c.id === session.agent)?.name ?? agentName(agents, session.agent);
     return {
       title: session.title,
-      tooltip: `${session.title} — ${project} @ ${machine}${session.branch ? ` · ${session.branch}` : ""} · ${harness}`,
-      location: sidebarShowLocation ? `${project}${machine ? ` @ ${machine}` : ""}` : null,
+      tooltip: `${session.title} — ${project} @ ${session.device ?? machine}${session.branch ? ` · ${session.branch}` : ""} · ${harness}`,
+      location: sidebarShowLocation
+        ? `${project}${(session.device ?? machine) ? ` @ ${session.device ?? machine}` : ""}`
+        : null,
       startedUnixMs: session.startedUnixMs,
       now,
       selected: session.id === snapshot?.activeSession,

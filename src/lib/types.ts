@@ -251,6 +251,9 @@ export interface SessionInfo {
    * the same directory; this is what says *why* the session is somewhere other
    * than its project folder. */
   worktree: WorktreeInfo | null;
+  /** The paired phone that started this session, by name; `null` for one
+   * started on this machine. The sidebar's "By device" groups on it. */
+  device: string | null;
   ended: boolean;
   busy: boolean;
   model: string | null;

@@ -129,6 +129,10 @@ pub struct PersistedMeta {
     /// existed still load — they all ran in their project folder.
     #[serde(default)]
     pub worktree: Option<crate::worktrees::SessionWorktree>,
+    /// The paired phone that started the session. `#[serde(default)]` so
+    /// sessions written before it was recorded still load, as the Mac's own.
+    #[serde(default)]
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +295,7 @@ mod tests {
             context: None,
             permission_mode: PermissionMode::Auto,
             worktree: None,
+            device: None,
         };
 
         let text = serde_json::to_string(&PersistedSession {
@@ -327,6 +332,7 @@ mod tests {
             context: None,
             permission_mode: PermissionMode::Auto,
             worktree: None,
+            device: None,
         };
         let mut value = serde_json::to_value(&PersistedSession {
             meta,

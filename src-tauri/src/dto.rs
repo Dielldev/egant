@@ -412,6 +412,9 @@ pub struct SessionDto {
     /// already names the same directory; this is what lets the window say
     /// *why* the session is somewhere other than its project folder.
     pub worktree: Option<WorktreeDto>,
+    /// The paired phone that started this session, or `None` when it was
+    /// started on this machine.
+    pub device: Option<String>,
     pub ended: bool,
     pub busy: bool,
     pub model: Option<String>,

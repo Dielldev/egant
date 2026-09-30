@@ -234,6 +234,7 @@ mod tests {
                 context: None,
                 permission_mode: egant_harness::PermissionMode::Auto,
                 worktree: None,
+                device: None,
                 ended: false,
             },
             transcript,
