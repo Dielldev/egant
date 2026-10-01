@@ -6,7 +6,9 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::dto::{EntryDto, PendingDto, SessionUsageDto, pending_list, turn_state_name};
+use crate::dto::{
+    EntryDto, PendingDto, ProgressDto, SessionUsageDto, pending_list, turn_state_name,
+};
 use crate::state::{AppState, ManagedSession};
 use egant_harness::TranscriptEntry;
 
@@ -157,6 +159,8 @@ pub struct TranscriptWindowDto {
     pub last_turn_ms: u64,
     pub usage: SessionUsageDto,
     pub decision_responses: std::collections::BTreeMap<String, Value>,
+    /// What the running turn is busy with, when the agent says.
+    pub progress: Option<ProgressDto>,
 }
 
 pub fn transcript_window(
@@ -190,6 +194,7 @@ pub fn transcript_window(
         last_turn_ms: transcript.last_turn_ms,
         usage: SessionUsageDto::from(&transcript.usage),
         decision_responses: session.decisions.clone(),
+        progress: transcript.progress.as_ref().map(ProgressDto::from),
     }
 }
 

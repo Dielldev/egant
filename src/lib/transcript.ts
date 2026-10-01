@@ -16,6 +16,7 @@ import type {
   SessionUsage,
   TranscriptDto,
   TranscriptState,
+  TurnProgress,
   TurnState,
   TurnUsage,
 } from "./types";
@@ -34,6 +35,7 @@ export function emptyTranscript(): TranscriptState {
     usage: emptyUsage(),
     toolIndex: {},
     turnStartedAt: null,
+    progress: null,
   };
 }
 
@@ -104,6 +106,7 @@ export function fromDto(dto: TranscriptDto): TranscriptState {
     pendingList,
     toolIndex,
     turnStartedAt: dto.state === "idle" ? null : Date.now(),
+    progress: dto.progress ?? null,
   };
 }
 
@@ -174,6 +177,21 @@ export function applyEvent(prev: TranscriptState, event: HarnessEvent): Transcri
   return next.turnStartedAt === null ? { ...next, turnStartedAt: Date.now() } : next;
 }
 
+/** The events that end whatever a turn was waiting on (`progress`): the agent
+ * produced something, or the turn is over. A retry that went through shows up
+ * as the reply it brought back, not as a frame of its own. */
+const MOVES_ON = new Set<HarnessEvent["type"]>([
+  "assistant_delta",
+  "thinking_delta",
+  "assistant_message",
+  "tool_use",
+  "tool_result",
+  "permission_request",
+  "compacted",
+  "turn_ended",
+  "exited",
+]);
+
 function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState {
   // Shallow copies; the helpers below mutate the copies, never `prev`.
   const s: TranscriptState = {
@@ -181,6 +199,9 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
     entries: [...prev.entries],
     toolIndex: { ...prev.toolIndex },
   };
+  // Anything the agent produces, or the turn ending, means whatever it was
+  // waiting on is over — the same rule as `Transcript::apply`.
+  if (MOVES_ON.has(event.type)) s.progress = null;
 
   switch (event.type) {
     case "ready":
@@ -291,6 +312,32 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
       }
       return next;
     }
+
+    case "progress":
+      return { ...s, progress: event.progress };
+
+    // The window holds the summary now, not the conversation it summarized:
+    // the conversation's own new size stands in until the next request
+    // measures the whole prompt again (see `Transcript::apply`).
+    case "compacted": {
+      settleStreaming(s.entries);
+      s.entries.push({
+        kind: "compaction",
+        auto: event.auto,
+        tokensBefore: event.tokens_before,
+        tokensAfter: event.tokens_after,
+      });
+      if (event.tokens_after != null) {
+        s.usage = { ...s.usage, contextTokens: event.tokens_after };
+      }
+      return s;
+    }
+
+    case "model_fallback":
+      return {
+        ...s,
+        entries: [...s.entries, { kind: "notice", text: event.message, isError: false }],
+      };
 
     case "error":
       return {
@@ -786,6 +833,29 @@ export function statusVerb(startedAt: number, elapsedMs: number): string {
   const seed = Math.floor(Math.max(0, startedAt) / 1000);
   const step = Math.floor(Math.max(0, elapsedMs) / VERB_HOLD_MS);
   return STATUS_VERBS[(seed + step) % STATUS_VERBS.length]!;
+}
+
+/** What the status line says while a turn is busy with something other than
+ * thinking — `label` in place of the rotating verb, `detail` after the clock —
+ * or `null` when there is nothing particular to say. `waiting` is true while
+ * nothing is being computed (a retry's delay), so the line stops shimmering
+ * the way it does for "Waiting on you". */
+export function progressLine(
+  progress: TurnProgress | null | undefined,
+  now: number,
+): { label: string; detail: string | null; waiting: boolean } | null {
+  if (!progress) return null;
+  if (progress.kind === "compacting") {
+    return { label: "Compacting conversation", detail: null, waiting: false };
+  }
+  // The CLI counts retries, not attempts: retry 1 is the second try.
+  const left = Math.ceil((progress.retryAtMs - now) / 1000);
+  const of = progress.maxRetries > 0 ? ` of ${progress.maxRetries}` : "";
+  return {
+    label: left > 0 ? `Retrying in ${left}s` : "Retrying",
+    detail: `retry ${progress.attempt}${of} · ${progress.reason}`,
+    waiting: left > 0,
+  };
 }
 
 /** A turn's age, as the status line writes it: `4s`, then `1m 12s` once

@@ -42,6 +42,15 @@ pub enum EntryDto {
         #[serde(rename = "isError")]
         is_error: bool,
     },
+    /// The divider a compaction leaves: everything above it now reaches the
+    /// model only as a summary.
+    Compaction {
+        auto: bool,
+        #[serde(rename = "tokensBefore")]
+        tokens_before: u64,
+        #[serde(rename = "tokensAfter")]
+        tokens_after: Option<u64>,
+    },
 }
 
 impl From<&TranscriptEntry> for EntryDto {
@@ -66,6 +75,51 @@ impl From<&TranscriptEntry> for EntryDto {
             TranscriptEntry::Notice { text, is_error } => EntryDto::Notice {
                 text: text.clone(),
                 is_error: *is_error,
+            },
+            TranscriptEntry::Compaction {
+                auto,
+                tokens_before,
+                tokens_after,
+            } => EntryDto::Compaction {
+                auto: *auto,
+                tokens_before: *tokens_before,
+                tokens_after: *tokens_after,
+            },
+        }
+    }
+}
+
+/// What a running turn is busy with, for the status line. Mirrors
+/// [`egant_harness::TurnProgress`]; `retryAtMs` is Unix time, so every
+/// client counts down to the same moment.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProgressDto {
+    Compacting,
+    Retrying {
+        attempt: u32,
+        #[serde(rename = "maxRetries")]
+        max_retries: u32,
+        #[serde(rename = "retryAtMs")]
+        retry_at_ms: u64,
+        reason: String,
+    },
+}
+
+impl From<&egant_harness::TurnProgress> for ProgressDto {
+    fn from(progress: &egant_harness::TurnProgress) -> Self {
+        match progress {
+            egant_harness::TurnProgress::Compacting => ProgressDto::Compacting,
+            egant_harness::TurnProgress::Retrying {
+                attempt,
+                max_retries,
+                retry_at_ms,
+                reason,
+            } => ProgressDto::Retrying {
+                attempt: *attempt,
+                max_retries: *max_retries,
+                retry_at_ms: *retry_at_ms,
+                reason: reason.clone(),
             },
         }
     }
@@ -125,6 +179,8 @@ pub struct TranscriptDto {
     pub decision_responses: std::collections::BTreeMap<String, Value>,
     /// Messages waiting for the running turn to end, oldest first.
     pub queued: Vec<QueuedDto>,
+    /// What the running turn is busy with, when the agent says.
+    pub progress: Option<ProgressDto>,
 }
 
 /// One message waiting its turn, as the composer shows it.
@@ -249,6 +305,7 @@ impl From<&Transcript> for TranscriptDto {
             usage: SessionUsageDto::from(&transcript.usage),
             decision_responses: Default::default(),
             queued: Vec::new(),
+            progress: transcript.progress.as_ref().map(ProgressDto::from),
         }
     }
 }
@@ -322,6 +379,20 @@ pub enum EventDto {
     ContextUpdate {
         context_tokens: u64,
         context_window: u64,
+    },
+    /// What the running turn is busy with, or `null` once that is over.
+    Progress {
+        progress: Option<ProgressDto>,
+    },
+    Compacted {
+        auto: bool,
+        tokens_before: u64,
+        tokens_after: Option<u64>,
+    },
+    ModelFallback {
+        from: String,
+        to: String,
+        message: String,
     },
     Error {
         message: String,
@@ -407,6 +478,23 @@ impl From<&HarnessEvent> for EventDto {
             } => EventDto::ContextUpdate {
                 context_tokens: *context_tokens,
                 context_window: *context_window,
+            },
+            HarnessEvent::Progress { progress } => EventDto::Progress {
+                progress: progress.as_ref().map(ProgressDto::from),
+            },
+            HarnessEvent::Compacted {
+                auto,
+                tokens_before,
+                tokens_after,
+            } => EventDto::Compacted {
+                auto: *auto,
+                tokens_before: *tokens_before,
+                tokens_after: *tokens_after,
+            },
+            HarnessEvent::ModelFallback { from, to, message } => EventDto::ModelFallback {
+                from: from.clone(),
+                to: to.clone(),
+                message: message.clone(),
             },
             HarnessEvent::Error { message } => EventDto::Error {
                 message: message.clone(),
@@ -788,4 +876,58 @@ pub struct ConflictBlockDto {
     pub theirs_label: String,
     pub ours: String,
     pub theirs: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // The TypeScript mirror (`src/lib/types.ts`) reads these names as they
+    // are: a rename here that it doesn't share would leave the status line
+    // and the divider silently blank, not fail to compile.
+
+    #[test]
+    fn a_retry_reaches_the_window_in_the_shape_it_reads() {
+        let event = HarnessEvent::Progress {
+            progress: Some(egant_harness::TurnProgress::Retrying {
+                attempt: 2,
+                max_retries: 10,
+                retry_at_ms: 1_700_000_000_000,
+                reason: "rate limited".into(),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(EventDto::from(&event)).unwrap(),
+            json!({"type": "progress", "progress": {"kind": "retrying", "attempt": 2,
+                   "maxRetries": 10, "retryAtMs": 1_700_000_000_000u64, "reason": "rate limited"}})
+        );
+        let done = HarnessEvent::Progress { progress: None };
+        assert_eq!(
+            serde_json::to_value(EventDto::from(&done)).unwrap(),
+            json!({"type": "progress", "progress": null})
+        );
+    }
+
+    #[test]
+    fn a_compaction_reaches_the_window_in_the_shape_it_reads() {
+        let event = HarnessEvent::Compacted {
+            auto: true,
+            tokens_before: 170_000,
+            tokens_after: Some(6_000),
+        };
+        assert_eq!(
+            serde_json::to_value(EventDto::from(&event)).unwrap(),
+            json!({"type": "compacted", "auto": true, "tokens_before": 170_000, "tokens_after": 6_000})
+        );
+        let entry = TranscriptEntry::Compaction {
+            auto: true,
+            tokens_before: 170_000,
+            tokens_after: None,
+        };
+        assert_eq!(
+            serde_json::to_value(EntryDto::from(&entry)).unwrap(),
+            json!({"kind": "compaction", "auto": true, "tokensBefore": 170_000, "tokensAfter": null})
+        );
+    }
 }

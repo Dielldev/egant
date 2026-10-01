@@ -4,7 +4,7 @@
 //! calls [`Transcript::apply`] for each event, and re-renders. Keeping the fold
 //! here means the same logic backs the UI, a headless log, and tests.
 
-use crate::HarnessEvent;
+use crate::{HarnessEvent, TurnProgress};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -29,6 +29,15 @@ pub enum TranscriptEntry {
     Notice {
         text: String,
         is_error: bool,
+    },
+    /// The agent summarized everything above this point to make room in its
+    /// context window — the divider that explains why the context meter just
+    /// dropped. See [`HarnessEvent::Compacted`] for what the counts measure.
+    Compaction {
+        auto: bool,
+        tokens_before: u64,
+        #[serde(default)]
+        tokens_after: Option<u64>,
     },
 }
 
@@ -86,6 +95,11 @@ pub struct Transcript {
     /// What this session has spent, turn by turn. See [`SessionUsage`].
     #[serde(default)]
     pub usage: SessionUsage,
+    /// What the running turn is busy with besides thinking and replying —
+    /// a compaction, a retry's wait — while the agent says so. Live state
+    /// only: a session restored from disk is idle, so it is never saved.
+    #[serde(skip)]
+    pub progress: Option<TurnProgress>,
     /// Index of each tool call in `entries`, so a result can find its call
     /// without scanning the whole transcript. Rebuildable from `entries`, so
     /// it is never written to disk — a persisted transcript restores with an
@@ -235,6 +249,23 @@ impl Transcript {
     }
 
     pub fn apply(&mut self, event: HarnessEvent) {
+        // Anything the agent produces, or the turn ending, means whatever it
+        // was waiting on is over: a retry that went through shows up as the
+        // reply it brought back, not as a "requesting" frame of its own.
+        if matches!(
+            event,
+            HarnessEvent::AssistantDelta { .. }
+                | HarnessEvent::ThinkingDelta { .. }
+                | HarnessEvent::AssistantMessage { .. }
+                | HarnessEvent::ToolUse { .. }
+                | HarnessEvent::ToolResult { .. }
+                | HarnessEvent::PermissionRequest { .. }
+                | HarnessEvent::Compacted { .. }
+                | HarnessEvent::TurnEnded { .. }
+                | HarnessEvent::Exited { .. }
+        ) {
+            self.progress = None;
+        }
         match event {
             HarnessEvent::Ready {
                 session_id,
@@ -362,6 +393,37 @@ impl Transcript {
             // The mode belongs to the session, not the conversation: the
             // session layer records it. Nothing here to draw.
             HarnessEvent::ModeChanged { .. } => {}
+
+            HarnessEvent::Progress { progress } => self.progress = progress,
+
+            // The window holds the summary now, not the conversation it
+            // summarized, so the old reading is no longer the room left. The
+            // conversation's own new size stands in until the next request
+            // measures the whole prompt again — low by the system prompt and
+            // tools, which a compaction mid-turn corrects within seconds and
+            // a `/compact` on the next message.
+            HarnessEvent::Compacted {
+                auto,
+                tokens_before,
+                tokens_after,
+            } => {
+                self.settle_streaming();
+                self.entries.push(TranscriptEntry::Compaction {
+                    auto,
+                    tokens_before,
+                    tokens_after,
+                });
+                if let Some(tokens) = tokens_after {
+                    self.usage.record_context(tokens, 0);
+                }
+            }
+
+            HarnessEvent::ModelFallback { message, .. } => {
+                self.entries.push(TranscriptEntry::Notice {
+                    text: message,
+                    is_error: false,
+                });
+            }
 
             HarnessEvent::Error { message } => {
                 self.entries.push(TranscriptEntry::Notice {
@@ -668,6 +730,133 @@ mod tests {
         transcript.apply(turn(2, 10, 25_000, 1_000_000));
         transcript.apply(turn(2, 10, 30_000, 0));
         assert_eq!(transcript.usage.context_window, 1_000_000);
+    }
+
+    fn retrying() -> TurnProgress {
+        TurnProgress::Retrying {
+            attempt: 2,
+            max_retries: 10,
+            retry_at_ms: 1_000,
+            reason: "the API is overloaded".into(),
+        }
+    }
+
+    #[test]
+    fn a_retry_holds_until_the_agent_moves_on() {
+        let mut transcript = Transcript::new();
+        transcript.push_user("hi");
+        transcript.apply(HarnessEvent::Progress {
+            progress: Some(retrying()),
+        });
+        // Neither a stray stderr line nor a mode report ends the wait.
+        transcript.apply(HarnessEvent::Error {
+            message: "warn".into(),
+        });
+        transcript.apply(HarnessEvent::ModeChanged {
+            mode: crate::PermissionMode::Plan,
+        });
+        assert_eq!(transcript.progress, Some(retrying()));
+        // The reply the retry brought back does.
+        transcript.apply(HarnessEvent::AssistantDelta { text: "ok".into() });
+        assert_eq!(transcript.progress, None);
+
+        // So does the turn ending, however it ends.
+        transcript.apply(HarnessEvent::Progress {
+            progress: Some(TurnProgress::Compacting),
+        });
+        transcript.apply(turn(0, 0, 0, 0));
+        assert_eq!(transcript.progress, None);
+    }
+
+    #[test]
+    fn a_compaction_leaves_a_divider_and_the_conversations_new_size() {
+        let mut transcript = Transcript::new();
+        transcript.apply(ctx(170_000, 200_000));
+        transcript.apply(HarnessEvent::Progress {
+            progress: Some(TurnProgress::Compacting),
+        });
+        transcript.apply(HarnessEvent::Compacted {
+            auto: true,
+            tokens_before: 170_000,
+            tokens_after: Some(6_000),
+        });
+        assert_eq!(transcript.progress, None);
+        assert!(matches!(
+            transcript.entries.last(),
+            Some(TranscriptEntry::Compaction {
+                auto: true,
+                tokens_before: 170_000,
+                tokens_after: Some(6_000),
+            })
+        ));
+        // The meter drops with it, and keeps its window.
+        assert_eq!(transcript.usage.context_tokens, 6_000);
+        assert_eq!(transcript.usage.context_window, 200_000);
+
+        // A CLI that doesn't say leaves the reading for the next request.
+        transcript.apply(HarnessEvent::Compacted {
+            auto: false,
+            tokens_before: 6_000,
+            tokens_after: None,
+        });
+        assert_eq!(transcript.usage.context_tokens, 6_000);
+    }
+
+    #[test]
+    fn a_model_fallback_is_a_notice_not_an_error() {
+        let mut transcript = Transcript::new();
+        transcript.apply(HarnessEvent::ModelFallback {
+            from: "claude-opus-5".into(),
+            to: "claude-sonnet-5".into(),
+            message: "Switched to Sonnet 5 due to high demand for Opus 5".into(),
+        });
+        match transcript.entries.last() {
+            Some(TranscriptEntry::Notice { text, is_error }) => {
+                assert!(text.starts_with("Switched to Sonnet 5"));
+                assert!(!is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_compaction_is_saved_and_the_live_progress_is_not() {
+        let mut transcript = Transcript::new();
+        transcript.push_user("hi");
+        transcript.apply(HarnessEvent::Compacted {
+            auto: false,
+            tokens_before: 21_263,
+            tokens_after: Some(2_053),
+        });
+        transcript.apply(HarnessEvent::Progress {
+            progress: Some(retrying()),
+        });
+        let saved = serde_json::to_value(&transcript).unwrap();
+        assert!(saved.get("progress").is_none());
+        let restored: Transcript = serde_json::from_value(saved).unwrap();
+        assert!(matches!(
+            restored.entries.last(),
+            Some(TranscriptEntry::Compaction {
+                auto: false,
+                tokens_before: 21_263,
+                tokens_after: Some(2_053),
+            })
+        ));
+        assert_eq!(restored.progress, None);
+    }
+
+    #[test]
+    fn a_transcript_saved_before_compactions_existed_still_loads() {
+        // The shape a session file had before this change: no `progress`,
+        // and only the entry kinds that existed then.
+        let restored: Transcript = serde_json::from_str(
+            r#"{"entries":[{"kind":"User","text":"hi"},{"kind":"Assistant","text":"hello","streaming":false},{"kind":"Notice","text":"Agent exited.","is_error":false}],
+                "state":"Idle","session_id":"s1","model":null,"tools":[],"pending_permission":null,
+                "total_cost_usd":0.01,"last_turn_ms":5}"#,
+        )
+        .unwrap();
+        assert_eq!(restored.entries.len(), 3);
+        assert_eq!(restored.progress, None);
     }
 
     #[test]

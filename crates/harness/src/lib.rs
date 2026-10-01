@@ -36,6 +36,15 @@ pub use transcript::{
     PendingPermission, SessionUsage, ToolCall, Transcript, TranscriptEntry, TurnState,
 };
 
+/// Now, in milliseconds since the Unix epoch — the clock a retry's countdown
+/// is measured on.
+pub(crate) fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// What one turn put through the model, as the agent itself accounts for it.
 ///
 /// Every backend that reports tokens at all reports these four. A backend that
@@ -160,10 +169,56 @@ pub enum HarnessEvent {
         context_tokens: u64,
         context_window: u64,
     },
+    /// What the running turn is busy with besides thinking and replying —
+    /// or, with `None`, that whatever it was is over. The status line names
+    /// it instead of cycling words. Transient: it is never part of the
+    /// conversation, and the fold drops it as soon as the agent moves on.
+    Progress { progress: Option<TurnProgress> },
+    /// The agent summarized the conversation to make room in its context
+    /// window: everything before this point now reaches the model only as
+    /// that summary. `auto` when it did so on its own as the window filled
+    /// up, rather than because it was asked to.
+    ///
+    /// `tokens_before` is the whole prompt the conversation last sent, and
+    /// `tokens_after` what is left of the conversation itself — not the same
+    /// measure, see [`protocol::CompactMetadata`].
+    Compacted {
+        auto: bool,
+        tokens_before: u64,
+        tokens_after: Option<u64>,
+    },
+    /// The agent answered this turn with another model than the one asked
+    /// for, because that one failed (retired, overloaded, not on this plan).
+    /// `message` says so in the agent's own words.
+    ModelFallback {
+        from: String,
+        to: String,
+        message: String,
+    },
     /// The backend reported a problem that did not kill the process.
     Error { message: String },
     /// The process is gone. No further events will arrive.
     Exited { code: Option<i32> },
+}
+
+/// Something a running turn spends time on that isn't the model thinking or
+/// replying — what the status line says instead of a rotating verb, because
+/// "Pondering…" over a rate-limit wait reads as a hang.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TurnProgress {
+    /// Summarizing the conversation to make room in the context window.
+    Compacting,
+    /// A request failed in a way worth retrying, and the agent is waiting
+    /// before it tries again. `retry_at_ms` is when the next attempt goes
+    /// out (Unix time) — absolute, so every client counts down to the same
+    /// moment however late it hears about it. `reason` is readable: "the API
+    /// is overloaded", "connection failed".
+    Retrying {
+        attempt: u32,
+        max_retries: u32,
+        retry_at_ms: u64,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]

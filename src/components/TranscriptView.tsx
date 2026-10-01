@@ -14,6 +14,7 @@ import {
 } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "../lib/types";
 import { useEgant } from "../store";
+import { CompactionDivider } from "./CompactionDivider";
 import { Composer } from "./Composer";
 import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
@@ -481,7 +482,11 @@ export function TranscriptView() {
             part of the reply above it, not as a separate block. */}
           {busy && transcript && (
             <div className="-mt-2.5">
-              <StatusLine state={transcript.state} startedAt={transcript.turnStartedAt} />
+              <StatusLine
+                state={transcript.state}
+                startedAt={transcript.turnStartedAt}
+                progress={transcript.progress}
+              />
             </div>
           )}
           {/* The task is done — offer to run what it just changed, in the
@@ -709,6 +714,9 @@ function RenderEntry({ entry, sessionId }: { entry: Entry; sessionId: number }) 
           {entry.text}
         </div>
       );
+
+    case "compaction":
+      return <CompactionDivider entry={entry} />;
   }
 }
 

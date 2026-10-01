@@ -75,6 +75,11 @@ export type Entry =
       outputBytes?: number;
     }
   | { kind: "notice"; text: string; isError: boolean }
+  /** The divider a compaction leaves: everything above it now reaches the
+   * model only as a summary. `tokensBefore` is the whole prompt the
+   * conversation last sent; `tokensAfter` what is left of the conversation
+   * itself, without the system prompt — not the same measure. */
+  | { kind: "compaction"; auto: boolean; tokensBefore: number; tokensAfter: number | null }
   /** An interactive prompt the agent raised inline — never sent by the
    * backend as its own wire message; folded out of an `assistant` entry's
    * text (see `lib/transcript.ts`), which is what makes it survive a reload
@@ -139,7 +144,17 @@ export interface TranscriptDto {
   decisionResponses?: Record<string, DecisionResponse>;
   /** Messages waiting for the running turn to end, oldest first. */
   queued?: QueuedMessage[];
+  /** What the running turn is busy with, when the agent says. Absent from
+   * older backends. */
+  progress?: TurnProgress | null;
 }
+
+/** What a running turn spends time on besides thinking and replying — what
+ * the status line says instead of a rotating verb. Mirrors the Rust
+ * `TurnProgress`. `retryAtMs` is when the next attempt goes out (Unix ms). */
+export type TurnProgress =
+  | { kind: "compacting" }
+  | { kind: "retrying"; attempt: number; maxRetries: number; retryAtMs: number; reason: string };
 
 /** A message sent while the agent was busy, waiting its turn. */
 export interface QueuedMessage {
@@ -255,6 +270,12 @@ export type HarnessEvent =
    * `contextTokens`/`contextWindow` come from here, never from a turn's
    * summed spend. */
   | { type: "context_update"; context_tokens: number; context_window: number }
+  /** What the running turn is busy with, or `null` once that is over. */
+  | { type: "progress"; progress: TurnProgress | null }
+  /** The agent summarized the conversation to make room in its window. */
+  | { type: "compacted"; auto: boolean; tokens_before: number; tokens_after: number | null }
+  /** The agent answered this turn with another model; `message` says why. */
+  | { type: "model_fallback"; from: string; to: string; message: string }
   | { type: "error"; message: string }
   | { type: "exited"; code: number | null };
 

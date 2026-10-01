@@ -2,6 +2,7 @@ import {
   ArrowUp,
   Clock,
   Folder,
+  FoldVertical,
   FolderTree,
   GitBranch,
   Loader2,
@@ -17,11 +18,16 @@ import { createPortal } from "react-dom";
 import { api, pickAttachments } from "../lib/api";
 import { log } from "../lib/logger";
 import { modShortcut } from "../lib/platform";
+import { contextFraction } from "../lib/transcript";
 import { selectNextAgent, useEgant, usesChatUi } from "../store";
 import { AgentPicker, agentName } from "./AgentPicker";
 import { ModeInfo } from "./ModeInfo";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { UsageMeter } from "./UsageMeter";
+
+/** How full the context window gets before the footer offers to compact it —
+ * about where Claude's own CLI starts warning that it will. */
+const COMPACT_OFFER_AT = 0.8;
 
 /** A clipboard image between paste and send: shown as a thumbnail chip while
  * it's written to a temp file, then carried as an `@path` mention once that
@@ -133,6 +139,17 @@ export function Composer({
   const resumable = (session?.ended ?? false) && transcript?.sessionId != null;
   const ended = (session?.ended ?? false) && !resumable;
   const hasText = text.trim().length > 0;
+  // Claude's own `/compact`, offered once the window is mostly full: it
+  // summarizes the conversation so far and carries on from the summary. Only
+  // for Claude — the one agent whose compaction egant can see happen — and
+  // only between turns; the divider it leaves is what shows it worked.
+  const canCompact =
+    session?.agent === "claude" &&
+    transcript != null &&
+    !busy &&
+    !ended &&
+    transcript.usage.contextTokens > 0 &&
+    contextFraction(transcript.usage) >= COMPACT_OFFER_AT;
   // The agent is fixed when the session starts; the model and effort under
   // it are what the badge switches.
   const agents = useEgant((s) => s.agents);
@@ -549,6 +566,17 @@ export function Composer({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {canCompact && (
+            <button
+              type="button"
+              title="Compact the conversation: Claude summarizes it so far and carries on from the summary, freeing up context. The transcript here stays as it is."
+              onClick={() => void send(sessionId, "/compact")}
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2 py-0.5 hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <FoldVertical size={14} strokeWidth={1.8} className="shrink-0" />
+              {!compact && <span className="whitespace-nowrap">Compact</span>}
+            </button>
+          )}
           {agent != null && <ModeInfo sessionId={sessionId} agent={agent} mode={mode} />}
           {transcript && (
             <UsageMeter

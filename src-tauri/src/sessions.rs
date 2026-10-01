@@ -645,10 +645,14 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
             }
             // Deltas fire per token; persisting on every one would turn a
             // long reply into thousands of disk writes. Every coarser event
-            // (a settled message, a tool call, a turn ending) still saves.
+            // (a settled message, a tool call, a turn ending) still saves —
+            // except a progress report, which fires on every API call and
+            // changes nothing that is saved.
             let worth_persisting = !matches!(
                 event,
-                HarnessEvent::AssistantDelta { .. } | HarnessEvent::ThinkingDelta { .. }
+                HarnessEvent::AssistantDelta { .. }
+                    | HarnessEvent::ThinkingDelta { .. }
+                    | HarnessEvent::Progress { .. }
             );
             let turn_succeeded = matches!(
                 event,
@@ -1082,7 +1086,33 @@ fn log_harness_event(id: u64, event: &HarnessEvent) {
         HarnessEvent::AssistantMessage { text } => {
             log::debug!("session {id} assistant message ({} chars)", text.len());
         }
-        // AssistantDelta / ThinkingDelta: per token, never logged.
+        HarnessEvent::Compacted {
+            auto,
+            tokens_before,
+            tokens_after,
+        } => {
+            log::info!(
+                "session {id} compacted ({}) from {tokens_before} tokens to {}",
+                if *auto { "auto" } else { "manual" },
+                tokens_after.map_or("?".to_string(), |tokens| tokens.to_string()),
+            );
+        }
+        HarnessEvent::ModelFallback { from, to, .. } => {
+            log::warn!("session {id} fell back from {from} to {to} for this turn");
+        }
+        HarnessEvent::Progress {
+            progress:
+                Some(egant_harness::TurnProgress::Retrying {
+                    attempt,
+                    max_retries,
+                    reason,
+                    ..
+                }),
+        } => {
+            log::warn!("session {id} retrying ({attempt}/{max_retries}): {reason}");
+        }
+        // AssistantDelta / ThinkingDelta: per token, never logged. The other
+        // progress reports fire on every API call.
         _ => {}
     }
 }

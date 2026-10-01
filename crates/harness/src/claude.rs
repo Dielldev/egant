@@ -26,7 +26,7 @@ use crate::protocol::{
 };
 use crate::{
     AgentId, Harness, HarnessError, HarnessEvent, PermissionDecision, PermissionMode, SessionId,
-    TurnUsage,
+    TurnProgress, TurnUsage,
 };
 use anyhow::{Context as _, Result};
 use async_channel::{Receiver, Sender};
@@ -308,8 +308,14 @@ impl Harness for ClaudeCode {
         );
         // Grounded every turn, not just via the system prompt: sessions
         // created before grounding existed, and resumes that reuse a recorded
-        // prompt, still answer with the directory this process runs in.
-        let text = crate::wrap_turn_with_project(&self.project_name, &self.cwd, &text);
+        // prompt, still answer with the directory this process runs in. A
+        // slash command goes out as typed: the CLI only acts on one that
+        // opens the message.
+        let text = if is_slash_command(&text) {
+            text
+        } else {
+            crate::wrap_turn_with_project(&self.project_name, &self.cwd, &text)
+        };
         let mut content = vec![HostContentBlock::Text { text }];
         // Real vision blocks, not `@path` mentions left for the model to go
         // read itself — the same shape the Messages API takes an image in
@@ -385,6 +391,25 @@ impl Harness for ClaudeCode {
         };
         self.write(&message).await
     }
+}
+
+/// Whether a turn is a slash command — `/compact`, `/review src/lib.rs`. The
+/// CLI only runs one that is the very first thing in the message, so the
+/// project envelope in front of it would turn it into prose for the model.
+///
+/// Only the shape matters here. A leading word that is a path (`/etc/hosts
+/// is broken`) is not a command name, and keeps its envelope; a command-shaped
+/// word the CLI doesn't know (`/frobnicate`) still reaches the model as an
+/// ordinary prompt (measured on 2.1.276), it just goes without the envelope.
+fn is_slash_command(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('/') else {
+        return false;
+    };
+    let name = rest.split(char::is_whitespace).next().unwrap_or("");
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
 }
 
 /// Reads an image file and wraps it as the base64 vision block the Messages
@@ -499,6 +524,7 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
 
     match message {
         CliMessage::System(system) => {
+            let system = *system;
             if let Ok(mut slot) = session_id.lock() {
                 *slot = Some(system.session_id.clone());
             }
@@ -509,15 +535,40 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
                     cwd: system.cwd,
                     tools: system.tools,
                 }],
-                // The CLI saying which mode it now runs under — after an
-                // approved plan switched it, say, or Claude entered plan mode
-                // on its own. A name this build doesn't know changes nothing.
-                "status" => system
-                    .permission_mode
-                    .as_deref()
-                    .and_then(PermissionMode::from_cli_arg)
-                    .map(|mode| vec![HarnessEvent::ModeChanged { mode }])
-                    .unwrap_or_default(),
+                "status" => status_events(&system),
+                "compact_boundary" => {
+                    let metadata = system.compact_metadata.unwrap_or_default();
+                    vec![HarnessEvent::Compacted {
+                        auto: metadata.trigger == "auto",
+                        tokens_before: metadata.pre_tokens,
+                        tokens_after: metadata.post_tokens,
+                    }]
+                }
+                // A request failed in a way the CLI retries (overloaded, rate
+                // limited, a dropped connection), and it is waiting before the
+                // next attempt. Without this the wait reads as a hang.
+                "api_retry" => {
+                    let delay_ms = system.retry_delay_ms.unwrap_or(0);
+                    vec![HarnessEvent::Progress {
+                        progress: Some(TurnProgress::Retrying {
+                            attempt: system.attempt.unwrap_or(1),
+                            max_retries: system.max_retries.unwrap_or(0),
+                            retry_at_ms: crate::unix_now_ms().saturating_add(delay_ms),
+                            reason: retry_reason(system.error.as_str(), system.error_status),
+                        }),
+                    }]
+                }
+                // Turn-scoped on the CLI's side: the next message tries the
+                // model that was asked for again.
+                "model_fallback" => {
+                    let from = system.original_model.unwrap_or_default();
+                    let to = system.fallback_model.unwrap_or_default();
+                    let message = system
+                        .content
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or_else(|| format!("Switched to {to} because {from} failed"));
+                    vec![HarnessEvent::ModelFallback { from, to, message }]
+                }
                 _ => Vec::new(),
             }
         }
@@ -650,6 +701,77 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
     }
 }
 
+/// What one `status` frame says: the mode the CLI now runs under, when it
+/// names one — after an approved plan switched it, say, or Claude entered
+/// plan mode on its own — and what it is busy with.
+///
+/// `compacting` starts a compaction. `requesting` is an API call going out,
+/// which means whatever the turn was waiting on — a retry's delay, a
+/// compaction — is over. A bare `null` ends a compaction too, but a `null`
+/// that comes with a mode is only the mode report, and says nothing about
+/// progress.
+fn status_events(system: &crate::protocol::SystemMessage) -> Vec<HarnessEvent> {
+    let mut events = Vec::new();
+    // A name this build doesn't know changes nothing.
+    if let Some(mode) = system
+        .permission_mode
+        .as_deref()
+        .and_then(PermissionMode::from_cli_arg)
+    {
+        events.push(HarnessEvent::ModeChanged { mode });
+    }
+    match system.status.as_deref() {
+        Some("compacting") => events.push(HarnessEvent::Progress {
+            progress: Some(TurnProgress::Compacting),
+        }),
+        Some("requesting") => events.push(HarnessEvent::Progress { progress: None }),
+        None if system.permission_mode.is_none() => {
+            events.push(HarnessEvent::Progress { progress: None })
+        }
+        _ => {}
+    }
+    // An automatic compaction that fails leaves the turn to run into a
+    // context that is still full — the error that follows needs this to
+    // make sense.
+    if system.compact_result.as_deref() == Some("failed") {
+        let why = system
+            .compact_error
+            .as_deref()
+            .map(str::trim)
+            .filter(|why| !why.is_empty())
+            .unwrap_or("no reason given");
+        events.push(HarnessEvent::Error {
+            message: format!("Couldn't compact the conversation: {why}"),
+        });
+    }
+    events
+}
+
+/// A retry's cause as the status line words it, from the CLI's own word for
+/// the failure and the HTTP status, if there was one. `unknown` without a
+/// status is a request that never got an answer at all — what a refused or
+/// dropped connection reports.
+fn retry_reason(kind: Option<&str>, status: Option<u32>) -> String {
+    let reason = match kind.unwrap_or("unknown") {
+        "overloaded" => "the API is overloaded",
+        "rate_limit" => "rate limited",
+        "server_error" => "server error",
+        "authentication_failed" => "authentication failed",
+        "billing_error" => "billing problem",
+        "invalid_request" => "invalid request",
+        "model_not_found" => "model not found",
+        "unknown" if status.is_none() => "connection failed",
+        "unknown" => "request failed",
+        other => return other.replace('_', " "),
+    };
+    match status {
+        Some(code) if kind == Some("server_error") || kind == Some("unknown") => {
+            format!("{reason} ({code})")
+        }
+        _ => reason.to_string(),
+    }
+}
+
 /// Tool results are either a string or a block list; the transcript wants text.
 fn stringify(value: &serde_json::Value) -> String {
     match value {
@@ -761,11 +883,182 @@ mod tests {
         ));
 
         // A status without a mode (compaction progress, say) is no mode news.
-        let message = serde_json::from_str(
-            r#"{"type":"system","subtype":"status","status":"compacting","session_id":"s"}"#,
-        )
-        .unwrap();
-        assert!(translate(message, &Mutex::new(None)).is_empty());
+        let message = serde_json::from_str(STATUS_COMPACTING).unwrap();
+        assert!(
+            translate(message, &Mutex::new(None))
+                .iter()
+                .all(|event| !matches!(event, HarnessEvent::ModeChanged { .. }))
+        );
+    }
+
+    /// Captured from CLI 2.1.276 with `/compact` sent as a user turn over
+    /// stream-json, one exchange into a session: these four frames, in this
+    /// order, with a fresh `init` between the second and the third.
+    const STATUS_COMPACTING: &str = r#"{"type":"system","subtype":"status","status":"compacting","session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","uuid":"cc84c125-4604-48a2-a6f3-6daf68c34328"}"#;
+    const STATUS_COMPACTED: &str = r#"{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","uuid":"69e7a322-6343-44ed-8481-41f4301f8f33"}"#;
+    const COMPACT_BOUNDARY: &str = r#"{"type":"system","subtype":"compact_boundary","session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","uuid":"fb1e3b05-aad2-4013-92f5-28991fcc885d","compact_metadata":{"trigger":"manual","pre_tokens":21263,"post_tokens":2053,"cumulative_dropped_tokens":19210,"duration_ms":11915},"logical_parent_uuid":"71cfb452-0516-43ab-b44a-bcd3fdabb1a3"}"#;
+    /// The summary that replaces the conversation, as a `user` message whose
+    /// content is a plain string (cut short here).
+    const COMPACT_SUMMARY: &str = r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Primary Request and Intent:"},"session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","parent_tool_use_id":null,"uuid":"7811f23b-8f95-43b2-923a-e6468b1c00cd","timestamp":"2026-10-01T00:11:58.143Z","isReplay":false,"isSynthetic":true}"#;
+
+    /// Same CLI, the frame that opens every API call of a turn.
+    const STATUS_REQUESTING: &str = r#"{"type":"system","subtype":"status","status":"requesting","session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","uuid":"cd340b4b-4b47-4425-808e-5dd23537e8d9"}"#;
+
+    /// Captured with `ANTHROPIC_BASE_URL` pointed at a closed local port and
+    /// `CLAUDE_CODE_MAX_RETRIES=2`: a refused connection has no HTTP status,
+    /// and the CLI files it as `unknown`.
+    const API_RETRY: &str = r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":2,"retry_delay_ms":570,"error_status":null,"error":"unknown","session_id":"668ccfdd-1d6d-432d-9046-41d3c52783d7","uuid":"b4bd9d6c-77ef-4273-bbff-f55427186f94"}"#;
+
+    /// Captured with `--model claude-haiku-9-9 --fallback-model haiku`.
+    const MODEL_FALLBACK: &str = r#"{"type":"system","subtype":"model_fallback","uuid":"69fcaf76-ff5b-4734-ac2c-18a685afe787","trigger":"model_not_found","original_model":"claude-haiku-9-9","fallback_model":"claude-haiku-4-5-20251001","content":"Switched to Haiku 4.5 because claude-haiku-9-9 is not available","session_id":"5ca49c94-59a4-4d6c-b99d-d5cb8e128d9e"}"#;
+
+    fn translated(frame: &str) -> Vec<HarnessEvent> {
+        translate(serde_json::from_str(frame).unwrap(), &Mutex::new(None))
+    }
+
+    #[test]
+    fn a_compaction_reports_its_progress_then_its_boundary() {
+        assert!(matches!(
+            translated(STATUS_COMPACTING).as_slice(),
+            [HarnessEvent::Progress {
+                progress: Some(TurnProgress::Compacting)
+            }]
+        ));
+        assert!(matches!(
+            translated(STATUS_COMPACTED).as_slice(),
+            [HarnessEvent::Progress { progress: None }]
+        ));
+        match translated(COMPACT_BOUNDARY).as_slice() {
+            [
+                HarnessEvent::Compacted {
+                    auto,
+                    tokens_before,
+                    tokens_after,
+                },
+            ] => {
+                assert!(!auto, "a /compact is not automatic");
+                assert_eq!(*tokens_before, 21_263);
+                assert_eq!(*tokens_after, Some(2_053));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // The summary itself is the CLI's business: nothing to draw.
+        assert!(translated(COMPACT_SUMMARY).is_empty());
+    }
+
+    #[test]
+    fn an_automatic_compaction_says_so() {
+        let frame = COMPACT_BOUNDARY.replace(r#""trigger":"manual""#, r#""trigger":"auto""#);
+        assert!(matches!(
+            translated(&frame).as_slice(),
+            [HarnessEvent::Compacted { auto: true, .. }]
+        ));
+    }
+
+    #[test]
+    fn a_failed_compaction_ends_the_progress_and_says_why() {
+        // The `status` frame's schema in the CLI (`compact_result`,
+        // `compact_error`); a failure was never captured.
+        let events = translated(
+            r#"{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"prompt too long","session_id":"s","uuid":"u"}"#,
+        );
+        match events.as_slice() {
+            [
+                HarnessEvent::Progress { progress: None },
+                HarnessEvent::Error { message },
+            ] => assert_eq!(
+                message,
+                "Couldn't compact the conversation: prompt too long"
+            ),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_request_going_out_ends_whatever_the_turn_waited_on() {
+        assert!(matches!(
+            translated(STATUS_REQUESTING).as_slice(),
+            [HarnessEvent::Progress { progress: None }]
+        ));
+        // The mode report is a `null` status too, but says nothing about
+        // progress: a retry's countdown must survive a mode change.
+        assert!(matches!(
+            translated(STATUS_ACCEPT_EDITS).as_slice(),
+            [HarnessEvent::ModeChanged { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_retry_counts_down_to_its_next_attempt() {
+        let before = crate::unix_now_ms();
+        let events = translated(API_RETRY);
+        let after = crate::unix_now_ms();
+        match events.as_slice() {
+            [
+                HarnessEvent::Progress {
+                    progress:
+                        Some(TurnProgress::Retrying {
+                            attempt,
+                            max_retries,
+                            retry_at_ms,
+                            reason,
+                        }),
+                },
+            ] => {
+                assert_eq!((*attempt, *max_retries), (1, 2));
+                assert!((before + 570..=after + 570).contains(retry_at_ms));
+                assert_eq!(reason, "connection failed");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_reasons_read_as_words() {
+        assert_eq!(
+            retry_reason(Some("overloaded"), Some(529)),
+            "the API is overloaded"
+        );
+        assert_eq!(retry_reason(Some("rate_limit"), Some(429)), "rate limited");
+        assert_eq!(
+            retry_reason(Some("server_error"), Some(503)),
+            "server error (503)"
+        );
+        assert_eq!(retry_reason(Some("unknown"), None), "connection failed");
+        assert_eq!(
+            retry_reason(Some("unknown"), Some(418)),
+            "request failed (418)"
+        );
+        assert_eq!(retry_reason(None, None), "connection failed");
+        // A word this build has never seen is still shown, not dropped.
+        assert_eq!(retry_reason(Some("cloud_hiccup"), None), "cloud hiccup");
+    }
+
+    #[test]
+    fn a_model_fallback_is_told_in_the_clis_words() {
+        match translated(MODEL_FALLBACK).as_slice() {
+            [HarnessEvent::ModelFallback { from, to, message }] => {
+                assert_eq!(from, "claude-haiku-9-9");
+                assert_eq!(to, "claude-haiku-4-5-20251001");
+                assert_eq!(
+                    message,
+                    "Switched to Haiku 4.5 because claude-haiku-9-9 is not available"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_slash_command_is_told_apart_from_a_path() {
+        assert!(is_slash_command("/compact"));
+        assert!(is_slash_command("/compact keep the auth changes"));
+        assert!(is_slash_command("/anthropic-skills:docs"));
+        assert!(!is_slash_command("/etc/hosts is broken"));
+        assert!(!is_slash_command("/Users/me/notes.md says otherwise"));
+        assert!(!is_slash_command("please /compact"));
+        assert!(!is_slash_command("/"));
+        assert!(!is_slash_command("/ compact"));
     }
 
     #[test]

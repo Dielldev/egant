@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { CompactionDivider } from "@egant/components/CompactionDivider";
 import { DecisionPrompt } from "@egant/components/DecisionPrompt";
 import { Markdown } from "@egant/components/Markdown";
 import { PlanCard } from "@egant/components/PlanCard";
@@ -288,7 +289,11 @@ function Thread({ session, transcript }: { session: MobileSession; transcript: L
             )}
             {busy && (
               <div className="-mt-2">
-                <StatusLine state={transcript.state} startedAt={transcript.turnStartedAt} />
+                <StatusLine
+                  state={transcript.state}
+                  startedAt={transcript.turnStartedAt}
+                  progress={transcript.progress}
+                />
               </div>
             )}
             {/* The task is done — offer to run what it just changed, and to
@@ -501,6 +506,8 @@ function EntryView({ entry, sessionId, last }: { entry: Entry; sessionId: number
           {entry.text}
         </div>
       );
+    case "compaction":
+      return <CompactionDivider entry={entry} className="py-1 text-[12.5px]" />;
   }
 }
 

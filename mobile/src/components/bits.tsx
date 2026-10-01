@@ -1,35 +1,44 @@
 import { AGENT_PROVIDER, fallbackName } from "@egant/lib/agents";
-import { elapsedLabel, statusVerb } from "@egant/lib/transcript";
-import type { TurnState } from "@egant/lib/types";
+import { elapsedLabel, progressLine, statusVerb } from "@egant/lib/transcript";
+import type { TurnProgress, TurnState } from "@egant/lib/types";
 import { LogoLoader } from "@egant/components/Logo";
 import { ProviderGlyph } from "@egant/components/ProviderLogo";
 import { useNow } from "@egant/components/useNow";
 
 /** The desktop's status line, minus its keyboard hint: the mark, a rotating
- * verb and the turn's own clock — or "Waiting on you" while a prompt is up. */
+ * verb and the turn's own clock — or "Waiting on you" while a prompt is up,
+ * and what the turn is busy with when the agent says (compacting, a retry's
+ * countdown). */
 export function StatusLine({
   state,
   startedAt,
   label: fixed,
+  progress,
 }: {
   state: TurnState;
   startedAt: number | null;
   /** Says this instead of the rotating verb ("Starting Claude Code"). */
   label?: string;
+  /** What the turn is busy with, when the agent says. */
+  progress?: TurnProgress | null;
 }) {
   const now = useNow(500);
   const elapsed = startedAt == null ? 0 : Math.max(0, now - startedAt);
-  const waiting = state === "awaiting_permission";
-  const label = fixed ?? (waiting ? "Waiting on you" : statusVerb(startedAt ?? 0, elapsed));
+  const waitingOnUser = state === "awaiting_permission";
+  const line = waitingOnUser ? null : progressLine(progress, now);
+  const label =
+    fixed ?? (waitingOnUser ? "Waiting on you" : (line?.label ?? statusVerb(startedAt ?? 0, elapsed)));
+  const still = waitingOnUser || (line?.waiting ?? false);
   return (
     <div className="flex min-w-0 items-center gap-2.5 py-1 pl-0.5 text-[14px] select-none">
       <LogoLoader width={22} />
       <span
-        className={`min-w-[100px] whitespace-nowrap ${waiting ? "text-[var(--muted)]" : "shimmer"}`}
+        className={`min-w-[100px] whitespace-nowrap ${still ? "text-[var(--muted)]" : "shimmer"}`}
       >
         {label}…
       </span>
       <span className="tabular-nums text-[var(--faint)]">{elapsedLabel(elapsed)}</span>
+      {line?.detail && <span className="truncate text-[var(--faint)]">· {line.detail}</span>}
     </div>
   );
 }

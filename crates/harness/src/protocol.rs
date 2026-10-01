@@ -24,8 +24,10 @@ use std::path::PathBuf;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CliMessage {
     /// Session lifecycle. `subtype: "init"` is the handshake: it carries the
-    /// session id every later message is tagged with.
-    System(SystemMessage),
+    /// session id every later message is tagged with. Boxed: it carries a
+    /// field for every subtype's payload, which would make every message
+    /// as large as the rarest one.
+    System(Box<SystemMessage>),
     /// A complete assistant turn (or one step of a multi-step turn).
     Assistant(TurnMessage),
     /// Tool results and user input echoed back into the transcript.
@@ -58,6 +60,68 @@ pub struct SystemMessage {
     pub permission_mode: Option<String>,
     #[serde(default, rename = "claude_code_version")]
     pub version: Option<String>,
+    /// `status`: what the CLI is busy with — `requesting` as each API call
+    /// goes out, `compacting` while it summarizes the conversation — or
+    /// `null` once it has stopped.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// `status`, as a compaction ends: `success` or `failed`, and why it
+    /// failed.
+    #[serde(default)]
+    pub compact_result: Option<String>,
+    #[serde(default)]
+    pub compact_error: Option<String>,
+    /// `compact_boundary`: what the compaction it marks did.
+    #[serde(default)]
+    pub compact_metadata: Option<CompactMetadata>,
+    /// `api_retry`: which retry is coming, of how many, after how long a
+    /// wait.
+    #[serde(default)]
+    pub attempt: Option<u32>,
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+    #[serde(default)]
+    pub retry_delay_ms: Option<u64>,
+    /// `api_retry`: the HTTP status that failed, or none for a request that
+    /// never got one (a refused connection, a timeout).
+    #[serde(default)]
+    pub error_status: Option<u32>,
+    /// `api_retry`: the CLI's word for the failure — `overloaded`,
+    /// `rate_limit`, `server_error`, `unknown`… Read loosely, since other
+    /// subtypes use the name for other shapes (`api_error` puts an object
+    /// here), and one frame of theirs must not fail to parse over it.
+    #[serde(default)]
+    pub error: Value,
+    /// `model_fallback`: why the CLI switched models (`model_not_found`,
+    /// `overloaded`…), from which to which, and its own sentence saying so.
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub original_model: Option<String>,
+    #[serde(default)]
+    pub fallback_model: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+/// What a `compact_boundary` frame says about the compaction it marks.
+///
+/// The two token counts are not the same measure. `pre_tokens` is the whole
+/// prompt the conversation last sent — system prompt and tools included —
+/// while `post_tokens` counts only what is left of the conversation itself:
+/// the summary, and anything kept verbatim. (Measured on 2.1.276: a
+/// one-exchange session compacted from 21,263 to 2,053, and its next request
+/// sent 23,035 — roughly the system prompt it had before, plus the summary.)
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CompactMetadata {
+    /// `auto` when the CLI compacted on its own as the window filled up,
+    /// `manual` for a `/compact`.
+    #[serde(default)]
+    pub trigger: String,
+    #[serde(default)]
+    pub pre_tokens: u64,
+    #[serde(default)]
+    pub post_tokens: Option<u64>,
 }
 
 /// Wrapper the CLI puts around an Anthropic API message, for both the
@@ -546,6 +610,22 @@ mod tests {
         assert_eq!(stop["response"]["interrupt"], true);
         let plain = serde_json::to_value(HostControlResponse::deny("r1", "no", false)).unwrap();
         assert!(plain["response"].get("interrupt").is_none());
+    }
+
+    #[test]
+    fn a_system_frame_that_reuses_a_name_for_another_shape_still_parses() {
+        // `api_error`'s `error` is an object where `api_retry`'s is a word.
+        // Shape from the CLI's own schema for it; it was never seen on the
+        // wire, but a frame like it must not read as malformed.
+        let msg: CliMessage = serde_json::from_str(
+            r#"{"type":"system","subtype":"api_error","error":{"message":"overloaded","status":529,"formatted":"Overloaded","connection":null,"is_network_down":false,"rate_limits":null},"session_id":"s"}"#,
+        )
+        .unwrap();
+        let CliMessage::System(system) = msg else {
+            panic!("expected a system message");
+        };
+        assert_eq!(system.subtype, "api_error");
+        assert!(system.error.is_object());
     }
 
     #[test]
