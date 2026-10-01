@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { answeredPicks, ASK_USER_QUESTION, askQuestions, planOf } from "../lib/transcript";
 import type { Entry } from "../lib/types";
 import { PlanCard } from "./PlanCard";
@@ -7,8 +8,9 @@ import { ToolCard } from "./ToolCards";
 /** A question or a plan once it is settled: the same card, read-only, with
  * what the user answered. Nothing while it is still open — the live card at
  * the foot of the transcript stands for it then — and nothing for one a
- * turn abandoned before anyone answered. */
-export function SettledRequest({
+ * turn abandoned before anyone answered. Memoized: settled, it never
+ * changes, and the transcript re-renders on every streamed token. */
+export const SettledRequest = memo(function SettledRequest({
   entry,
   onOpenPlan,
 }: {
@@ -36,4 +38,4 @@ export function SettledRequest({
       onOpenPlan={onOpenPlan}
     />
   );
-}
+});

@@ -13,7 +13,7 @@ import {
   SquarePen,
   TerminalSquare,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { CompactionDivider } from "@egant/components/CompactionDivider";
 import { DecisionPrompt } from "@egant/components/DecisionPrompt";
@@ -456,7 +456,18 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function EntryView({ entry, sessionId, last }: { entry: Entry; sessionId: number; last: boolean }) {
+/** One row of the conversation, memoized the way the desktop's is: the fold
+ * keeps every entry it didn't change as the same object, so a streaming reply
+ * redraws its own row, not the whole thread. */
+const EntryView = memo(function EntryView({
+  entry,
+  sessionId,
+  last,
+}: {
+  entry: Entry;
+  sessionId: number;
+  last: boolean;
+}) {
   const openPreview = useMobile((s) => s.openPreview);
   switch (entry.kind) {
     case "user":
@@ -509,7 +520,7 @@ function EntryView({ entry, sessionId, last }: { entry: Entry; sessionId: number
     case "compaction":
       return <CompactionDivider entry={entry} className="py-1 text-[12.5px]" />;
   }
-}
+});
 
 /** The agent's reasoning: its live tail while it thinks, "Thought for 4s"
  * once it's done — either one opens to the whole text. */

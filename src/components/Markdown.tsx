@@ -1,21 +1,27 @@
 import { Check, Copy } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 /** Renders assistant replies as markdown — headings, lists, tables, links and
  * code all get real structure instead of a wall of pre-wrapped text. Every
  * element reads from the app's own CSS vars so it re-skins with the active
- * palette exactly like the rest of the transcript. */
-export function Markdown({ text }: { text: string }) {
+ * palette exactly like the rest of the transcript.
+ *
+ * Memoized on the text: parsing (and highlighting every code block) is the
+ * dearest thing in a transcript, and a streaming reply re-renders the view on
+ * every token. Only the reply whose text actually changed parses again. */
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown flex flex-col text-sm leading-6 text-[var(--ink)]">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
         {text}
       </ReactMarkdown>
     </div>
   );
-}
+});
+
+const REMARK_PLUGINS = [remarkGfm];
 
 const components: Components = {
   p: ({ children }) => <p className="whitespace-pre-wrap last:mb-0">{children}</p>,

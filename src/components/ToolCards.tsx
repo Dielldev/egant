@@ -10,7 +10,7 @@ import {
   TerminalSquare,
   Wrench,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { diffLines } from "diff";
 import hljs from "highlight.js/lib/common";
 import {
@@ -1235,8 +1235,21 @@ function RepeatSubGroup({
  * into their own `Read 5 files` / `Edited x ×3` sub-trees, so repeats read
  * as one tree-ish branch. A group that is already a single run stays flat —
  * the outer header already says what a sub-header would. Only one row drops
- * down at a time — clicking a second row closes the first. */
-export function ToolActivityGroup({ entries }: { entries: ToolEntry[] }) {
+ * down at a time — clicking a second row closes the first.
+ *
+ * Memoized call by call: the transcript slices its groups out afresh on every
+ * render, but the fold keeps each call it didn't change as the same object, so
+ * a group whose calls are all the same ones has nothing new to draw. */
+export const ToolActivityGroup = memo(ToolActivityGroupView, (prev, next) =>
+  sameItems(prev.entries, next.entries),
+);
+
+/** Whether two lists hold the very same items, in the same order. */
+function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+function ToolActivityGroupView({ entries }: { entries: ToolEntry[] }) {
   const [groupOpen, setGroupOpen] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
   const header = useMemo(() => groupHeaderText(entries), [entries]);

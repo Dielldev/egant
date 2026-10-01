@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Copy, FolderOpen } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { modShortcut } from "../lib/platform";
 import {
   ASK_USER_QUESTION,
@@ -254,6 +254,15 @@ export function TranscriptView() {
   // below two marks.
   const showOutline = ticks.length >= 2;
 
+  // Stable across renders, so a settled plan's card — memoized, like every
+  // row — isn't redrawn for each token of the reply streaming under it.
+  const openPlan = useCallback(
+    (path: string) => {
+      if (activeId != null) openFile(activeId, path, path.split("/").pop() ?? path);
+    },
+    [activeId, openFile],
+  );
+
   // The active tick for a scroll position: the last tick whose row is at or
   // above the reading line (viewport top + chrome inset). Before the first
   // tick's row, the first tick is active.
@@ -393,13 +402,7 @@ export function TranscriptView() {
               // into the activity around it: settled, it is a record of what
               // was asked and answered; still open, it is the card below.
               if (entry.kind === "tool" && isInteractiveTool(entry.name)) {
-                nodes.push(
-                  <SettledRequest
-                    key={i}
-                    entry={entry}
-                    onOpenPlan={(path) => openFile(active.id, path, path.split("/").pop() ?? path)}
-                  />,
-                );
+                nodes.push(<SettledRequest key={i} entry={entry} onOpenPlan={openPlan} />);
                 i++;
                 continue;
               }
@@ -464,7 +467,7 @@ export function TranscriptView() {
                 key={pending.requestId}
                 {...planOf(pending.input)}
                 onAnswer={(reply) => void answerPermission(active.id, pending.requestId, reply)}
-                onOpenPlan={(path) => openFile(active.id, path, path.split("/").pop() ?? path)}
+                onOpenPlan={openPlan}
               />
             ),
           )}
@@ -658,7 +661,16 @@ function Centered({
   );
 }
 
-function RenderEntry({ entry, sessionId }: { entry: Entry; sessionId: number }) {
+/** One row of the conversation. Memoized: the fold hands every entry it
+ * didn't change back as the same object, so while a reply streams only its
+ * own row renders again — not every row above it, and not their Markdown. */
+const RenderEntry = memo(function RenderEntry({
+  entry,
+  sessionId,
+}: {
+  entry: Entry;
+  sessionId: number;
+}) {
   switch (entry.kind) {
     // The user's turn is a right-aligned bubble; the agent's is plain text on
     // the stage. One of the two has to be the ground, and there is far more
@@ -718,7 +730,7 @@ function RenderEntry({ entry, sessionId }: { entry: Entry; sessionId: number }) 
     case "compaction":
       return <CompactionDivider entry={entry} />;
   }
-}
+});
 
 /** Dispatches an `agent_request` entry to the card for its kind, and wires
  * its answer to the store — the one place a request's `type` decides which
