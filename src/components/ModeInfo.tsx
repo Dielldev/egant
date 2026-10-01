@@ -55,6 +55,17 @@ export function ModeInfo({
     };
   }, [open, mode, sessionId, setMode]);
 
+  // `/mode` in the composer opens this menu as a click would.
+  const pickerRequest = useEgant((s) => s.pickerRequest);
+  useEffect(() => {
+    if (pickerRequest?.kind === "mode" && pickerRequest.sessionId === sessionId) {
+      setOpenUpward(shouldOpenUpward(rootRef, 320));
+      setOpen(true);
+    }
+    // Only a new request opens it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerRequest?.token]);
+
   const info = MODE_INFO[agent];
   const bypassed = mode === "bypassPermissions";
 

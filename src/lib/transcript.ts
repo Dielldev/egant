@@ -14,6 +14,7 @@ import type {
   PendingPermission,
   PermissionUpdate,
   SessionUsage,
+  SlashCommand,
   TranscriptDto,
   TranscriptState,
   TurnProgress,
@@ -36,6 +37,7 @@ export function emptyTranscript(): TranscriptState {
     toolIndex: {},
     turnStartedAt: null,
     progress: null,
+    commands: [],
   };
 }
 
@@ -107,6 +109,7 @@ export function fromDto(dto: TranscriptDto): TranscriptState {
     toolIndex,
     turnStartedAt: dto.state === "idle" ? null : Date.now(),
     progress: dto.progress ?? null,
+    commands: dto.commands ?? [],
   };
 }
 
@@ -328,6 +331,11 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
     case "progress":
       return { ...s, progress: event.progress };
 
+    // Claude names its commands bare every turn and describes them only when
+    // the list changes: keep what was already known (`merge_commands`).
+    case "commands":
+      return { ...s, commands: mergeCommands(s.commands ?? [], event.commands) };
+
     // The window holds the summary now, not the conversation it summarized:
     // the conversation's own new size stands in until the next request
     // measures the whole prompt again (see `Transcript::apply`).
@@ -388,6 +396,21 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
       };
     }
   }
+}
+
+/** A new command list, keeping the description and argument hint the old
+ * one had for each command the new one says nothing about. */
+function mergeCommands(known: SlashCommand[], incoming: SlashCommand[]): SlashCommand[] {
+  return incoming.map((command) => {
+    const old = known.find((k) => k.name === command.name);
+    return old
+      ? {
+          ...command,
+          description: command.description ?? old.description,
+          argumentHint: command.argumentHint ?? old.argumentHint,
+        }
+      : command;
+  });
 }
 
 type ToolEntry = Extract<Entry, { kind: "tool" }>;

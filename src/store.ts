@@ -494,6 +494,9 @@ interface EgantStore {
   changesToken: number;
   refreshChanges: () => void;
 
+  /** The composer's `/model` or `/mode` asking a session's picker to open:
+   * the picker watches `token`, so asking twice opens it twice. */
+  pickerRequest: { sessionId: number; kind: "model" | "mode"; token: number } | null;
   /** Bumped to move focus; components watch the counter, not the value. */
   focusComposerToken: number;
   focusFilterToken: number;
@@ -661,6 +664,7 @@ interface EgantStore {
   openSearch: () => void;
   closeSearch: () => void;
   requestFocusComposer: () => void;
+  requestPicker: (sessionId: number, kind: "model" | "mode") => void;
   dismissError: () => void;
 
   /** Loads state, starts the event stream, and returns its cleanup. */
@@ -1732,6 +1736,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     changesToken: 0,
     refreshChanges: () => set({ changesToken: get().changesToken + 1 }),
 
+    pickerRequest: null,
     focusComposerToken: 0,
     focusFilterToken: 0,
     error: null,
@@ -2016,6 +2021,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     openSearch: () => set({ searchOpen: true }),
     closeSearch: () => set({ searchOpen: false }),
     requestFocusComposer: () => set((s) => ({ focusComposerToken: s.focusComposerToken + 1 })),
+    requestPicker: (sessionId, kind) =>
+      set((s) => ({ pickerRequest: { sessionId, kind, token: (s.pickerRequest?.token ?? 0) + 1 } })),
     dismissError: () => set({ error: null }),
     dismissNotice: () => set({ notice: null }),
 

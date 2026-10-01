@@ -13,14 +13,17 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, pickAttachments } from "../lib/api";
 import { log } from "../lib/logger";
 import { modShortcut } from "../lib/platform";
+import { commandItems, findTrigger, mention } from "../lib/composerMenu";
+import { fuzzyFilter } from "../lib/fuzzy";
 import { contextFraction } from "../lib/transcript";
 import { selectNextAgent, useEgant, usesChatUi } from "../store";
 import { AgentPicker, agentName } from "./AgentPicker";
+import { ComposerMenu, type MenuItem } from "./ComposerMenu";
 import { ModeInfo } from "./ModeInfo";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { UsageMeter } from "./UsageMeter";
@@ -28,6 +31,14 @@ import { UsageMeter } from "./UsageMeter";
 /** How full the context window gets before the footer offers to compact it —
  * about where Claude's own CLI starts warning that it will. */
 const COMPACT_OFFER_AT = 0.8;
+
+/** How many rows a `/` or `@` menu offers at most. */
+const MENU_LIMIT = 50;
+
+/** How long a folder's file list serves the `@` menu before it is fetched
+ * again — long enough for one message, short enough to see a file the agent
+ * just wrote. */
+const FILES_FRESH_MS = 15_000;
 
 /** A clipboard image between paste and send: shown as a thumbnail chip while
  * it's written to a temp file, then carried as an `@path` mention once that
@@ -77,6 +88,16 @@ export function Composer({
   const sendQueuedNow = useEgant((s) => s.sendQueuedNow);
 
   const [text, setText] = useState("");
+  // Where the caret sits, for the `/` and `@` menus: what it is in decides
+  // which one (if either) is open.
+  const [caret, setCaret] = useState(0);
+  const [menuIndex, setMenuIndex] = useState(0);
+  /** The trigger Esc closed the menu on, so it stays closed until the caret
+   * moves to another one. */
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [files, setFiles] = useState<{ root: string; list: string[]; at: number } | null>(null);
+  const createSession = useEgant((s) => s.createSession);
+  const requestPicker = useEgant((s) => s.requestPicker);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -150,6 +171,97 @@ export function Composer({
     !ended &&
     transcript.usage.contextTokens > 0 &&
     contextFraction(transcript.usage) >= COMPACT_OFFER_AT;
+  // The `/` and `@` menus: only in a conversation, where there is a session
+  // to list commands for and a folder to list files in.
+  const trigger = sessionId != null && !hero ? findTrigger(text, caret) : null;
+  const triggerKey = trigger ? `${trigger.kind}:${trigger.start}` : null;
+  const menuOpen = trigger != null && triggerKey !== dismissed;
+  const cwd = session?.cwd ?? null;
+  const commands = useMemo(
+    () => (session ? commandItems(session.agent, transcript?.commands) : []),
+    [session?.agent, transcript?.commands],
+  );
+  const menuItems = useMemo((): MenuItem[] => {
+    if (!menuOpen || !trigger) return [];
+    if (trigger.kind === "command") {
+      return fuzzyFilter(commands, trigger.query, (c) => c.name, MENU_LIMIT).map((command) => ({
+        kind: "command",
+        command,
+      }));
+    }
+    if (!files || files.root !== cwd) return [];
+    return fuzzyFilter(files.list, trigger.query, (path) => path, MENU_LIMIT).map((path) => ({
+      kind: "file",
+      path,
+    }));
+  }, [menuOpen, trigger?.kind, trigger?.query, commands, files, cwd]);
+  const menuStatus =
+    trigger?.kind === "mention" && (!files || files.root !== cwd)
+      ? "Listing files…"
+      : trigger?.kind === "mention"
+        ? "No file matches"
+        : "No command matches";
+
+  // The `@` menu's files, fetched as it opens — and again once they are old
+  // enough to be missing what the agent just wrote.
+  const mentionOpen = menuOpen && trigger?.kind === "mention";
+  useEffect(() => {
+    if (!mentionOpen || cwd == null) return;
+    if (files && files.root === cwd && Date.now() - files.at < FILES_FRESH_MS) return;
+    let live = true;
+    api
+      .listFiles(cwd)
+      .then((list) => {
+        if (live) setFiles({ root: cwd, list, at: Date.now() });
+      })
+      .catch((error: unknown) => log.warn("composer", `couldn't list files in ${cwd}: ${String(error)}`));
+    return () => {
+      live = false;
+    };
+  }, [mentionOpen, cwd, files]);
+
+  // A new query starts at the top of the list.
+  useEffect(() => setMenuIndex(0), [trigger?.kind, trigger?.query]);
+
+  /** Puts `replacement` where the trigger's word is, and the caret after it. */
+  const replaceTrigger = (replacement: string) => {
+    if (!trigger) return;
+    const rest = text.slice(trigger.end);
+    const next = text.slice(0, trigger.start) + replacement + (replacement === "" ? rest.trimStart() : rest);
+    const at = trigger.start + replacement.length;
+    setText(next);
+    setCaret(at);
+    requestAnimationFrame(() => {
+      areaRef.current?.focus();
+      areaRef.current?.setSelectionRange(at, at);
+    });
+  };
+
+  const pick = (item: MenuItem) => {
+    if (item.kind === "file") {
+      const rest = text.slice(trigger?.end ?? 0);
+      replaceTrigger(rest.startsWith(" ") ? mention(item.path) : `${mention(item.path)} `);
+      return;
+    }
+    const { command } = item;
+    switch (command.run) {
+      case "insert": {
+        const rest = text.slice(trigger?.end ?? 0);
+        replaceTrigger(rest.startsWith(" ") ? `/${command.name}` : `/${command.name} `);
+        return;
+      }
+      case "model":
+      case "mode":
+        replaceTrigger("");
+        if (sessionId != null) requestPicker(sessionId, command.run);
+        return;
+      case "clear":
+        replaceTrigger("");
+        void createSession();
+        return;
+    }
+  };
+
   // The agent is fixed when the session starts; the model and effort under
   // it are what the badge switches.
   const agents = useEgant((s) => s.agents);
@@ -277,9 +389,35 @@ export function Composer({
       value={text}
       rows={hero ? 3 : 1}
       disabled={ended || cliAgent != null}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        setText(e.target.value);
+        setCaret(e.target.selectionStart ?? e.target.value.length);
+      }}
+      onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
       onPaste={handlePaste}
       onKeyDown={(e) => {
+        // An open menu has the keys first: arrows walk it, Enter or Tab take
+        // the highlighted row, Esc closes it and leaves the text alone.
+        if (menuOpen && !e.nativeEvent.isComposing) {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setDismissed(triggerKey);
+            return;
+          }
+          if (menuItems.length > 0) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const step = e.key === "ArrowDown" ? 1 : -1;
+              setMenuIndex((i) => (i + step + menuItems.length) % menuItems.length);
+              return;
+            }
+            if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+              e.preventDefault();
+              pick(menuItems[Math.min(menuIndex, menuItems.length - 1)]!);
+              return;
+            }
+          }
+        }
         // Plain Enter sends without inserting a newline; shift-Enter still
         // breaks the line.
         if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -516,27 +654,40 @@ export function Composer({
       {/* One DOM for both widths — only classes change — so the text box is
         never remounted (and never loses focus or its caret) as the column is
         dragged across the breakpoint. */}
-      <div
-        className={`composer flex w-full flex-wrap items-end gap-x-2 rounded-[26px] py-2 pr-2 pl-2 ${
-          narrow ? "gap-y-1" : ""
-        }`}
-      >
-        {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
-        <div className={narrow ? "order-2" : "order-1"}>{attachButton}</div>
+      <div className="relative">
+        {/* A `/` that matches no command is most likely a path being typed:
+          say nothing rather than "no match" under every keystroke. */}
+        {menuOpen && !(trigger?.kind === "command" && menuItems.length === 0) && (
+          <ComposerMenu
+            items={menuItems}
+            index={Math.min(menuIndex, Math.max(0, menuItems.length - 1))}
+            status={menuStatus}
+            onHover={setMenuIndex}
+            onPick={pick}
+          />
+        )}
         <div
-          className={`order-1 min-w-0 py-1 ${narrow ? "w-full basis-full px-2.5" : "flex-1 pr-1"}`}
-        >
-          {area}
-        </div>
-        <div
-          className={`order-2 flex min-w-0 items-center justify-end gap-1.5 ${
-            narrow ? "flex-1" : "max-w-[46%] shrink-0"
+          className={`composer flex w-full flex-wrap items-end gap-x-2 rounded-[26px] py-2 pr-2 pl-2 ${
+            narrow ? "gap-y-1" : ""
           }`}
         >
-          {agent != null && (
-            <SessionModelPicker sessionId={sessionId} agent={agent} compact={compact && !narrow} />
-          )}
-          {sendButton}
+          {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
+          <div className={narrow ? "order-2" : "order-1"}>{attachButton}</div>
+          <div
+            className={`order-1 min-w-0 py-1 ${narrow ? "w-full basis-full px-2.5" : "flex-1 pr-1"}`}
+          >
+            {area}
+          </div>
+          <div
+            className={`order-2 flex min-w-0 items-center justify-end gap-1.5 ${
+              narrow ? "flex-1" : "max-w-[46%] shrink-0"
+            }`}
+          >
+            {agent != null && (
+              <SessionModelPicker sessionId={sessionId} agent={agent} compact={compact && !narrow} />
+            )}
+            {sendButton}
+          </div>
         </div>
       </div>
       <div className="flex min-w-0 items-center justify-between gap-3 px-4 pt-2.5 text-[13px] text-[var(--muted)] select-none">

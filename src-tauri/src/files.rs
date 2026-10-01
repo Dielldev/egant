@@ -26,6 +26,107 @@ const READ_LIMIT: usize = 2 * 1024 * 1024;
 /// clear any plausible text header, short enough to stay free.
 const SNIFF: usize = 8192;
 
+/// How many files the composer's `@` menu is given to search. Past any
+/// source tree a person types `@` in; a home folder opened as a project stops
+/// here rather than costing a long walk.
+const MENTION_LIMIT: usize = 20_000;
+
+/// Directories the walk for a folder that isn't a repository never enters:
+/// what `.gitignore` would have kept out of the `@` menu in one that is.
+const WALK_SKIP: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "__pycache__",
+];
+
+/// Every file under `root` the composer can mention with `@`, as paths
+/// relative to it. In a repository that is what git lists — tracked files
+/// and new ones, never what `.gitignore` leaves out. Anywhere else it is a
+/// walk that skips hidden folders and the usual build output. Either way it
+/// stops at [`MENTION_LIMIT`].
+#[tauri::command]
+pub async fn list_files(root: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&root);
+        if !root.is_dir() {
+            return Err(format!("{} is not a folder", root.display()));
+        }
+        Ok(git_files(root).unwrap_or_else(|| walk_files(root)))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// What git lists under `root`, relative to it: `None` when it isn't in a
+/// repository (or git isn't there to ask).
+fn git_files(root: &Path) -> Option<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut files: Vec<String> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect();
+    // A file deleted but not yet staged is still "cached"; only what is there
+    // can be mentioned.
+    files.retain(|path| root.join(path).is_file());
+    files.truncate(MENTION_LIMIT);
+    Some(files)
+}
+
+/// The files under a folder that isn't a repository, breadth first so the
+/// limit cuts off the deepest ones.
+fn walk_files(root: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+    while let Some(dir) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if !WALK_SKIP.contains(&name.as_ref()) {
+                    queue.push_back(path);
+                }
+            } else if kind.is_file() {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    files.push(relative.to_string_lossy().into_owned());
+                }
+                if files.len() >= MENTION_LIMIT {
+                    return files;
+                }
+            }
+        }
+    }
+    files
+}
+
 /// One directory, directories first then case-insensitive by name — the order
 /// every file tree uses, and the one that makes a project legible at a glance.
 ///
@@ -441,5 +542,31 @@ mod tests {
     #[test]
     fn a_missing_file_is_an_error_not_a_panic() {
         assert!(read_file("/nope/nothing-here.txt".to_string()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_outside_git_is_walked_without_its_machinery() {
+        let root = std::env::temp_dir().join(format!("egant-mention-walk-{}", std::process::id()));
+        for dir in ["src/deep", "node_modules/pkg", ".hidden"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in [
+            "a.txt",
+            "src/deep/b.rs",
+            "node_modules/pkg/c.js",
+            ".hidden/d",
+            ".env",
+        ] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        let mut files = walk_files(&root);
+        files.sort();
+        assert_eq!(files, ["a.txt", "src/deep/b.rs"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

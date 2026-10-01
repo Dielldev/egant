@@ -195,6 +195,9 @@ pub enum HarnessEvent {
         to: String,
         message: String,
     },
+    /// The slash commands the agent accepts now — the whole list, replacing
+    /// the last one. What the composer's `/` menu offers besides egant's own.
+    Commands { commands: Vec<SlashCommand> },
     /// Something a subagent did — a tool call, its result, a settled reply —
     /// inside the tool call that launched it (Claude's `Task`). `parent` is
     /// that call's id. Folded under the call, not into the conversation:
@@ -207,6 +210,19 @@ pub enum HarnessEvent {
     Error { message: String },
     /// The process is gone. No further events will arrive.
     Exited { code: Option<i32> },
+}
+
+/// A slash command the agent accepts (`/review`, a skill's `/pdf`), without
+/// its slash. Claude names them all at the start of every turn; it describes
+/// them only when the list changes mid-session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlashCommand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What it takes after its name (`<file>`), when it takes anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
 }
 
 /// Something a running turn spends time on that isn't the model thinking or

@@ -26,7 +26,7 @@ use crate::protocol::{
 };
 use crate::{
     AgentId, Harness, HarnessError, HarnessEvent, PermissionDecision, PermissionMode, SessionId,
-    TurnProgress, TurnUsage,
+    SlashCommand, TurnProgress, TurnUsage,
 };
 use anyhow::{Context as _, Result};
 use async_channel::{Receiver, Sender};
@@ -529,11 +529,30 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
                 *slot = Some(system.session_id.clone());
             }
             match system.subtype.as_str() {
-                "init" => vec![HarnessEvent::Ready {
-                    session_id: system.session_id,
-                    model: system.model,
-                    cwd: system.cwd,
-                    tools: system.tools,
+                "init" => {
+                    let mut events = vec![HarnessEvent::Ready {
+                        session_id: system.session_id,
+                        model: system.model,
+                        cwd: system.cwd,
+                        tools: system.tools,
+                    }];
+                    if !system.slash_commands.is_empty() {
+                        events.push(HarnessEvent::Commands {
+                            commands: system
+                                .slash_commands
+                                .into_iter()
+                                .map(|name| SlashCommand {
+                                    name,
+                                    description: None,
+                                    argument_hint: None,
+                                })
+                                .collect(),
+                        });
+                    }
+                    events
+                }
+                "commands_changed" => vec![HarnessEvent::Commands {
+                    commands: described_commands(&system.commands),
                 }],
                 "status" => status_events(&system),
                 "compact_boundary" => {
@@ -707,6 +726,30 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
 
         CliMessage::ControlResponse(_) | CliMessage::Unknown => Vec::new(),
     }
+}
+
+/// The commands a `commands_changed` frame lists, each with what it does and
+/// takes. One that isn't the shape the CLI's schema gives is skipped.
+fn described_commands(list: &serde_json::Value) -> Vec<SlashCommand> {
+    let text = |command: &serde_json::Value, key: &str| {
+        command
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|command| {
+            Some(SlashCommand {
+                name: text(command, "name")?,
+                description: text(command, "description"),
+                argument_hint: text(command, "argumentHint"),
+            })
+        })
+        .collect()
 }
 
 /// A message's events as the main thread sees them: as they are, or — for a
@@ -1494,6 +1537,41 @@ mod tests {
             [HarnessEvent::AssistantDelta { .. }]
         ));
         assert!(translated(&from_subagent(TEXT_DELTA)).is_empty());
+    }
+
+    /// An `init` from CLI 2.1.276, trimmed to a few tools and commands.
+    const INIT_WITH_COMMANDS: &str = r#"{"type":"system","subtype":"init","cwd":"/tmp/compact","session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","tools":["Task","Bash"],"model":"claude-haiku-4-5-20251001","permissionMode":"default","slash_commands":["code-review","compact","anthropic-skills:pdf"],"claude_code_version":"2.1.276"}"#;
+
+    #[test]
+    fn init_names_the_slash_commands() {
+        match translated(INIT_WITH_COMMANDS).as_slice() {
+            [
+                HarnessEvent::Ready { .. },
+                HarnessEvent::Commands { commands },
+            ] => {
+                let names: Vec<_> = commands.iter().map(|c| c.name.as_str()).collect();
+                assert_eq!(names, ["code-review", "compact", "anthropic-skills:pdf"]);
+                assert!(commands.iter().all(|c| c.description.is_none()));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_changed_command_list_comes_with_descriptions() {
+        // The CLI's schema for `commands_changed` (not captured: it fires
+        // only when skills appear mid-session).
+        let events = translated(
+            r#"{"type":"system","subtype":"commands_changed","commands":[{"name":"review","description":"Review a pull request","argumentHint":"<pr>"},{"name":"compact","description":"Clear history but keep a summary","argumentHint":""},{"description":"no name"}],"uuid":"u","session_id":"s"}"#,
+        );
+        match events.as_slice() {
+            [HarnessEvent::Commands { commands }] => {
+                assert_eq!(commands.len(), 2);
+                assert_eq!(commands[0].argument_hint.as_deref(), Some("<pr>"));
+                assert_eq!(commands[1].argument_hint, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

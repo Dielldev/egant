@@ -149,7 +149,17 @@ export interface TranscriptDto {
   queued?: QueuedMessage[];
   /** What the running turn is busy with, when the agent says. Absent from
    * older backends. */
-  progress?: TurnProgress | null;
+  progress?: TurnProgress | null;  /** The slash commands the agent accepts, for the composer's `/` menu.
+   * Absent from older backends. */
+  commands?: SlashCommand[];
+}
+
+/** A slash command the agent accepts, without its slash. Mirrors the Rust
+ * `SlashCommandDto`. */
+export interface SlashCommand {
+  name: string;
+  description: string | null;
+  argumentHint: string | null;
 }
 
 /** What a running turn spends time on besides thinking and replying — what
@@ -273,6 +283,8 @@ export type HarnessEvent =
    * `contextTokens`/`contextWindow` come from here, never from a turn's
    * summed spend. */
   | { type: "context_update"; context_tokens: number; context_window: number }
+  /** The agent's slash commands now, replacing the last list. */
+  | { type: "commands"; commands: SlashCommand[] }
   /** A subagent's step, folded under the call `parent` names. */
   | { type: "subagent"; parent: string; event: HarnessEvent }
   /** What the running turn is busy with, or `null` once that is over. */

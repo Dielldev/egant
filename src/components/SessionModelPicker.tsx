@@ -159,6 +159,16 @@ export function SessionModelPicker({
     setOpen(true);
   };
 
+  // `/model` in the composer opens this picker as a click would.
+  const pickerRequest = useEgant((s) => s.pickerRequest);
+  useEffect(() => {
+    if (pickerRequest?.kind === "model" && pickerRequest.sessionId === sessionId && !open) {
+      toggle();
+    }
+    // Only a new request opens it; nothing else here should.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerRequest?.token]);
+
   const needle = query.trim().toLowerCase();
   const rows = useMemo(() => {
     const matches =

@@ -185,6 +185,27 @@ pub struct TranscriptDto {
     pub queued: Vec<QueuedDto>,
     /// What the running turn is busy with, when the agent says.
     pub progress: Option<ProgressDto>,
+    /// The slash commands the agent accepts, for the composer's `/` menu.
+    pub commands: Vec<SlashCommandDto>,
+}
+
+/// A slash command the agent accepts, without its slash.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommandDto {
+    pub name: String,
+    pub description: Option<String>,
+    pub argument_hint: Option<String>,
+}
+
+impl From<&egant_harness::SlashCommand> for SlashCommandDto {
+    fn from(command: &egant_harness::SlashCommand) -> Self {
+        Self {
+            name: command.name.clone(),
+            description: command.description.clone(),
+            argument_hint: command.argument_hint.clone(),
+        }
+    }
 }
 
 /// One message waiting its turn, as the composer shows it.
@@ -310,6 +331,11 @@ impl From<&Transcript> for TranscriptDto {
             decision_responses: Default::default(),
             queued: Vec::new(),
             progress: transcript.progress.as_ref().map(ProgressDto::from),
+            commands: transcript
+                .commands
+                .iter()
+                .map(SlashCommandDto::from)
+                .collect(),
         }
     }
 }
@@ -383,6 +409,10 @@ pub enum EventDto {
     ContextUpdate {
         context_tokens: u64,
         context_window: u64,
+    },
+    /// The agent's slash commands now, replacing the last list.
+    Commands {
+        commands: Vec<SlashCommandDto>,
     },
     /// A subagent's step, to fold under the call `parent` names.
     Subagent {
@@ -487,6 +517,9 @@ impl From<&HarnessEvent> for EventDto {
             } => EventDto::ContextUpdate {
                 context_tokens: *context_tokens,
                 context_window: *context_window,
+            },
+            HarnessEvent::Commands { commands } => EventDto::Commands {
+                commands: commands.iter().map(SlashCommandDto::from).collect(),
             },
             HarnessEvent::Subagent { parent, event } => EventDto::Subagent {
                 parent: parent.clone(),

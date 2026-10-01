@@ -282,6 +282,11 @@ export const api = {
     ),
 
   // Workspace panel — the file tree and the file tabs it opens.
+  /** Every file under `root` the composer's `@` menu can mention, relative
+   * to it — what git lists (so nothing `.gitignore` leaves out), or a walk
+   * outside a repository. */
+  listFiles: (root: string) =>
+    traced("list_files", root, () => invoke<string[]>("list_files", { root })),
   /** One directory. The tree expands lazily, so a folder nobody opened is
    * never walked. */
   listDir: (path: string, showAll = true) =>

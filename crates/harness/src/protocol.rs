@@ -60,6 +60,15 @@ pub struct SystemMessage {
     pub permission_mode: Option<String>,
     #[serde(default, rename = "claude_code_version")]
     pub version: Option<String>,
+    /// `init`: the slash commands this session accepts, by name only.
+    #[serde(default)]
+    pub slash_commands: Vec<String>,
+    /// `commands_changed`: the whole list again, after one changed mid-
+    /// session (a skill found in a subfolder) — with descriptions this time,
+    /// `{name, description, argumentHint, aliases?}` per the CLI's schema.
+    /// Loose: no other subtype has been seen to use the name.
+    #[serde(default)]
+    pub commands: Value,
     /// `status`: what the CLI is busy with — `requesting` as each API call
     /// goes out, `compacting` while it summarizes the conversation — or
     /// `null` once it has stopped.

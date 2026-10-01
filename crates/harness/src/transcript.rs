@@ -4,7 +4,7 @@
 //! calls [`Transcript::apply`] for each event, and re-renders. Keeping the fold
 //! here means the same logic backs the UI, a headless log, and tests.
 
-use crate::{HarnessEvent, TurnProgress};
+use crate::{HarnessEvent, SlashCommand, TurnProgress};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -89,6 +89,11 @@ pub struct Transcript {
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub tools: Vec<String>,
+    /// The slash commands the agent accepts, as it last listed them. Kept
+    /// with the transcript so a restored session's `/` menu has them before
+    /// its agent starts again. Empty on wires that list none.
+    #[serde(default)]
+    pub commands: Vec<SlashCommand>,
     pub pending_permission: Option<PendingPermission>,
     /// Every outstanding request, in arrival order. `pending_permission`
     /// mirrors the first entry for snapshots written before the table
@@ -418,6 +423,10 @@ impl Transcript {
 
             HarnessEvent::Progress { progress } => self.progress = progress,
 
+            HarnessEvent::Commands { commands } => {
+                self.commands = merge_commands(&self.commands, commands);
+            }
+
             // The window holds the summary now, not the conversation it
             // summarized, so the old reading is no longer the room left. The
             // conversation's own new size stands in until the next request
@@ -533,6 +542,23 @@ impl Transcript {
     pub fn is_busy(&self) -> bool {
         self.state != TurnState::Idle
     }
+}
+
+/// A new command list, keeping what the old one knew about each command it
+/// says nothing about: Claude names its commands bare at the start of every
+/// turn, and describes them only when the list changes, so a plain
+/// replacement would forget every description a turn later.
+pub fn merge_commands(known: &[SlashCommand], incoming: Vec<SlashCommand>) -> Vec<SlashCommand> {
+    incoming
+        .into_iter()
+        .map(|mut command| {
+            if let Some(old) = known.iter().find(|old| old.name == command.name) {
+                command.description = command.description.or_else(|| old.description.clone());
+                command.argument_hint = command.argument_hint.or_else(|| old.argument_hint.clone());
+            }
+            command
+        })
+        .collect()
 }
 
 /// The tool call with this id, anywhere in `entries` — including under a
@@ -1024,6 +1050,30 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(restored, TranscriptEntry::Tool(call) if call.children.is_empty()));
+    }
+
+    #[test]
+    fn a_bare_command_list_keeps_the_descriptions_already_known() {
+        let command = |name: &str, description: Option<&str>| SlashCommand {
+            name: name.into(),
+            description: description.map(str::to_owned),
+            argument_hint: None,
+        };
+        let mut transcript = Transcript::new();
+        transcript.apply(HarnessEvent::Commands {
+            commands: vec![
+                command("review", Some("Review a PR")),
+                command("gone", Some("x")),
+            ],
+        });
+        // The next turn's init names them bare, and has dropped one.
+        transcript.apply(HarnessEvent::Commands {
+            commands: vec![command("review", None), command("new", None)],
+        });
+        assert_eq!(
+            transcript.commands,
+            vec![command("review", Some("Review a PR")), command("new", None)]
+        );
     }
 
     #[test]
