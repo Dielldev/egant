@@ -396,7 +396,12 @@ impl TurnTranslator for CodexTranslator {
         }
     }
 
-    fn end_turn(&mut self, interrupted: bool, exit: Option<i32>) -> Vec<HarnessEvent> {
+    fn end_turn(
+        &mut self,
+        interrupted: bool,
+        exit: Option<i32>,
+        stderr: Option<&str>,
+    ) -> Vec<HarnessEvent> {
         // A turn `turn.completed` already settled: the process winding down
         // afterwards is not news. An interrupt or a bad exit still is, and
         // falls through to the report below.
@@ -408,12 +413,11 @@ impl TurnTranslator for CodexTranslator {
         } else if self.turn.failed {
             // Already surfaced as an error notice mid-turn; settle quietly.
             (None, true)
-        } else if exit.is_some_and(|code| code != 0) {
+        } else if let Some(code) = exit.filter(|code| *code != 0) {
+            // stdout says nothing when the CLI fails before the turn starts —
+            // a resumed thread that no longer exists, say. stderr says why.
             (
-                Some(format!(
-                    "codex exited with status {}.",
-                    exit.unwrap_or_default()
-                )),
+                Some(crate::runner::exit_message("codex", code, stderr)),
                 true,
             )
         } else {
@@ -750,12 +754,12 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         // The process exiting cleanly afterwards is not a second turn ending.
-        assert!(t.end_turn(false, Some(0)).is_empty());
+        assert!(t.end_turn(false, Some(0), None).is_empty());
 
         // A turn that settled and *then* died still gets reported.
         t.build("next", &[]);
         t.push_line(r#"{"type":"turn.completed","usage":{}}"#);
-        match &t.end_turn(false, Some(3))[0] {
+        match &t.end_turn(false, Some(3), None)[0] {
             HarnessEvent::TurnEnded {
                 result, is_error, ..
             } => {
@@ -771,11 +775,32 @@ mod tests {
 
         // So does an interrupt mid-turn, with no `turn.completed` at all.
         t.build("third", &[]);
-        match &t.end_turn(true, None)[0] {
+        match &t.end_turn(true, None, None)[0] {
             HarnessEvent::TurnEnded {
                 result, is_error, ..
             } => {
                 assert_eq!(result.as_deref(), Some("Interrupted."));
+                assert!(is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_turn_that_never_started_says_why() {
+        // `codex exec … resume <id>` for a thread that is gone: nothing on
+        // stdout, the reason on stderr, exit 1 (codex-cli 0.155.0).
+        let mut t = translator();
+        t.build("hi", &[]);
+        let stderr = "Error: thread/resume: thread/resume failed: no rollout found for thread id 00000000-0000-4000-8000-000000000000 (code -32600)";
+        match &t.end_turn(false, Some(1), Some(stderr))[0] {
+            HarnessEvent::TurnEnded {
+                result, is_error, ..
+            } => {
+                assert_eq!(
+                    result.as_deref(),
+                    Some(format!("codex exited with status 1:\n{stderr}").as_str())
+                );
                 assert!(is_error);
             }
             other => panic!("unexpected {other:?}"),
@@ -788,7 +813,7 @@ mod tests {
         t.build("hi", &[]);
         let events = t.push_line(r#"{"type":"turn.failed","error":{"message":"bad model"}}"#);
         assert!(matches!(events[0], HarnessEvent::Error { .. }));
-        match &t.end_turn(false, Some(0))[0] {
+        match &t.end_turn(false, Some(0), None)[0] {
             HarnessEvent::TurnEnded {
                 result, is_error, ..
             } => {

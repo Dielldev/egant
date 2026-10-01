@@ -367,7 +367,12 @@ impl TurnTranslator for OpencodeTranslator {
         }
     }
 
-    fn end_turn(&mut self, interrupted: bool, exit: Option<i32>) -> Vec<HarnessEvent> {
+    fn end_turn(
+        &mut self,
+        interrupted: bool,
+        exit: Option<i32>,
+        stderr: Option<&str>,
+    ) -> Vec<HarnessEvent> {
         let turn = std::mem::take(&mut self.turn);
         let duration_ms = turn
             .started
@@ -378,12 +383,11 @@ impl TurnTranslator for OpencodeTranslator {
         } else if turn.failed {
             // Already surfaced as an error notice mid-turn; settle quietly.
             (None, true)
-        } else if exit.is_some_and(|code| code != 0) {
+        } else if let Some(code) = exit.filter(|code| *code != 0) {
+            // stdout says nothing when the CLI fails before the turn starts —
+            // a resumed session that no longer exists, say. stderr says why.
             (
-                Some(format!(
-                    "opencode exited with status {}.",
-                    exit.unwrap_or_default()
-                )),
+                Some(crate::runner::exit_message("opencode", code, stderr)),
                 true,
             )
         } else {
@@ -896,7 +900,7 @@ mod tests {
         t.push_line(
             r#"{"type":"step_finish","part":{"tokens":{"input":10,"output":4},"cost":0.02}}"#,
         );
-        let events = t.end_turn(false, Some(0));
+        let events = t.end_turn(false, Some(0), None);
         assert_eq!(events.len(), 2);
         match &events[0] {
             HarnessEvent::ContextUpdate { context_tokens, .. } => assert_eq!(*context_tokens, 14),
@@ -918,6 +922,27 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_that_never_started_says_why() {
+        // `opencode run -s <id>` for a session that is gone (opencode
+        // 1.18.31): nothing on stdout, exit 1, and on stderr — once the
+        // runner has taken its colours off — this.
+        let mut t = translator();
+        t.build("hi", &[]);
+        match &t.end_turn(false, Some(1), Some("Error: Session not found"))[0] {
+            HarnessEvent::TurnEnded {
+                result, is_error, ..
+            } => {
+                assert_eq!(
+                    result.as_deref(),
+                    Some("opencode exited with status 1:\nError: Session not found")
+                );
+                assert!(is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
     fn error_line_fails_the_turn_once() {
         let mut t = translator();
         t.build("hi", &[]);
@@ -925,7 +950,7 @@ mod tests {
             t.push_line(r#"{"type":"error","error":{"name":"X","data":{"message":"boom"}}}"#);
         assert!(matches!(events[0], HarnessEvent::Error { .. }));
         // The message already surfaced: the settled turn carries no duplicate.
-        match &t.end_turn(false, Some(0))[0] {
+        match &t.end_turn(false, Some(0), None)[0] {
             HarnessEvent::TurnEnded {
                 result, is_error, ..
             } => {
