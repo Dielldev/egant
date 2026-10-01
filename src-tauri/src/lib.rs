@@ -21,6 +21,7 @@ mod persist;
 mod project;
 mod pty;
 mod revert;
+mod search;
 mod service;
 mod sessions;
 mod settings;

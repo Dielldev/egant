@@ -211,6 +211,34 @@ export function TranscriptView() {
   // nothing would still split two neighbouring Reads into separate cards, for
   // a reason invisible on screen.
   const entries = (transcript?.entries ?? []).filter((entry) => entry.kind !== "thinking");
+
+  // A message opened from the search window: once its session is on screen
+  // and loaded, scroll to it and flash it. Found by kind and ordinal — the
+  // backend's count — since this copy splits some replies differently.
+  const jumpTo = useEgant((s) => s.jumpTo);
+  const jumpedRef = useRef(0);
+  useEffect(() => {
+    if (!jumpTo || jumpTo.token === jumpedRef.current) return;
+    if (jumpTo.sessionId !== activeId || !transcript) return;
+    jumpedRef.current = jumpTo.token;
+    let seen = 0;
+    const target = entries.findIndex(
+      (entry) => entry.kind === jumpTo.kind && seen++ === jumpTo.ordinal,
+    );
+    if (target < 0) return;
+    requestAnimationFrame(() => {
+      const el = scrollRef.current?.querySelector<HTMLElement>(`[data-entry="${target}"]`);
+      if (!el) return;
+      // Reading a match is leaving the tail: don't get pulled back down.
+      stickRef.current = false;
+      el.scrollIntoView({ block: "center" });
+      el.classList.remove("search-flash");
+      void el.offsetWidth; // restart the animation on a second visit
+      el.classList.add("search-flash");
+    });
+    // `entries` follows `transcript`; the length is what changes when it loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTo, activeId, transcript?.entries.length]);
   // The approval table: every outstanding request, oldest first. Older
   // snapshots carry only `pending` — mirror it so the table still renders.
   const pendingList =
@@ -452,6 +480,7 @@ export function TranscriptView() {
                       else promptRefs.current.delete(i);
                     }}
                     data-prompt-index={i}
+                    data-entry={i}
                     className="group relative scroll-mt-[48px]"
                   >
                     <RenderEntry entry={entry} sessionId={active.id} />
@@ -481,7 +510,12 @@ export function TranscriptView() {
                 // "still typing" cue.
                 nodes.push(<span key={i} className="hidden" />);
               } else {
-                nodes.push(<RenderEntry key={i} entry={entry} sessionId={active.id} />);
+                // Marked with its place, for a search result to scroll to.
+                nodes.push(
+                  <div key={i} data-entry={i}>
+                    <RenderEntry entry={entry} sessionId={active.id} />
+                  </div>,
+                );
               }
               i++;
             }

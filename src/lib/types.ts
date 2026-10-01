@@ -164,6 +164,18 @@ export interface RevertPlan {
   changedSince: string[];
 }
 
+/** A message that matched the search window's query
+ * (`search_transcripts`): which session, which message (`ordinal` of its
+ * `kind`, counted from 0), and a snippet in three pieces around the match. */
+export interface SearchHit {
+  sessionId: number;
+  kind: "user" | "assistant" | "notice";
+  ordinal: number;
+  before: string;
+  matched: string;
+  after: string;
+}
+
 /** The `turn-snapshots` event: a session's revertible turns, after one more
  * was recorded. */
 export interface TurnSnapshotsPayload {

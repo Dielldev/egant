@@ -1,6 +1,7 @@
-import { CornerDownLeft, Folder, Search, X } from "lucide-react";
+import { CornerDownLeft, Folder, MessageSquareText, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Project, SessionInfo } from "../lib/types";
+import { api } from "../lib/api";
+import type { Project, SearchHit, SessionInfo } from "../lib/types";
 import { AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 import { useEgant } from "../store";
@@ -16,7 +17,12 @@ const TABS: { id: SearchTab; label: string }[] = [
 
 type Row =
   | { kind: "session"; session: SessionInfo }
-  | { kind: "project"; project: Project };
+  | { kind: "project"; project: Project }
+  | { kind: "message"; hit: SearchHit; session: SessionInfo };
+
+/** How long the query rests before conversations are searched — every
+ * keystroke would ask the app to read every transcript again. */
+const MESSAGE_SEARCH_DELAY_MS = 150;
 
 const DAY_MS = 86_400_000;
 
@@ -49,6 +55,9 @@ export function SearchModal() {
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<SearchTab>("all");
   const [index, setIndex] = useState(0);
+  /** Messages matching the query, from inside the conversations. */
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const requestJump = useEgant((s) => s.requestJump);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Every open starts clean — a stale query or tab from last time would be
@@ -59,9 +68,36 @@ export function SearchModal() {
     setQuery("");
     setTab("all");
     setIndex(0);
+    setHits([]);
     const id = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(id);
   }, [open]);
+
+  // Inside the conversations too, once the query says enough to search for
+  // and has stopped changing for a moment.
+  const wantMessages = tab === "all" || tab === "chats";
+  useEffect(() => {
+    const needle = query.trim();
+    if (!open || !wantMessages || needle.length < 2) {
+      setHits([]);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      api
+        .searchTranscripts(needle)
+        .then((found) => {
+          if (live) setHits(found);
+        })
+        .catch(() => {
+          if (live) setHits([]);
+        });
+    }, MESSAGE_SEARCH_DELAY_MS);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [open, query, wantMessages]);
 
   const sessions = snapshot?.sessions ?? [];
   const projects = snapshot?.projects ?? [];
@@ -90,9 +126,16 @@ export function SearchModal() {
           .map((project) => ({ kind: "project" as const, project }))
       : [];
 
-    return tab === "projects" ? projectRows : [...sessionRows, ...projectRows];
+    const messageRows: Row[] = wantMessages
+      ? hits.flatMap((hit) => {
+          const session = sessions.find((s) => s.id === hit.sessionId);
+          return session ? [{ kind: "message" as const, hit, session }] : [];
+        })
+      : [];
+
+    return tab === "projects" ? projectRows : [...sessionRows, ...messageRows, ...projectRows];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions, projects, tab, query]);
+  }, [sessions, projects, tab, query, hits, wantMessages]);
 
   // Whatever narrowed the list moves the selection back to the top — an
   // index left pointing at row 6 of a list that's now 2 rows long would
@@ -101,7 +144,11 @@ export function SearchModal() {
 
   const activate = (row: Row) => {
     if (row.kind === "session") void selectSession(row.session.id);
-    else void selectProject(row.project.id);
+    else if (row.kind === "message") {
+      // The transcript scrolls to the message once the session is on screen.
+      requestJump(row.session.id, row.hit.kind, row.hit.ordinal);
+      void selectSession(row.session.id);
+    } else void selectProject(row.project.id);
     close();
   };
 
@@ -163,7 +210,7 @@ export function SearchModal() {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search sessions and projects…"
+            placeholder="Search sessions, messages and projects…"
             className="min-w-0 flex-1 bg-transparent text-[14px] text-[var(--ink)] outline-none placeholder:text-[var(--faint)]"
           />
           <button
@@ -201,42 +248,77 @@ export function SearchModal() {
           ) : (
             rows.map((row, i) => {
               const selected = i === selectedIndex;
-              const key = row.kind === "session" ? `s${row.session.id}` : `p${row.project.id}`;
+              const key =
+                row.kind === "session"
+                  ? `s${row.session.id}`
+                  : row.kind === "message"
+                    ? `m${row.hit.sessionId}-${row.hit.kind}-${row.hit.ordinal}`
+                    : `p${row.project.id}`;
+              // The first message hit opens its section.
+              const firstHit = row.kind === "message" && rows[i - 1]?.kind !== "message";
               return (
-                <div
-                  key={key}
-                  role="button"
-                  tabIndex={-1}
-                  onMouseEnter={() => setIndex(i)}
-                  onClick={() => activate(row)}
-                  className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left ${
-                    selected ? "bg-[var(--hover)]" : ""
-                  }`}
-                >
-                  {row.kind === "session" ? (
-                    <ProviderGlyph
-                      provider={AGENT_PROVIDER[row.session.agent] ?? row.session.agent}
-                      size={14}
-                      color={AGENT_ACCENT[row.session.agent]}
-                    />
-                  ) : (
-                    <Folder size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
+                <div key={key}>
+                  {firstHit && (
+                    <div className="px-3 pt-2.5 pb-1 text-[11px] text-[var(--faint)]">
+                      In conversations
+                    </div>
                   )}
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">
-                    {row.kind === "session" ? row.session.title : row.project.name}
-                  </span>
-                  {row.kind === "session" && (
-                    <span className="shrink-0 text-[11px] text-[var(--faint)]">
-                      {relativeLabel(row.session.startedUnixMs)}
-                    </span>
-                  )}
-                  {selected && (
-                    <CornerDownLeft
-                      size={12}
-                      strokeWidth={2}
-                      className="shrink-0 text-[var(--faint)]"
-                    />
-                  )}
+                  <div
+                    role="button"
+                    tabIndex={-1}
+                    onMouseEnter={() => setIndex(i)}
+                    onClick={() => activate(row)}
+                    className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left ${
+                      selected ? "bg-[var(--hover)]" : ""
+                    }`}
+                  >
+                    {row.kind === "message" ? (
+                      <MessageSquareText
+                        size={14}
+                        strokeWidth={2}
+                        className="shrink-0 self-start text-[var(--faint)] mt-0.5"
+                      />
+                    ) : row.kind === "session" ? (
+                      <ProviderGlyph
+                        provider={AGENT_PROVIDER[row.session.agent] ?? row.session.agent}
+                        size={14}
+                        color={AGENT_ACCENT[row.session.agent]}
+                      />
+                    ) : (
+                      <Folder size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
+                    )}
+                    {row.kind === "message" ? (
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="truncate text-[11.5px] text-[var(--faint)]">
+                          {row.session.title}
+                          {row.hit.kind === "user" ? " · you" : ""}
+                        </span>
+                        <span className="line-clamp-2 text-[12.5px] leading-[1.4] text-[var(--muted)]">
+                          {row.hit.before}
+                          <mark className="rounded-[3px] bg-[var(--hover)] px-0.5 text-[var(--ink)]">
+                            {row.hit.matched}
+                          </mark>
+                          {row.hit.after}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">
+                        {row.kind === "session" ? row.session.title : row.project.name}
+                      </span>
+                    )}
+                    {row.kind === "session" && (
+                      <span className="shrink-0 text-[11px] text-[var(--faint)]">
+                        {relativeLabel(row.session.startedUnixMs)}
+                      </span>
+                    )}
+                    {selected && (
+                      <CornerDownLeft
+                        size={12}
+                        strokeWidth={2}
+                        className="shrink-0 text-[var(--faint)]"
+                      />
+                    )}
+                  </div>
                 </div>
               );
             })

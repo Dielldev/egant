@@ -1149,3 +1149,22 @@ html[data-theme="light"] {
   background-position: 0 0, 0 6px, 6px -6px, -6px 0;
   background-size: 12px 12px;
 }
+
+/* A message opened from the search window: a brief wash that says "here",
+   then gets out of the way. */
+.search-flash {
+  border-radius: 14px;
+  animation: search-flash 1.8s ease-out;
+}
+
+@keyframes search-flash {
+  0%,
+  35% {
+    background: var(--hover);
+    box-shadow: 0 0 0 8px var(--hover);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 8px transparent;
+  }
+}

@@ -495,6 +495,9 @@ interface EgantStore {
   changesToken: number;
   refreshChanges: () => void;
 
+  /** A message the search window opened, for the transcript to scroll to
+   * once its session is on screen: the `ordinal`-th entry of `kind`. */
+  jumpTo: { sessionId: number; kind: string; ordinal: number; token: number } | null;
   /** The composer's `/model` or `/mode` asking a session's picker to open:
    * the picker watches `token`, so asking twice opens it twice. */
   pickerRequest: { sessionId: number; kind: "model" | "mode"; token: number } | null;
@@ -668,6 +671,7 @@ interface EgantStore {
   closeSearch: () => void;
   requestFocusComposer: () => void;
   requestPicker: (sessionId: number, kind: "model" | "mode") => void;
+  requestJump: (sessionId: number, kind: string, ordinal: number) => void;
   dismissError: () => void;
 
   /** Loads state, starts the event stream, and returns its cleanup. */
@@ -1740,6 +1744,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     refreshChanges: () => set({ changesToken: get().changesToken + 1 }),
 
     pickerRequest: null,
+    jumpTo: null,
     focusComposerToken: 0,
     focusFilterToken: 0,
     error: null,
@@ -2024,6 +2029,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     openSearch: () => set({ searchOpen: true }),
     closeSearch: () => set({ searchOpen: false }),
     requestFocusComposer: () => set((s) => ({ focusComposerToken: s.focusComposerToken + 1 })),
+    requestJump: (sessionId, kind, ordinal) =>
+      set((s) => ({ jumpTo: { sessionId, kind, ordinal, token: (s.jumpTo?.token ?? 0) + 1 } })),
     requestPicker: (sessionId, kind) =>
       set((s) => ({ pickerRequest: { sessionId, kind, token: (s.pickerRequest?.token ?? 0) + 1 } })),
     dismissError: () => set({ error: null }),

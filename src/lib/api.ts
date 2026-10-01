@@ -32,6 +32,7 @@ import type {
   SendResult,
   PullRequest,
   RevertPlan,
+  SearchHit,
   RepoRef,
   RepoStatus,
   SettingsState,
@@ -127,6 +128,10 @@ export const api = {
     ),
   /** Takes a queued message back out; resolves to its text, or `null` when it
    * already went out. */
+  /** Messages in every open session that contain `query`, newest session
+   * first, a few per session. */
+  searchTranscripts: (query: string) =>
+    traced("search_transcripts", query, () => invoke<SearchHit[]>("search_transcripts", { query })),
   /** What reverting a turn would do, without doing it. */
   previewTurnRevert: (id: number, turn: number) =>
     traced("preview_turn_revert", `id=${id} turn=${turn}`, () =>

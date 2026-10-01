@@ -1808,6 +1808,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::files::list_files,
         crate::revert::preview_turn_revert,
         crate::revert::revert_turn,
+        crate::search::search_transcripts,
         crate::github::gh_status,
         crate::github::pr_list,
         crate::github::pr_detail,
