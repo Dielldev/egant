@@ -37,6 +37,7 @@ import type {
   QueuedMessage,
   SessionInfo,
   SessionQueuePayload,
+  TurnSnapshotsPayload,
   SessionTitledPayload,
   SyncEnvelope,
   TranscriptDto,
@@ -502,6 +503,8 @@ interface EgantStore {
   focusFilterToken: number;
   error: string | null;
   notice: Notice | null;
+  /** Says `text` in the notice toast — what an action reports when it's done. */
+  showNotice: (text: string) => void;
   dismissNotice: () => void;
   /** Deletes a worktree that closing its session decided to keep — the
    * notice's "Delete it anyway", taken after the user has read what is in it. */
@@ -2024,6 +2027,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     requestPicker: (sessionId, kind) =>
       set((s) => ({ pickerRequest: { sessionId, kind, token: (s.pickerRequest?.token ?? 0) + 1 } })),
     dismissError: () => set({ error: null }),
+    showNotice: (text) => set({ notice: { text, worktree: null } }),
     dismissNotice: () => set({ notice: null }),
 
     discardKeptWorktree: async (worktree) => {
@@ -2123,6 +2127,18 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const unlistenQueues = await listen<SessionQueuePayload>("session-queue", (e) =>
         set({ queues: { ...get().queues, [e.payload.sessionId]: e.payload.queued } }),
       );
+      // A turn's snapshot landed (it is taken off-thread as the turn starts):
+      // its prompt can now offer "Revert this turn".
+      const unlistenSnapshots = await listen<TurnSnapshotsPayload>("turn-snapshots", (e) => {
+        const transcript = get().transcripts[e.payload.sessionId];
+        if (!transcript) return;
+        set({
+          transcripts: {
+            ...get().transcripts,
+            [e.payload.sessionId]: { ...transcript, revertibleTurns: e.payload.turns },
+          },
+        });
+      });
       // What a paired phone does to a session: its messages, its answers.
       const unlistenSync = await listen<SyncEnvelope>("session-sync", (e) =>
         onSessionSync(e.payload),
@@ -2133,6 +2149,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         unlistenRenames();
         unlistenTitles();
         unlistenQueues();
+        unlistenSnapshots();
         unlistenSync();
       };
     },

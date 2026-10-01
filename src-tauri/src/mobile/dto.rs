@@ -255,6 +255,7 @@ mod tests {
             last_user_text: None,
             last_user_images: Vec::new(),
             turn_baseline: None,
+            turn_snapshots: Vec::new(),
             decisions: Default::default(),
             last_activity_ms: 1,
             queued: Default::default(),

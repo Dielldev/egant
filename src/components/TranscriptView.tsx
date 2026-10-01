@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, FolderOpen } from "lucide-react";
+import { Check, ChevronDown, Copy, FolderOpen, Undo2 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { modShortcut } from "../lib/platform";
 import {
@@ -22,6 +22,7 @@ import { DecisionPrompt } from "./DecisionPrompt";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { QuestionCard } from "./QuestionCard";
+import { RevertTurnDialog } from "./RevertTurnDialog";
 import { RunPill } from "./RunPill";
 import { SettledRequest } from "./SettledRequest";
 import { StatusLine } from "./StatusLine";
@@ -196,6 +197,10 @@ export function TranscriptView() {
   /** Viewport height for the fixed-footprint bucket math (600 pre-layout). */
   const [viewportH, setViewportH] = useState(600);
   const glideRef = useRef<number | null>(null);
+  /** The turn whose revert is being asked about, by message from 0. */
+  const [reverting, setReverting] = useState<number | null>(null);
+  // A revert asked about in one conversation doesn't follow you to another.
+  useEffect(() => setReverting(null), [activeId]);
 
   const transcript = activeId != null ? transcripts[activeId] : undefined;
   // Reasoning is dropped rather than drawn. The status line at the tail
@@ -397,6 +402,10 @@ export function TranscriptView() {
             instead of every call collapsing into one giant dropdown. */}
           {(() => {
             const nodes: ReactNode[] = [];
+            const revertible = new Set(transcript?.revertibleTurns ?? []);
+            // Turns are numbered by the messages that opened them, the way the
+            // backend numbers the snapshots they can be reverted to.
+            let turn = 0;
             let i = 0;
             while (i < entries.length) {
               const entry = entries[i]!;
@@ -434,6 +443,7 @@ export function TranscriptView() {
                 continue;
               }
               if (entry.kind === "user") {
+                const thisTurn = turn++;
                 nodes.push(
                   <div
                     key={i}
@@ -442,9 +452,22 @@ export function TranscriptView() {
                       else promptRefs.current.delete(i);
                     }}
                     data-prompt-index={i}
-                    className="scroll-mt-[48px]"
+                    className="group relative scroll-mt-[48px]"
                   >
                     <RenderEntry entry={entry} sessionId={active.id} />
+                    {/* Between turns only: one still running is still
+                      writing the files a revert would put back. */}
+                    {!busy && revertible.has(thisTurn) && (
+                      <button
+                        type="button"
+                        title="Revert this turn — put back the files it changed"
+                        onClick={() => setReverting(thisTurn)}
+                        className="absolute -bottom-5 right-1 flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--faint)] opacity-0 group-hover:opacity-100 hover:bg-[var(--hover)] hover:text-[var(--ink)] focus-visible:opacity-100"
+                      >
+                        <Undo2 size={11} strokeWidth={2} />
+                        Revert
+                      </button>
+                    )}
                   </div>,
                 );
               } else if (
@@ -511,6 +534,14 @@ export function TranscriptView() {
           )}
         </div>
       </div>
+
+      {reverting != null && (
+        <RevertTurnDialog
+          sessionId={active.id}
+          turn={reverting}
+          onClose={() => setReverting(null)}
+        />
+      )}
 
       {showOutline && (
         <ChatOutline

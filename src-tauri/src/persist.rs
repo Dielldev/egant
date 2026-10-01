@@ -155,11 +155,27 @@ pub struct PersistedSession {
     /// still load — with none, which is what they had.
     #[serde(default)]
     pub decisions: BTreeMap<String, serde_json::Value>,
+    /// The working tree as each turn began (see `ManagedSession`).
+    /// `#[serde(default)]`: sessions saved before turns could be reverted
+    /// load with none, and their turns simply offer no revert.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_snapshots: Vec<TurnSnapshot>,
     /// When the file was last written, read back from the filesystem at
     /// load: the closest thing a restored session has to a last-activity
     /// time. Never written into the file itself.
     #[serde(skip)]
     pub modified_ms: u64,
+}
+
+/// The whole working tree as one turn began: a git tree object (see
+/// `egant_vcs::Repo::snapshot_worktree`). `turn` counts the session's
+/// messages from 0 — the 3rd message opened turn 2 — which the window counts
+/// the same way, so a prompt finds its snapshot however its transcript was
+/// split up for drawing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnSnapshot {
+    pub turn: usize,
+    pub tree: String,
 }
 
 fn sessions_dir() -> Option<PathBuf> {
@@ -480,6 +496,7 @@ mod tests {
             },
             transcript: Transcript::new(),
             decisions: BTreeMap::new(),
+            turn_snapshots: Vec::new(),
             modified_ms: 0,
         }
     }
@@ -601,6 +618,7 @@ mod tests {
             meta: meta.clone(),
             transcript: transcript.clone(),
             decisions: BTreeMap::new(),
+            turn_snapshots: Vec::new(),
             modified_ms: 0,
         })
         .expect("serializes");
@@ -639,6 +657,7 @@ mod tests {
             meta,
             transcript: Transcript::new(),
             decisions: BTreeMap::new(),
+            turn_snapshots: Vec::new(),
             modified_ms: 0,
         })
         .expect("serializes");

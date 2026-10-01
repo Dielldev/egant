@@ -830,6 +830,7 @@ fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, Str
     let mut dto = TranscriptDto::from(&session.transcript);
     dto.decision_responses = session.decisions.clone();
     dto.queued = sessions::queue_dto(session);
+    dto.revertible_turns = crate::revert::revertible_turns(&session.turn_snapshots);
     Ok(dto)
 }
 
@@ -1805,6 +1806,8 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         sync_window_appearance,
         crate::files::list_dir,
         crate::files::list_files,
+        crate::revert::preview_turn_revert,
+        crate::revert::revert_turn,
         crate::github::gh_status,
         crate::github::pr_list,
         crate::github::pr_detail,

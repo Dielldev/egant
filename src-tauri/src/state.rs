@@ -119,6 +119,11 @@ pub struct ManagedSession {
     /// would answer a question nobody asked any more. Recorded off-thread (see
     /// `sessions::mark_turn_baseline`), so a turn never waits on git.
     pub turn_baseline: Option<String>,
+    /// The whole working tree as each turn began, by turn — what "Revert this
+    /// turn" puts the files that turn changed back to. Unlike the baseline it
+    /// is saved: reverting an hour-old turn after a relaunch is the point.
+    /// Only the newest [`crate::revert::KEPT_TURNS`] are kept.
+    pub turn_snapshots: Vec<persist::TurnSnapshot>,
     /// Answers to this session's decision prompts, keyed by the prompt's id.
     /// Here rather than in one window's storage so the desktop and a phone
     /// agree on which prompts are settled; saved with the transcript.
@@ -292,6 +297,7 @@ impl AppState {
                 meta,
                 transcript: session.transcript.clone(),
                 decisions: session.decisions.clone(),
+                turn_snapshots: session.turn_snapshots.clone(),
                 modified_ms: 0,
             },
         })
@@ -507,6 +513,7 @@ pub(crate) fn restore_session(
     };
     let last_activity_ms = persisted.modified_ms.max(meta.started_unix_ms);
     let decisions = persisted.decisions;
+    let turn_snapshots = persisted.turn_snapshots;
     let mut transcript = persisted.transcript;
     // A turn in flight when the app last closed (crash, force-quit)
     // has nothing running behind it any more; left as `Running` or
@@ -523,6 +530,7 @@ pub(crate) fn restore_session(
         last_user_text: None,
         last_user_images: Vec::new(),
         turn_baseline: None,
+        turn_snapshots,
         decisions,
         last_activity_ms,
         queued: Default::default(),
@@ -653,6 +661,7 @@ mod tests {
             },
             transcript: Transcript::new(),
             decisions: Default::default(),
+            turn_snapshots: Vec::new(),
             modified_ms: 0,
         }
     }
@@ -718,6 +727,7 @@ mod tests {
                 last_user_text: None,
                 last_user_images: Vec::new(),
                 turn_baseline: None,
+                turn_snapshots: Vec::new(),
                 decisions: Default::default(),
                 last_activity_ms: 0,
                 queued: Default::default(),
@@ -791,6 +801,7 @@ mod tests {
                 last_user_text: None,
                 last_user_images: Vec::new(),
                 turn_baseline: None,
+                turn_snapshots: Vec::new(),
                 decisions: Default::default(),
                 last_activity_ms: 0,
                 queued: Default::default(),

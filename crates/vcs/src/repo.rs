@@ -49,6 +49,42 @@ impl FileStatus {
     }
 }
 
+/// The largest new file [`Repo::snapshot_worktree`] takes in: 10 MB.
+pub const SNAPSHOT_FILE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// How one path differs between two trees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// One path that differs between two trees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeChange {
+    pub path: PathBuf,
+    pub kind: ChangeKind,
+}
+
+/// Runs git against a scratch index instead of the repository's own.
+fn git_with_index(root: &Path, index: &Path, args: &[&str]) -> Result<String, VcsError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_INDEX_FILE", index)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(VcsError::GitFailed {
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+}
+
 /// Everything the panel needs for one render, gathered in one pass so the UI
 /// never holds a `Repository` (which is not `Send`) across an await point.
 #[derive(Debug, Clone, Default)]
@@ -350,6 +386,134 @@ impl Repo {
         }
         let commit = self.inner.find_commit(Oid::from_str(printed)?)?;
         Ok(commit.tree()?.id().to_string())
+    }
+
+    /// The whole working tree as it stands — tracked files, changed ones and
+    /// new ones alike, never what `.gitignore` leaves out — written as a tree
+    /// object without touching the index or the working directory. What a
+    /// turn is reverted to, so unlike [`Self::snapshot_tree`] it has to hold a
+    /// file the user made before the turn: reverting must put it back, not
+    /// delete it.
+    ///
+    /// It stages into a scratch copy of the index (`GIT_INDEX_FILE`), which
+    /// keeps git's record of which files are unchanged, so only what changed
+    /// is read again. A new file over [`SNAPSHOT_FILE_LIMIT`] is left out —
+    /// a dataset or a build artifact nobody ignored would otherwise be copied
+    /// into the repository's objects on every turn — and so is never touched
+    /// by a revert.
+    pub fn snapshot_worktree(&self) -> Result<String, VcsError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let scratch = std::env::temp_dir().join(format!(
+            "egant-snapshot-{}-{}.index",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let index = self.inner.path().join("index");
+        if index.is_file() {
+            std::fs::copy(&index, &scratch)?;
+        }
+        let result = (|| {
+            let mut add = vec!["add".to_string(), "-A".into(), "--".into(), ".".into()];
+            add.extend(
+                self.large_untracked()?
+                    .into_iter()
+                    .map(|path| format!(":(exclude,literal){path}")),
+            );
+            let add: Vec<&str> = add.iter().map(String::as_str).collect();
+            git_with_index(&self.root, &scratch, &add)?;
+            Ok(git_with_index(&self.root, &scratch, &["write-tree"])?
+                .trim()
+                .to_string())
+        })();
+        let _ = std::fs::remove_file(&scratch);
+        result
+    }
+
+    /// New files too big to snapshot, by path from the root.
+    fn large_untracked(&self) -> Result<Vec<String>, VcsError> {
+        let out = crate::remote::run(
+            &self.root,
+            &["ls-files", "-z", "--others", "--exclude-standard"],
+        )?;
+        Ok(out
+            .stdout
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .filter(|path| {
+                std::fs::metadata(self.root.join(path))
+                    .is_ok_and(|meta| meta.len() > SNAPSHOT_FILE_LIMIT)
+            })
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// Every path that differs between two trees, and how — no rename
+    /// detection: a moved file is one deleted and one added, which is also
+    /// how putting it back works.
+    pub fn tree_changes(&self, before: &str, after: &str) -> Result<Vec<TreeChange>, VcsError> {
+        let before = self.inner.find_tree(Oid::from_str(before)?)?;
+        let after = self.inner.find_tree(Oid::from_str(after)?)?;
+        let diff = self
+            .inner
+            .diff_tree_to_tree(Some(&before), Some(&after), None)?;
+        let mut changes = Vec::new();
+        for delta in diff.deltas() {
+            let kind = match delta.status() {
+                Delta::Added => ChangeKind::Added,
+                Delta::Deleted => ChangeKind::Deleted,
+                _ => ChangeKind::Modified,
+            };
+            if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
+                changes.push(TreeChange {
+                    path: path.to_path_buf(),
+                    kind,
+                });
+            }
+        }
+        Ok(changes)
+    }
+
+    /// Puts each path back the way `tree` has it: written out when the tree
+    /// holds it, removed when it doesn't. Only the working tree changes — the
+    /// index is left alone, so nothing is staged behind the user's back.
+    pub fn restore_paths(&self, tree: &str, paths: &[PathBuf]) -> Result<(), VcsError> {
+        let tree = self.inner.find_tree(Oid::from_str(tree)?)?;
+        for path in paths {
+            let target = self.root.join(path);
+            let entry = match tree.get_path(path) {
+                Ok(entry) => entry,
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                    match std::fs::remove_file(&target) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let object = entry.to_object(&self.inner)?;
+            let Some(blob) = object.as_blob() else {
+                continue; // a submodule: not a file to put back
+            };
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let _ = std::fs::remove_file(&target);
+            #[cfg(unix)]
+            if entry.filemode() == 0o120000 {
+                let link = String::from_utf8_lossy(blob.content()).into_owned();
+                std::os::unix::fs::symlink(link, &target)?;
+                continue;
+            }
+            std::fs::write(&target, blob.content())?;
+            #[cfg(unix)]
+            if entry.filemode() == 0o100755 {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        Ok(())
     }
 
     /// Lines added and removed per path, for one side of the panel: the index
@@ -809,6 +973,72 @@ mod tests {
         drop(config);
         let repo = Repo::discover(dir.path()).unwrap();
         (dir, repo)
+    }
+
+    #[test]
+    fn a_turn_is_put_back_from_its_snapshot_new_files_and_all() {
+        let (dir, repo) = init_repo();
+        let root = dir.path();
+        fs::write(root.join("kept.txt"), "original\n").unwrap();
+        repo.stage(&[PathBuf::from("kept.txt")]).unwrap();
+        repo.commit("base").unwrap();
+        // Made by the user before the turn and never committed: a revert has
+        // to bring it back, not count it as something the turn added.
+        fs::write(root.join("notes.txt"), "mine\n").unwrap();
+        fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
+        fs::write(root.join("ignored.log"), "noise\n").unwrap();
+        let before = repo.snapshot_worktree().unwrap();
+
+        // The turn: an edit, a deletion, a new file in a new folder.
+        fs::write(root.join("kept.txt"), "edited\n").unwrap();
+        fs::remove_file(root.join("notes.txt")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/new.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("ignored.log"), "more noise\n").unwrap();
+        let after = repo.snapshot_worktree().unwrap();
+
+        let mut changes = repo.tree_changes(&before, &after).unwrap();
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            changes,
+            [
+                TreeChange {
+                    path: "kept.txt".into(),
+                    kind: ChangeKind::Modified
+                },
+                TreeChange {
+                    path: "notes.txt".into(),
+                    kind: ChangeKind::Deleted
+                },
+                TreeChange {
+                    path: "src/new.rs".into(),
+                    kind: ChangeKind::Added
+                },
+            ]
+        );
+
+        let paths: Vec<PathBuf> = changes.into_iter().map(|change| change.path).collect();
+        repo.restore_paths(&before, &paths).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("kept.txt")).unwrap(),
+            "original\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "mine\n"
+        );
+        assert!(!root.join("src/new.rs").exists());
+        // Ignored files are nobody's turn to undo.
+        assert_eq!(
+            fs::read_to_string(root.join("ignored.log")).unwrap(),
+            "more noise\n"
+        );
+        // And the index never moved: nothing was staged along the way.
+        let status = crate::remote::run(root, &["status", "--porcelain"])
+            .unwrap()
+            .stdout;
+        assert!(!status.contains("A "), "{status}");
+        assert_eq!(repo.snapshot_worktree().unwrap(), before);
     }
 
     #[test]

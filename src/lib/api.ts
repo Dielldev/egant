@@ -31,6 +31,7 @@ import type {
   PrDetail,
   SendResult,
   PullRequest,
+  RevertPlan,
   RepoRef,
   RepoStatus,
   SettingsState,
@@ -126,6 +127,16 @@ export const api = {
     ),
   /** Takes a queued message back out; resolves to its text, or `null` when it
    * already went out. */
+  /** What reverting a turn would do, without doing it. */
+  previewTurnRevert: (id: number, turn: number) =>
+    traced("preview_turn_revert", `id=${id} turn=${turn}`, () =>
+      invoke<RevertPlan>("preview_turn_revert", { id, turn }),
+    ),
+  /** Puts the files a turn changed back the way they were when it began. */
+  revertTurn: (id: number, turn: number) =>
+    traced("revert_turn", `id=${id} turn=${turn}`, () =>
+      invoke<{ files: number }>("revert_turn", { id, turn }),
+    ),
   unqueueMessage: (id: number, queuedId: number) =>
     traced("unqueue_message", `id=${id} queued=${queuedId}`, () =>
       invoke<string | null>("unqueue_message", { id, queuedId }),

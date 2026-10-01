@@ -23,7 +23,9 @@ pub use conflict::{
     ConflictBlock, ConflictState, OperationKind, Side as ConflictSide, UnmergedFile, UnmergedKind,
 };
 pub use history::{Commit, CommitRef, HistoryPage, RefKind};
-pub use repo::{BlobSource, DiffHunk, FileChange, FileStatus, Repo, RepoSnapshot};
+pub use repo::{
+    BlobSource, ChangeKind, DiffHunk, FileChange, FileStatus, Repo, RepoSnapshot, TreeChange,
+};
 pub use watcher::{RepoWatcher, WatchEvent};
 pub use worktree::{RepoRef, Worktree, WorktreeState, WorktreeStore, branch_slug};
 

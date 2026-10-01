@@ -151,7 +151,24 @@ export interface TranscriptDto {
    * older backends. */
   progress?: TurnProgress | null;  /** The slash commands the agent accepts, for the composer's `/` menu.
    * Absent from older backends. */
-  commands?: SlashCommand[];
+  commands?: SlashCommand[];  /** The turns (by message, counted from 0) whose files can be reverted. */
+  revertibleTurns?: number[];
+}
+
+/** What reverting a turn will do (`preview_turn_revert`). */
+export interface RevertPlan {
+  /** Each file the turn changed, from the repository's root, with what the
+   * turn did to it. */
+  files: { path: string; change: "added" | "modified" | "deleted" }[];
+  /** Files changed again since the turn, whose later changes a revert loses. */
+  changedSince: string[];
+}
+
+/** The `turn-snapshots` event: a session's revertible turns, after one more
+ * was recorded. */
+export interface TurnSnapshotsPayload {
+  sessionId: number;
+  turns: number[];
 }
 
 /** A slash command the agent accepts, without its slash. Mirrors the Rust

@@ -20,6 +20,7 @@ mod notifications;
 mod persist;
 mod project;
 mod pty;
+mod revert;
 mod service;
 mod sessions;
 mod settings;

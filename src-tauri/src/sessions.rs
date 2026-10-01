@@ -402,6 +402,7 @@ pub fn spawn_session(
                     last_user_text: None,
                     last_user_images: Vec::new(),
                     turn_baseline: None,
+                    turn_snapshots: Vec::new(),
                     decisions: Default::default(),
                     last_activity_ms: unix_now_ms(),
                     queued: Default::default(),
@@ -433,6 +434,7 @@ pub fn spawn_session(
             last_user_text: None,
             last_user_images: Vec::new(),
             turn_baseline: None,
+            turn_snapshots: Vec::new(),
             decisions: Default::default(),
             last_activity_ms: unix_now_ms(),
             queued: Default::default(),
@@ -550,6 +552,7 @@ pub fn spawn_cli_session(
             last_user_text: None,
             last_user_images: Vec::new(),
             turn_baseline: None,
+            turn_snapshots: Vec::new(),
             decisions: Default::default(),
             last_activity_ms: unix_now_ms(),
             queued: Default::default(),
@@ -1444,10 +1447,17 @@ pub fn send_text(
     }
 
     // The turn starts here, so this is where "what has this turn done" gets
-    // its answer to measure from.
+    // its answer to measure from — and what reverting it goes back to. The
+    // turn is numbered by the messages before it.
     if let Some(session) = state.sessions.get(&id) {
         if !session.meta.ended {
-            mark_turn_baseline(app, id, session.meta.cwd.clone());
+            let turn = session
+                .transcript
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, TranscriptEntry::User { .. }))
+                .count();
+            mark_turn_baseline(app, id, session.meta.cwd.clone(), turn);
         }
     }
 
@@ -1660,33 +1670,53 @@ pub fn send_queued_now(
     })
 }
 
-/// Records the tree the working directory was in as a turn begins, so the
-/// panel's "Latest turn" scope has a point to measure from.
+/// Records the tree the working directory was in as a turn begins: the
+/// panel's "Latest turn" scope measures from it, and "Revert this turn" puts
+/// the files the turn changed back to it (see [`crate::revert`]).
 ///
-/// Off the calling thread and best-effort. It shells out (`git stash create`),
-/// and a turn must never wait on git to start — which does mean an agent fast
-/// enough to write a file in the first few milliseconds would have that file
-/// counted as something that was already there. The alternative is a composer
-/// that stalls on every send in a large repository, which is the worse trade.
+/// Off the calling thread and best-effort. It shells out to git, and a turn
+/// must never wait on git to start — which does mean an agent fast enough to
+/// write a file in the first few milliseconds would have that file counted as
+/// something that was already there. The alternative is a composer that
+/// stalls on every send in a large repository, which is the worse trade.
 ///
-/// A folder that isn't a repository simply never gets a baseline, and the
-/// scope falls back to HEAD (see `commands::resolve_scope`).
-fn mark_turn_baseline(app: &AppHandle, id: u64, cwd: PathBuf) {
+/// A folder that isn't a repository simply never gets one: the scope falls
+/// back to HEAD (see `commands::resolve_scope`), and the turn offers no
+/// revert.
+fn mark_turn_baseline(app: &AppHandle, id: u64, cwd: PathBuf, turn: usize) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let baseline = tauri::async_runtime::spawn_blocking(move || {
+        let tree = tauri::async_runtime::spawn_blocking(move || {
             let repo = egant_vcs::Repo::discover(&cwd).ok()?;
-            repo.snapshot_tree().ok()
+            repo.snapshot_worktree()
+                .inspect_err(|error| {
+                    log::warn!("session {id}: no snapshot of turn {turn}: {error}")
+                })
+                .ok()
         })
         .await
         .ok()
         .flatten();
-        let Some(baseline) = baseline else { return };
-        let state = app.state::<Mutex<AppState>>();
-        let mut guard = state.lock().unwrap();
-        if let Some(session) = guard.sessions.get_mut(&id) {
-            session.turn_baseline = Some(baseline);
-        }
+        let Some(tree) = tree else { return };
+        let turns = {
+            let state = app.state::<Mutex<AppState>>();
+            let mut guard = state.lock().unwrap();
+            let Some(session) = guard.sessions.get_mut(&id) else {
+                return;
+            };
+            session.turn_baseline = Some(tree.clone());
+            crate::revert::record(&mut session.turn_snapshots, turn, tree);
+            let turns = crate::revert::revertible_turns(&session.turn_snapshots);
+            guard.persist_session(id);
+            turns
+        };
+        let _ = app.emit(
+            "turn-snapshots",
+            crate::revert::TurnSnapshotsPayload {
+                session_id: id,
+                turns,
+            },
+        );
     });
 }
 
@@ -2629,6 +2659,7 @@ mod tests {
             last_user_text: None,
             last_user_images: Vec::new(),
             turn_baseline: None,
+            turn_snapshots: Vec::new(),
             decisions: Default::default(),
             last_activity_ms: 0,
             queued: Default::default(),

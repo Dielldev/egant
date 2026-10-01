@@ -187,6 +187,8 @@ pub struct TranscriptDto {
     pub progress: Option<ProgressDto>,
     /// The slash commands the agent accepts, for the composer's `/` menu.
     pub commands: Vec<SlashCommandDto>,
+    /// The turns (by message, from 0) that can be reverted.
+    pub revertible_turns: Vec<usize>,
 }
 
 /// A slash command the agent accepts, without its slash.
@@ -336,6 +338,7 @@ impl From<&Transcript> for TranscriptDto {
                 .iter()
                 .map(SlashCommandDto::from)
                 .collect(),
+            revertible_turns: Vec::new(),
         }
     }
 }
