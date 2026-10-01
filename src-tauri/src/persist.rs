@@ -20,8 +20,10 @@
 
 use egant_harness::{AgentId, PermissionMode, Transcript};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
 
 use crate::settings::config_dir;
 
@@ -168,55 +170,208 @@ fn session_path(id: u64) -> Option<PathBuf> {
     Some(sessions_dir()?.join(format!("{id}.json")))
 }
 
-/// Writes one session's meta and transcript. Called after every event that
-/// changes what a restart would need to show — never on a per-token streaming
-/// delta, which would turn a long reply into thousands of disk writes for no
-/// benefit (a delta is never the last thing to happen before a crash without
-/// also being followed shortly by a coarser event that saves it anyway, and
-/// if it is, losing the last few in-flight words is a fair trade against
-/// disk I/O on every token).
-///
-/// Returns whether the file was written — which archiving needs to know
-/// before it takes a session out of the window.
-pub fn save_session(
-    meta: &PersistedMeta,
-    transcript: &Transcript,
-    decisions: &BTreeMap<String, serde_json::Value>,
-) -> bool {
-    let Some(path) = session_path(meta.id) else {
+// ---------------------------------------------------------------------------
+// Saving sessions, off the state lock
+// ---------------------------------------------------------------------------
+//
+// Saving used to happen inside `AppState::persist_session`, under the lock the
+// whole app shares: every tool call, tool result and context reading cloned
+// the session, serialized it (hundreds of KB, on a long one) and wrote it to
+// disk while the window waited to draw and every other session waited to
+// fold its next event. Now `persist_session` only marks the session, and a
+// writer thread saves it shortly after: it lets a burst of changes run on for
+// a moment, takes each marked session's snapshot under the lock — a clone,
+// once per burst rather than once per event — and serializes and writes it
+// outside. Quitting saves whatever is still marked, so the last change before
+// a quit still makes it to disk.
+//
+// Never on a per-token streaming delta either way, which would be thousands
+// of writes a reply for nothing: a delta is always followed shortly by a
+// coarser event that saves it, and a crash in between loses a few words.
+
+/// How long the writer lets a burst of changes run on before saving it — a
+/// tool call, its result and the context reading after it are one write,
+/// not three.
+const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// One session as it stood at one moment: its record, and the moment's place
+/// among every other snapshot taken, of any session (see [`next_snapshot_seq`]).
+pub struct Snapshot {
+    pub seq: u64,
+    pub record: PersistedSession,
+}
+
+/// Snapshots are numbered as they are taken, under the state lock, so the
+/// numbers run in the order the state changed. A snapshot is only written
+/// over an older one of the same session (see [`supersedes`]): the writer can
+/// be holding a snapshot taken a moment before an archive writes its own, or
+/// before closing deletes the file, and must not undo either.
+pub fn next_snapshot_seq() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What `written` records for a session whose file was deleted: newer than
+/// any snapshot, so a late write can never bring the file back.
+const DELETED: u64 = u64::MAX;
+
+type Snapshotter = Box<dyn Fn(u64) -> Option<Snapshot> + Send + Sync>;
+
+struct Saver {
+    /// Sessions changed since they were last saved.
+    dirty: Mutex<BTreeSet<u64>>,
+    wake: Condvar,
+    /// Held while a batch is saved, so a flush at quit waits for one the
+    /// writer has already taken off `dirty` rather than finding it empty.
+    batch: Mutex<()>,
+    /// Per session, the snapshot on disk now — or [`DELETED`].
+    written: Mutex<BTreeMap<u64, u64>>,
+    /// How to take a session's snapshot: set once the app exists to take
+    /// it from (`start_saver`). Until then — and in tests, which never set
+    /// it — marks pile up and nothing is written.
+    snapshot: OnceLock<Snapshotter>,
+}
+
+static SAVER: Saver = Saver {
+    dirty: Mutex::new(BTreeSet::new()),
+    wake: Condvar::new(),
+    batch: Mutex::new(()),
+    written: Mutex::new(BTreeMap::new()),
+    snapshot: OnceLock::new(),
+};
+
+/// Marks a session as changed: the writer saves it shortly. Cheap enough to
+/// call under the state lock on every event.
+pub fn mark_dirty(id: u64) {
+    if let Ok(mut dirty) = SAVER.dirty.lock() {
+        dirty.insert(id);
+    }
+    SAVER.wake.notify_one();
+}
+
+/// Starts the writer. `snapshot` takes one session's snapshot — it locks the
+/// state itself, briefly, and must return `None` for a session that is no
+/// longer there (closed, archived) or has nowhere to be saved.
+pub fn start_saver(snapshot: impl Fn(u64) -> Option<Snapshot> + Send + Sync + 'static) {
+    if SAVER.snapshot.set(Box::new(snapshot)).is_err() {
+        return; // already running
+    }
+    let spawned = std::thread::Builder::new()
+        .name("egant-session-saver".into())
+        .spawn(|| {
+            loop {
+                {
+                    let Ok(mut dirty) = SAVER.dirty.lock() else {
+                        return;
+                    };
+                    while dirty.is_empty() {
+                        dirty = match SAVER.wake.wait(dirty) {
+                            Ok(dirty) => dirty,
+                            Err(_) => return,
+                        };
+                    }
+                }
+                std::thread::sleep(SAVE_DELAY);
+                save_dirty();
+            }
+        });
+    if let Err(error) = spawned {
+        log::error!("couldn't start the session saver: {error}");
+    }
+}
+
+/// Saves every marked session now, on this thread. Quitting calls it, so
+/// the changes of the last moment aren't lost with the process.
+pub fn flush() {
+    save_dirty();
+}
+
+fn save_dirty() {
+    let Some(snapshot) = SAVER.snapshot.get() else {
+        return;
+    };
+    let _batch = SAVER.batch.lock();
+    let ids = match SAVER.dirty.lock() {
+        Ok(mut dirty) => std::mem::take(&mut *dirty),
+        Err(_) => return,
+    };
+    for id in ids {
+        if let Some(Snapshot { seq, record }) = snapshot(id) {
+            write_snapshot(seq, &record);
+        }
+    }
+}
+
+/// Writes one session's snapshot now — what the writer does, and what
+/// archiving does directly, since it needs to know the file says "archived"
+/// before it takes the session out of the window. Returns whether the file
+/// now holds this snapshot: not when it failed, and not when a newer one is
+/// already there or the file was deleted since.
+pub fn write_snapshot(seq: u64, record: &PersistedSession) -> bool {
+    let Some(dir) = sessions_dir() else {
         return false;
     };
-    let record = PersistedSession {
-        meta: meta.clone(),
-        transcript: transcript.clone(),
-        decisions: decisions.clone(),
-        modified_ms: 0,
-    };
-    match serde_json::to_string(&record) {
-        Ok(text) => match write_atomic(&path, &text) {
-            Ok(()) => true,
-            Err(error) => {
-                log::warn!("could not write {}: {error}", path.display());
-                false
-            }
-        },
+    write_snapshot_in(&dir, &SAVER.written, seq, record)
+}
+
+fn write_snapshot_in(
+    dir: &Path,
+    written: &Mutex<BTreeMap<u64, u64>>,
+    seq: u64,
+    record: &PersistedSession,
+) -> bool {
+    let id = record.meta.id;
+    // Serialized before the order is checked, outside any lock that matters.
+    let text = match serde_json::to_string(record) {
+        Ok(text) => text,
         Err(error) => {
-            log::warn!("could not serialize session {}: {error}", meta.id);
+            log::warn!("could not serialize session {id}: {error}");
+            return false;
+        }
+    };
+    let Ok(mut written) = written.lock() else {
+        return false;
+    };
+    if !supersedes(written.get(&id).copied(), seq) {
+        log::debug!("session {id}: snapshot {seq} is older than the file, skipped");
+        return false;
+    }
+    let path = dir.join(format!("{id}.json"));
+    match write_atomic(&path, &text) {
+        Ok(()) => {
+            written.insert(id, seq);
+            true
+        }
+        Err(error) => {
+            log::warn!("could not write {}: {error}", path.display());
             false
         }
     }
 }
 
+/// Whether a snapshot may replace what is on disk: only a newer one, and
+/// never once the file was deleted.
+fn supersedes(on_disk: Option<u64>, seq: u64) -> bool {
+    on_disk.is_none_or(|on_disk| seq > on_disk)
+}
+
 /// Removes a session's file. Called when the user closes a session, which is
 /// still meant to forget it for good — persistence only changes what
 /// *quitting the app* does, not what closing a tab does.
+///
+/// A snapshot the writer is still holding can't bring it back: deleting
+/// counts as newer than any of them.
 pub fn delete_session(id: u64) {
     let Some(path) = session_path(id) else { return };
+    let Ok(mut written) = SAVER.written.lock() else {
+        return;
+    };
     if let Err(error) = std::fs::remove_file(&path) {
         if error.kind() != std::io::ErrorKind::NotFound {
             log::warn!("could not remove {}: {error}", path.display());
         }
     }
+    written.insert(id, DELETED);
 }
 
 /// Every session left over from previous runs, archived ones included, oldest
@@ -301,6 +456,96 @@ mod tests {
 
     fn scratch_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("egant-persist-test-{name}-{}", std::process::id()))
+    }
+
+    fn record(id: u64, title: &str, archived_at_ms: Option<u64>) -> PersistedSession {
+        PersistedSession {
+            meta: PersistedMeta {
+                id,
+                title: title.into(),
+                title_source: crate::state::TitleSource::User,
+                project_path: PathBuf::from("/tmp/project"),
+                cwd: PathBuf::from("/tmp/project"),
+                branch: None,
+                started_unix_ms: 1,
+                agent: AgentId::Claude,
+                cli_agent: None,
+                model: None,
+                variant: None,
+                context: None,
+                permission_mode: PermissionMode::Auto,
+                worktree: None,
+                device: None,
+                archived_at_ms,
+            },
+            transcript: Transcript::new(),
+            decisions: BTreeMap::new(),
+            modified_ms: 0,
+        }
+    }
+
+    fn title_on_disk(dir: &Path, id: u64) -> Option<String> {
+        let text = std::fs::read_to_string(dir.join(format!("{id}.json"))).ok()?;
+        let back: PersistedSession = serde_json::from_str(&text).ok()?;
+        Some(back.meta.title)
+    }
+
+    #[test]
+    fn a_snapshot_never_overwrites_a_newer_one() {
+        // A scratch folder and its own record of what was written: the
+        // writer's ordering, without the real sessions folder.
+        let dir = scratch_dir("snapshots");
+        let written = Mutex::new(BTreeMap::new());
+
+        // The writer took snapshot 5 just before archiving took and wrote 6;
+        // its write, arriving last, is the stale one.
+        assert!(write_snapshot_in(
+            &dir,
+            &written,
+            6,
+            &record(1, "archived", Some(9))
+        ));
+        assert!(!write_snapshot_in(
+            &dir,
+            &written,
+            5,
+            &record(1, "stale", None)
+        ));
+        assert_eq!(title_on_disk(&dir, 1).as_deref(), Some("archived"));
+
+        // In order, each newer snapshot replaces the last.
+        assert!(write_snapshot_in(
+            &dir,
+            &written,
+            7,
+            &record(2, "first", None)
+        ));
+        assert!(write_snapshot_in(
+            &dir,
+            &written,
+            8,
+            &record(2, "second", None)
+        ));
+        assert_eq!(title_on_disk(&dir, 2).as_deref(), Some("second"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nothing_written_late_brings_a_deleted_session_back() {
+        assert!(supersedes(None, 1));
+        assert!(supersedes(Some(4), 5));
+        assert!(!supersedes(Some(5), 5));
+        assert!(!supersedes(Some(6), 5));
+        // A closed session's file is gone for good, whatever was in flight.
+        assert!(!supersedes(Some(DELETED), next_snapshot_seq()));
+    }
+
+    #[test]
+    fn snapshots_are_numbered_in_the_order_they_are_taken() {
+        let first = next_snapshot_seq();
+        let second = next_snapshot_seq();
+        assert!(second > first);
     }
 
     #[test]

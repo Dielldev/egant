@@ -239,23 +239,35 @@ impl AppState {
         persist::save_projects(&paths);
     }
 
-    /// Writes one session's meta and transcript to disk, keyed by its
-    /// project's path rather than the in-memory project id (ids are
-    /// reassigned every launch).
+    /// Saves one session's meta and transcript, shortly and off this lock:
+    /// marks it for the writer (`persist::start_saver`), which takes its
+    /// snapshot once the burst of changes it belongs to is over. Cheap enough
+    /// to call on every event.
     pub(crate) fn persist_session(&self, id: u64) {
-        self.persist_session_with(id, None);
+        persist::mark_dirty(id);
     }
 
-    /// [`Self::persist_session`], saying whether the file was written and
-    /// marking it archived at `archived_at_ms` when that is set — the last
-    /// write a session gets before it leaves the window for the archive.
+    /// Saves one session now, saying whether the file was written, and marks
+    /// it archived at `archived_at_ms` when that is set — the last write a
+    /// session gets before it leaves the window for the archive, which has to
+    /// know it landed.
     pub(crate) fn persist_session_with(&self, id: u64, archived_at_ms: Option<u64>) -> bool {
-        let Some(session) = self.sessions.get(&id) else {
-            return false;
-        };
-        let Some(project) = self.project(session.meta.project_id) else {
-            return false;
-        };
+        self.session_snapshot(id, archived_at_ms)
+            .is_some_and(|snapshot| persist::write_snapshot(snapshot.seq, &snapshot.record))
+    }
+
+    /// One session as it stands, ready to be written: keyed by its project's
+    /// path rather than the in-memory project id (ids are reassigned every
+    /// launch), and numbered so a later snapshot always wins on disk. `None`
+    /// for a session that isn't here, or whose project isn't — nothing to
+    /// save it under.
+    pub(crate) fn session_snapshot(
+        &self,
+        id: u64,
+        archived_at_ms: Option<u64>,
+    ) -> Option<persist::Snapshot> {
+        let session = self.sessions.get(&id)?;
+        let project = self.project(session.meta.project_id)?;
         let meta = persist::PersistedMeta {
             id: session.meta.id,
             title: session.meta.title.clone(),
@@ -274,7 +286,15 @@ impl AppState {
             device: session.meta.device.clone(),
             archived_at_ms,
         };
-        persist::save_session(&meta, &session.transcript, &session.decisions)
+        Some(persist::Snapshot {
+            seq: persist::next_snapshot_seq(),
+            record: persist::PersistedSession {
+                meta,
+                transcript: session.transcript.clone(),
+                decisions: session.decisions.clone(),
+                modified_ms: 0,
+            },
+        })
     }
 
     /// Everything the window draws, gathered in one pass.

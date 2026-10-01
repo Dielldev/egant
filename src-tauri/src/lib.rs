@@ -54,6 +54,15 @@ pub fn run() {
                 use tauri::Manager;
                 app.state::<sync::SyncHub>().attach(app.handle().clone());
                 mobile::init(app.handle());
+
+                // Sessions are saved off the state lock, by a writer that
+                // takes each one's snapshot here — see `persist`.
+                let handle = app.handle().clone();
+                persist::start_saver(move |id| {
+                    let state = handle.state::<Mutex<AppState>>();
+                    let guard = state.lock().ok()?;
+                    guard.session_snapshot(id, None)
+                });
             }
 
             // Warm the login-shell environment snapshot off the main thread.
@@ -85,6 +94,13 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run egant");
+        .build(tauri::generate_context!())
+        .expect("failed to build egant")
+        .run(|_app, event| {
+            // What changed in the last moment before quitting is still
+            // waiting for the writer: save it now, before the process goes.
+            if let tauri::RunEvent::Exit = event {
+                persist::flush();
+            }
+        });
 }
