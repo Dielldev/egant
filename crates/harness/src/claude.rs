@@ -776,18 +776,54 @@ fn retry_reason(kind: Option<&str>, status: Option<u32>) -> String {
 fn stringify(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Array(items) => items
-            .iter()
-            .map(|item| {
-                item.get("text")
-                    .and_then(|text| text.as_str())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| item.to_string())
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        serde_json::Value::Array(items) => {
+            items.iter().map(block_text).collect::<Vec<_>>().join("\n")
+        }
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
+    }
+}
+
+/// One block of a tool result, as the transcript keeps it. Text is itself.
+/// A picture (a Read of a screenshot) or a document is said for what it is —
+/// `[image: image/png, 412 KB]` — rather than kept as its base64: as text
+/// that is the picture's whole size again in the saved session, and a wall
+/// of characters in its tool card. Anything else stays as its JSON.
+fn block_text(block: &serde_json::Value) -> String {
+    if let Some(text) = block.get("text").and_then(serde_json::Value::as_str) {
+        return text.to_owned();
+    }
+    let kind = block.get("type").and_then(serde_json::Value::as_str);
+    let (Some(kind @ ("image" | "document")), Some(source)) = (kind, block.get("source")) else {
+        return block.to_string();
+    };
+    let media = source
+        .get("media_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(kind);
+    match source.get("data").and_then(serde_json::Value::as_str) {
+        Some(data) => format!("[{kind}: {media}, {}]", size_label(base64_len(data))),
+        None => format!("[{kind}: {media}]"),
+    }
+}
+
+/// How many bytes a base64 string decodes to, without decoding it. Padded or
+/// not: each character carries six bits, and `=` carries none.
+fn base64_len(data: &str) -> usize {
+    let padding = data.bytes().rev().take_while(|&b| b == b'=').count();
+    (data.len() - padding) * 3 / 4
+}
+
+/// A byte count at a glance: `74 bytes`, `412 KB`, `1.2 MB`.
+fn size_label(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = 1024 * 1024;
+    if bytes < KB {
+        format!("{bytes} bytes")
+    } else if bytes < MB {
+        format!("{} KB", bytes.div_ceil(KB))
+    } else {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
     }
 }
 
@@ -1337,6 +1373,49 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Captured from CLI 2.1.276: a Read of an 8×8 PNG. The picture comes
+    /// back as an `image` block — base64 — not as text.
+    const READ_IMAGE_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01L8DsCzS2zUrWmdhPKuWobc","type":"tool_result","content":[{"type":"image","source":{"type":"base64","data":"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4IyKCFTEMLQkAmD9BAZzFjLYAAAAASUVORK5CYII=","media_type":"image/png"}}]}]},"parent_tool_use_id":null,"session_id":"f354355b-40cc-4690-a1f2-cc1012a509ba","uuid":"063aed99-71d8-451b-b55e-560444abd563","timestamp":"2026-10-01T00:34:56.497Z","tool_use_result":{"type":"image","file":{"base64":"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4IyKCFTEMLQkAmD9BAZzFjLYAAAAASUVORK5CYII=","type":"image/png","originalSize":74,"dimensions":{"originalWidth":8,"originalHeight":8,"displayWidth":8,"displayHeight":8}}}}"#;
+
+    #[test]
+    fn an_image_tool_result_is_described_not_kept_as_base64() {
+        match translated(READ_IMAGE_RESULT).as_slice() {
+            [HarnessEvent::ToolResult { id, output, .. }] => {
+                assert_eq!(id, "toolu_01L8DsCzS2zUrWmdhPKuWobc");
+                // 74 bytes: the file's `originalSize`, from its base64 alone.
+                assert_eq!(output, "[image: image/png, 74 bytes]");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_result_mixing_text_and_a_picture_keeps_both_readable() {
+        let output = stringify(&serde_json::json!([
+            {"type": "text", "text": "Screenshot taken"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                         "data": "A".repeat(4 * 140_000)}},
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                            "data": "A".repeat(4 * 600_000)}},
+            {"type": "tool_reference", "tool_name": "WebFetch"},
+        ]));
+        assert_eq!(
+            output,
+            "Screenshot taken\n[image: image/jpeg, 411 KB]\n[document: application/pdf, 1.7 MB]\n{\"tool_name\":\"WebFetch\",\"type\":\"tool_reference\"}"
+        );
+    }
+
+    #[test]
+    fn sizes_read_at_a_glance() {
+        assert_eq!(size_label(74), "74 bytes");
+        assert_eq!(size_label(1024), "1 KB");
+        assert_eq!(size_label(420_000), "411 KB");
+        assert_eq!(size_label(1_800_000), "1.7 MB");
+        assert_eq!(base64_len("aGk="), 2);
+        assert_eq!(base64_len("aGk"), 2);
+        assert_eq!(base64_len("aGVsbG8="), 5);
     }
 
     #[test]
