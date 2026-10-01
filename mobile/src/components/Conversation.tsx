@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { AgentCard } from "@egant/components/AgentCard";
 import { CompactionDivider } from "@egant/components/CompactionDivider";
 import { DecisionPrompt } from "@egant/components/DecisionPrompt";
 import { Markdown } from "@egant/components/Markdown";
@@ -28,6 +29,7 @@ import {
   askQuestions,
   describeAlwaysAllow,
   isCardRequest,
+  isAgentTool,
   isInteractiveTool,
   modeLabel,
   permissionSummary,
@@ -403,12 +405,24 @@ function Entries({
       i++;
       continue;
     }
+    // A subagent's run is one card, as the desktop draws it.
+    if (entry.kind === "tool" && isAgentTool(entry.name)) {
+      nodes.push(
+        <div key={`agent-${i}`} className="text-[14px]">
+          <AgentCard entry={entry} />
+        </div>,
+      );
+      previous = entry;
+      i++;
+      continue;
+    }
     if (entry.kind === "tool") {
       let j = i + 1;
       while (
         j < entries.length &&
         entries[j]!.kind === "tool" &&
-        !isInteractiveTool((entries[j] as Extract<Entry, { kind: "tool" }>).name)
+        !isInteractiveTool((entries[j] as Extract<Entry, { kind: "tool" }>).name) &&
+        !isAgentTool((entries[j] as Extract<Entry, { kind: "tool" }>).name)
       ) {
         j++;
       }

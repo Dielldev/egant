@@ -48,6 +48,11 @@ pub struct ToolCall {
     pub input: Value,
     pub output: Option<String>,
     pub is_error: bool,
+    /// What a subagent this call launched did, in order — its tool calls
+    /// and its settled replies (see [`HarnessEvent::Subagent`]). Empty for
+    /// every other call, and on transcripts saved before it was kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<TranscriptEntry>,
 }
 
 impl ToolCall {
@@ -260,6 +265,7 @@ impl Transcript {
                 | HarnessEvent::ToolUse { .. }
                 | HarnessEvent::ToolResult { .. }
                 | HarnessEvent::PermissionRequest { .. }
+                | HarnessEvent::Subagent { .. }
                 | HarnessEvent::Compacted { .. }
                 | HarnessEvent::TurnEnded { .. }
                 | HarnessEvent::Exited { .. }
@@ -309,7 +315,23 @@ impl Transcript {
                     input,
                     output: None,
                     is_error: false,
+                    children: Vec::new(),
                 }));
+            }
+
+            // A call this transcript doesn't hold (a subagent still running
+            // when a session was restored) has nowhere to put its steps.
+            HarnessEvent::Subagent { parent, event } => {
+                let call = match self.tool_index.get(&parent) {
+                    Some(&index) => match self.entries.get_mut(index) {
+                        Some(TranscriptEntry::Tool(call)) if call.id == parent => Some(call),
+                        _ => None,
+                    },
+                    None => find_call(&mut self.entries, &parent),
+                };
+                if let Some(call) = call {
+                    fold_subagent_step(&mut call.children, *event);
+                }
             }
 
             HarnessEvent::ToolResult {
@@ -510,6 +532,55 @@ impl Transcript {
 
     pub fn is_busy(&self) -> bool {
         self.state != TurnState::Idle
+    }
+}
+
+/// The tool call with this id, anywhere in `entries` — including under a
+/// subagent, where a nested `Task` puts its own. Searched from the end, where
+/// a running call is.
+fn find_call<'a>(entries: &'a mut [TranscriptEntry], id: &str) -> Option<&'a mut ToolCall> {
+    for entry in entries.iter_mut().rev() {
+        if let TranscriptEntry::Tool(call) = entry {
+            if call.id == id {
+                return Some(call);
+            }
+            if let Some(found) = find_call(&mut call.children, id) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Folds one of a subagent's steps into the steps of the call that launched
+/// it. Only what a subagent settles is kept — its tool calls, their results,
+/// its finished replies — since its deltas never reach here (they would only
+/// say the same words again, live).
+fn fold_subagent_step(steps: &mut Vec<TranscriptEntry>, event: HarnessEvent) {
+    match event {
+        HarnessEvent::ToolUse { id, name, input } => steps.push(TranscriptEntry::Tool(ToolCall {
+            id,
+            name,
+            input,
+            output: None,
+            is_error: false,
+            children: Vec::new(),
+        })),
+        HarnessEvent::ToolResult {
+            id,
+            output,
+            is_error,
+        } => {
+            if let Some(call) = find_call(steps, &id) {
+                call.output = Some(output);
+                call.is_error = is_error;
+            }
+        }
+        HarnessEvent::AssistantMessage { text } => steps.push(TranscriptEntry::Assistant {
+            text,
+            streaming: false,
+        }),
+        _ => {}
     }
 }
 
@@ -857,6 +928,102 @@ mod tests {
         .unwrap();
         assert_eq!(restored.entries.len(), 3);
         assert_eq!(restored.progress, None);
+    }
+
+    fn nested(parent: &str, event: HarnessEvent) -> HarnessEvent {
+        HarnessEvent::Subagent {
+            parent: parent.into(),
+            event: Box::new(event),
+        }
+    }
+
+    fn tool_use(id: &str, name: &str) -> HarnessEvent {
+        HarnessEvent::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: json!({}),
+        }
+    }
+
+    fn tool_result(id: &str, output: &str) -> HarnessEvent {
+        HarnessEvent::ToolResult {
+            id: id.into(),
+            output: output.into(),
+            is_error: false,
+        }
+    }
+
+    #[test]
+    fn a_subagents_steps_land_under_the_call_that_launched_it() {
+        let mut transcript = Transcript::new();
+        transcript.push_user("look around");
+        transcript.apply(tool_use("task1", "Task"));
+        transcript.apply(nested("task1", tool_use("bash1", "Bash")));
+        transcript.apply(nested("task1", tool_result("bash1", "a.txt\nb.txt")));
+        transcript.apply(nested(
+            "task1",
+            HarnessEvent::AssistantMessage {
+                text: "Two files.".into(),
+            },
+        ));
+        transcript.apply(tool_result("task1", "Found a.txt and b.txt."));
+
+        // The main thread holds the prompt and the one call, nothing more.
+        assert_eq!(transcript.entries.len(), 2);
+        let TranscriptEntry::Tool(task) = &transcript.entries[1] else {
+            panic!("expected the Task call");
+        };
+        assert_eq!(task.output.as_deref(), Some("Found a.txt and b.txt."));
+        match task.children.as_slice() {
+            [
+                TranscriptEntry::Tool(bash),
+                TranscriptEntry::Assistant { text, .. },
+            ] => {
+                assert_eq!(bash.output.as_deref(), Some("a.txt\nb.txt"));
+                assert_eq!(text, "Two files.");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_subagent_launched_by_a_subagent_nests_under_its_own_call() {
+        let mut transcript = Transcript::new();
+        transcript.apply(tool_use("outer", "Task"));
+        transcript.apply(nested("outer", tool_use("inner", "Task")));
+        transcript.apply(nested("inner", tool_use("read1", "Read")));
+        transcript.apply(nested("inner", tool_result("read1", "alpha")));
+        let TranscriptEntry::Tool(outer) = &transcript.entries[0] else {
+            panic!("expected the outer call");
+        };
+        let TranscriptEntry::Tool(inner) = &outer.children[0] else {
+            panic!("expected the inner call");
+        };
+        let TranscriptEntry::Tool(read) = &inner.children[0] else {
+            panic!("expected the read");
+        };
+        assert_eq!(read.output.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn steps_for_a_call_the_transcript_never_saw_are_dropped() {
+        let mut transcript = Transcript::new();
+        transcript.apply(nested("gone", tool_use("bash1", "Bash")));
+        assert!(transcript.entries.is_empty());
+    }
+
+    #[test]
+    fn a_call_without_steps_saves_as_it_always_did() {
+        let mut transcript = Transcript::new();
+        transcript.apply(tool_use("t1", "Bash"));
+        let saved = serde_json::to_value(&transcript.entries[0]).unwrap();
+        assert!(saved.get("children").is_none());
+        // And one saved before steps were kept loads with none.
+        let restored: TranscriptEntry = serde_json::from_value(
+            json!({"kind": "Tool", "id": "t1", "name": "Task", "input": {}, "output": "ok", "is_error": false}),
+        )
+        .unwrap();
+        assert!(matches!(restored, TranscriptEntry::Tool(call) if call.children.is_empty()));
     }
 
     #[test]

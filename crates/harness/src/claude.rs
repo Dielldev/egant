@@ -619,28 +619,36 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
             if !text.is_empty() {
                 events.push(HarnessEvent::AssistantMessage { text });
             }
-            events
+            under_parent(turn.parent_tool_use_id, events)
         }
 
         // `user` messages carry tool results back into the transcript.
-        CliMessage::User(turn) => turn
-            .message
-            .content
-            .blocks()
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } => Some(HarnessEvent::ToolResult {
-                    id: tool_use_id.clone(),
-                    output: stringify(content),
-                    is_error: *is_error,
-                }),
-                _ => None,
-            })
-            .collect(),
+        CliMessage::User(turn) => {
+            let events = turn
+                .message
+                .content
+                .blocks()
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => Some(HarnessEvent::ToolResult {
+                        id: tool_use_id.clone(),
+                        output: stringify(content),
+                        is_error: *is_error,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            under_parent(turn.parent_tool_use_id, events)
+        }
+
+        // A subagent's reply arrives settled, in its `assistant` messages;
+        // its deltas would only stream into the main reply as if the main
+        // agent were saying it.
+        CliMessage::StreamEvent(stream) if stream.parent_tool_use_id.is_some() => Vec::new(),
 
         CliMessage::StreamEvent(stream) => match stream.event {
             StreamEventKind::ContentBlockDelta { delta, .. } => match delta {
@@ -698,6 +706,22 @@ fn translate(message: CliMessage, session_id: &Mutex<Option<SessionId>>) -> Vec<
         },
 
         CliMessage::ControlResponse(_) | CliMessage::Unknown => Vec::new(),
+    }
+}
+
+/// A message's events as the main thread sees them: as they are, or — for a
+/// message a subagent sent — each one placed under the `Task` call that
+/// launched it.
+fn under_parent(parent: Option<String>, events: Vec<HarnessEvent>) -> Vec<HarnessEvent> {
+    match parent {
+        None => events,
+        Some(parent) => events
+            .into_iter()
+            .map(|event| HarnessEvent::Subagent {
+                parent: parent.clone(),
+                event: Box::new(event),
+            })
+            .collect(),
     }
 }
 
@@ -1416,6 +1440,60 @@ mod tests {
         assert_eq!(base64_len("aGk="), 2);
         assert_eq!(base64_len("aGk"), 2);
         assert_eq!(base64_len("aGVsbG8="), 5);
+    }
+
+    /// A real text delta (CLI 2.1.276) — every `stream_event` carries
+    /// `parent_tool_use_id`, `null` on the main thread.
+    const TEXT_DELTA: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"pong"}},"session_id":"af1403cc-d8fc-4ed3-a281-ea9e1a75fde6","parent_tool_use_id":null,"uuid":"c697d352-c55a-4bed-a5b9-1f238c009112"}"#;
+
+    /// A real tool call (CLI 2.1.276), trimmed of nothing that matters here.
+    const READ_CALL: &str = r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011CfaaYYM6ttCryaEg81h62","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01L8DsCzS2zUrWmdhPKuWobc","name":"Read","input":{"file_path":"/tmp/dot.png"},"caller":{"type":"direct"}}],"stop_reason":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":8048,"cache_read_input_tokens":13244,"output_tokens":4}},"parent_tool_use_id":null,"session_id":"f354355b-40cc-4690-a1f2-cc1012a509ba","uuid":"796f397d-226b-4f59-a958-3176358fdb49"}"#;
+
+    /// The same frames as a subagent sends them: the CLI's schema gives
+    /// `assistant`, `user` and `stream_event` the one field,
+    /// `parent_tool_use_id`, naming the `Task` call that launched it.
+    fn from_subagent(frame: &str) -> String {
+        frame.replace(
+            r#""parent_tool_use_id":null"#,
+            r#""parent_tool_use_id":"toolu_task""#,
+        )
+    }
+
+    #[test]
+    fn a_subagents_tool_call_goes_under_its_task() {
+        let events = translated(&from_subagent(READ_CALL));
+        match events.as_slice() {
+            [HarnessEvent::Subagent { parent, event }] => {
+                assert_eq!(parent, "toolu_task");
+                assert!(
+                    matches!(**event, HarnessEvent::ToolUse { ref name, .. } if name == "Read")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // Its result, too.
+        let result = from_subagent(READ_IMAGE_RESULT);
+        assert!(matches!(
+            translated(&result).as_slice(),
+            [HarnessEvent::Subagent { .. }]
+        ));
+        // The main thread's own call is untouched.
+        assert!(matches!(
+            translated(READ_CALL).as_slice(),
+            [
+                HarnessEvent::ContextUpdate { .. },
+                HarnessEvent::ToolUse { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn a_subagents_deltas_never_stream_into_the_main_reply() {
+        assert!(matches!(
+            translated(TEXT_DELTA).as_slice(),
+            [HarnessEvent::AssistantDelta { .. }]
+        ));
+        assert!(translated(&from_subagent(TEXT_DELTA)).is_empty());
     }
 
     #[test]

@@ -36,6 +36,9 @@ pub enum EntryDto {
         output: Option<String>,
         #[serde(rename = "isError")]
         is_error: bool,
+        /// What a subagent this call launched did; left out when nothing.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        children: Vec<EntryDto>,
     },
     Notice {
         text: String,
@@ -71,6 +74,7 @@ impl From<&TranscriptEntry> for EntryDto {
                 input: call.input.clone(),
                 output: call.output.clone(),
                 is_error: call.is_error,
+                children: call.children.iter().map(EntryDto::from).collect(),
             },
             TranscriptEntry::Notice { text, is_error } => EntryDto::Notice {
                 text: text.clone(),
@@ -380,6 +384,11 @@ pub enum EventDto {
         context_tokens: u64,
         context_window: u64,
     },
+    /// A subagent's step, to fold under the call `parent` names.
+    Subagent {
+        parent: String,
+        event: Box<EventDto>,
+    },
     /// What the running turn is busy with, or `null` once that is over.
     Progress {
         progress: Option<ProgressDto>,
@@ -478,6 +487,10 @@ impl From<&HarnessEvent> for EventDto {
             } => EventDto::ContextUpdate {
                 context_tokens: *context_tokens,
                 context_window: *context_window,
+            },
+            HarnessEvent::Subagent { parent, event } => EventDto::Subagent {
+                parent: parent.clone(),
+                event: Box::new(EventDto::from(event.as_ref())),
             },
             HarnessEvent::Progress { progress } => EventDto::Progress {
                 progress: progress.as_ref().map(ProgressDto::from),

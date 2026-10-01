@@ -199,20 +199,26 @@ pub fn transcript_window(
 }
 
 /// One entry, with a long tool output cut down to what a card shows and its
-/// real size alongside (`outputBytes`).
+/// real size alongside (`outputBytes`) — a subagent's tool calls included,
+/// since one reading a few large files would otherwise carry them whole.
 fn entry_value(entry: &TranscriptEntry) -> Value {
     let mut value = serde_json::to_value(EntryDto::from(entry)).unwrap_or(Value::Null);
-    if let TranscriptEntry::Tool(call) = entry {
-        if let Some(output) = call.output.as_deref() {
-            if output.len() > SNAPSHOT_OUTPUT_LIMIT {
-                value["output"] = Value::String(
-                    crate::sync::utf8_prefix(output, SNAPSHOT_OUTPUT_LIMIT).to_string(),
-                );
-                value["outputBytes"] = Value::from(output.len());
-            }
+    cap_outputs(&mut value);
+    value
+}
+
+fn cap_outputs(value: &mut Value) {
+    if let Some(output) = value.get("output").and_then(Value::as_str) {
+        if output.len() > SNAPSHOT_OUTPUT_LIMIT {
+            let bytes = output.len();
+            value["output"] =
+                Value::String(crate::sync::utf8_prefix(output, SNAPSHOT_OUTPUT_LIMIT).to_string());
+            value["outputBytes"] = Value::from(bytes);
         }
     }
-    value
+    if let Some(children) = value.get_mut("children").and_then(Value::as_array_mut) {
+        children.iter_mut().for_each(cap_outputs);
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +294,7 @@ mod tests {
                 input: json!({"file_path": "/tmp/a"}),
                 output: Some(big.clone()),
                 is_error: false,
+                children: Vec::new(),
             }),
             TranscriptEntry::Tool(ToolCall {
                 id: "t2".into(),
@@ -295,6 +302,7 @@ mod tests {
                 input: json!({"command": "ls"}),
                 output: Some("a\nb".into()),
                 is_error: false,
+                children: Vec::new(),
             }),
         ]);
         let window = transcript_window(&session, 10, None, "e".into(), 0);

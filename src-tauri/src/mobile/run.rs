@@ -796,6 +796,7 @@ mod tests {
             input: json!({"command": "npm run dev"}),
             output: Some(output.into()),
             is_error: false,
+            children: Vec::new(),
         })
     }
 

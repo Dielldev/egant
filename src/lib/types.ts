@@ -73,6 +73,9 @@ export type Entry =
       /** The output's real size, when what arrived was cut down to what a
        * card shows (the phone app's transcripts). Absent on the desktop. */
       outputBytes?: number;
+      /** What a subagent this call launched (Claude's `Task`) did, in
+       * order: its tool calls and settled replies. Absent for other calls. */
+      children?: Entry[];
     }
   | { kind: "notice"; text: string; isError: boolean }
   /** The divider a compaction leaves: everything above it now reaches the
@@ -270,6 +273,8 @@ export type HarnessEvent =
    * `contextTokens`/`contextWindow` come from here, never from a turn's
    * summed spend. */
   | { type: "context_update"; context_tokens: number; context_window: number }
+  /** A subagent's step, folded under the call `parent` names. */
+  | { type: "subagent"; parent: string; event: HarnessEvent }
   /** What the running turn is busy with, or `null` once that is over. */
   | { type: "progress"; progress: TurnProgress | null }
   /** The agent summarized the conversation to make room in its window. */

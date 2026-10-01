@@ -6,6 +6,7 @@ import {
   askQuestions,
   describeAlwaysAllow,
   isCardRequest,
+  isAgentTool,
   isInteractiveTool,
   permissionSummary,
   planOf,
@@ -14,6 +15,7 @@ import {
 } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "../lib/types";
 import { useEgant } from "../store";
+import { AgentCard } from "./AgentCard";
 import { CompactionDivider } from "./CompactionDivider";
 import { Composer } from "./Composer";
 import { DecisionPrompt } from "./DecisionPrompt";
@@ -406,12 +408,19 @@ export function TranscriptView() {
                 i++;
                 continue;
               }
+              // A subagent's run is one card, with what it did inside.
+              if (entry.kind === "tool" && isAgentTool(entry.name)) {
+                nodes.push(<AgentCard key={i} entry={entry} />);
+                i++;
+                continue;
+              }
               if (entry.kind === "tool") {
                 let j = i + 1;
                 while (
                   j < entries.length &&
                   entries[j]!.kind === "tool" &&
-                  !isInteractiveTool((entries[j] as Extract<Entry, { kind: "tool" }>).name)
+                  !isInteractiveTool((entries[j] as Extract<Entry, { kind: "tool" }>).name) &&
+                  !isAgentTool((entries[j] as Extract<Entry, { kind: "tool" }>).name)
                 ) {
                   j++;
                 }

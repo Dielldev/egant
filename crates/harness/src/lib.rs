@@ -195,6 +195,14 @@ pub enum HarnessEvent {
         to: String,
         message: String,
     },
+    /// Something a subagent did — a tool call, its result, a settled reply —
+    /// inside the tool call that launched it (Claude's `Task`). `parent` is
+    /// that call's id. Folded under the call, not into the conversation:
+    /// shown flat, a subagent's steps read as the main agent's own.
+    Subagent {
+        parent: String,
+        event: Box<HarnessEvent>,
+    },
     /// The backend reported a problem that did not kill the process.
     Error { message: String },
     /// The process is gone. No further events will arrive.

@@ -187,6 +187,7 @@ const MOVES_ON = new Set<HarnessEvent["type"]>([
   "tool_use",
   "tool_result",
   "permission_request",
+  "subagent",
   "compacted",
   "turn_ended",
   "exited",
@@ -313,6 +314,17 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
       return next;
     }
 
+    // A subagent's step lands under the call that launched it — a step for
+    // a call this mirror doesn't hold has nowhere to go (see
+    // `Transcript::apply`).
+    case "subagent": {
+      const entries = updateCall(s.entries, event.parent, (call) => ({
+        ...call,
+        children: foldSubagentStep(call.children ?? [], event.event),
+      }));
+      return entries ? { ...s, entries } : s;
+    }
+
     case "progress":
       return { ...s, progress: event.progress };
 
@@ -375,6 +387,63 @@ function foldEvent(prev: TranscriptState, event: HarnessEvent): TranscriptState 
         ],
       };
     }
+  }
+}
+
+type ToolEntry = Extract<Entry, { kind: "tool" }>;
+
+/** `entries` with the tool call `id` replaced by `update(call)` — searched
+ * from the end, and under subagents too, where a nested `Task` keeps its own
+ * calls. Copies only the lists on the way down; `null` when no call has the
+ * id. */
+function updateCall(
+  entries: Entry[],
+  id: string,
+  update: (call: ToolEntry) => ToolEntry,
+): Entry[] | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    if (entry.kind !== "tool") continue;
+    if (entry.id === id) {
+      const copy = [...entries];
+      copy[i] = update(entry);
+      return copy;
+    }
+    if (entry.children?.length) {
+      const children = updateCall(entry.children, id, update);
+      if (children) {
+        const copy = [...entries];
+        copy[i] = { ...entry, children };
+        return copy;
+      }
+    }
+  }
+  return null;
+}
+
+/** One of a subagent's steps folded into the steps it already took: its tool
+ * calls, their results and its settled replies — the port of
+ * `fold_subagent_step`. */
+function foldSubagentStep(steps: Entry[], event: HarnessEvent): Entry[] {
+  switch (event.type) {
+    case "tool_use":
+      return [
+        ...steps,
+        { kind: "tool", id: event.id, name: event.name, input: event.input, output: null, isError: false },
+      ];
+    case "tool_result":
+      return (
+        updateCall(steps, event.id, (call) => ({
+          ...call,
+          output: event.output,
+          isError: event.is_error,
+          ...(event.bytes !== undefined ? { outputBytes: event.bytes } : {}),
+        })) ?? steps
+      );
+    case "assistant_message":
+      return [...steps, { kind: "assistant", text: event.text, streaming: false }];
+    default:
+      return steps;
   }
 }
 
@@ -569,6 +638,12 @@ export const EXIT_PLAN_MODE = "ExitPlanMode";
 
 export function isInteractiveTool(toolName: string): boolean {
   return toolName === ASK_USER_QUESTION || toolName === EXIT_PLAN_MODE;
+}
+
+/** Whether a call launches a subagent — Claude's `Task` (`Agent` in newer
+ * CLIs) — and so gets its own card, with what the subagent did inside. */
+export function isAgentTool(toolName: string): boolean {
+  return toolName === "Task" || toolName === "Agent";
 }
 
 /** Whether a pending request gets a card of its own (a question, a plan)

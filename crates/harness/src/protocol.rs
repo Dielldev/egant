@@ -226,6 +226,10 @@ pub enum ContentBlock {
 pub struct StreamEvent {
     #[serde(default)]
     pub session_id: String,
+    /// Set when the delta belongs to a subagent's reply rather than the main
+    /// thread's — the same field `assistant` and `user` messages carry.
+    #[serde(default)]
+    pub parent_tool_use_id: Option<String>,
     pub event: StreamEventKind,
 }
 
