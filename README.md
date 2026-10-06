@@ -6,6 +6,15 @@ Egant is a Tauri (Rust + React) desktop app that runs coding agents — starting
 
 > **Status: early working scaffold.** The shell is real — projects, sessions, streaming transcript, composer, wallpaper, files/changes/terminals panel — but agent end-to-end and worktree isolation are still in progress.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Launch screen](docs/screenshots/1-launch.png) | ![Chat and editor](docs/screenshots/2-chat-and-editor.png) |
+| Launch: centered composer over the wallpaper | Chat transcript beside the file editor and panel |
+| ![Diff and browser](docs/screenshots/3-diff-and-browser.png) | ![Phone client](docs/screenshots/4-phone.png) |
+| Working-tree diff and an in-app website preview | The phone client |
+
 ## Features
 
 - **Agent chat, natively** — drives the `claude` CLI as a subprocess, streams tokens into the transcript. Interrupt mid-turn, switch permission modes mid-conversation.
