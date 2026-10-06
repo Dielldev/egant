@@ -1,198 +1,209 @@
-# egant
+<h1 align="center">egant</h1>
 
-A native desktop workspace for coding agents.
+<p align="center">
+  <b>One native window for all your coding agents.</b><br>
+  Claude Code, Codex, opencode and more — running in your real project folders,<br>
+  with the files, diffs, terminals and git you need right beside the chat.
+</p>
 
-Egant is a Tauri (Rust + React) desktop app that runs coding agents — starting with Claude Code — in real project folders, with a streaming chat transcript, file viewer, git changes, and terminals in one window.
+<p align="center">
+  <img src="docs/screenshots/1-launch.png" alt="egant launch screen" width="860">
+</p>
 
-> **Status: early working scaffold.** The shell is real — projects, sessions, streaming transcript, composer, wallpaper, files/changes/terminals panel — but agent end-to-end and worktree isolation are still in progress.
+## What is egant?
 
-## Features
+Coding agents live in terminals. That works, until you have five of them going across three projects and you want to see what they changed, review a diff, run the app, and pick up from your phone.
 
-- **Agent chat, natively** — drives the `claude` CLI as a subprocess, streams tokens into the transcript. Interrupt mid-turn, switch permission modes mid-conversation.
-- **Sidebar for everything** — a project dropdown ("All projects" or one folder) over that folder's conversations as cards, grouped by device, by project or not at all. Filter with `⌘K`, new session with `⌘N`.
-- **Composer** — glass composer on launch, docked pill once the thread starts. `@path` file mentions, model/permission chip, context-window meter.
-- **Workspace panel (`⌘J`)** — optional third column, per-window (not per-chat):
-  - **Files** — lazy tree, and a syntax-highlighted editor on stage tabs with autosave, word wrap and editor font size (Settings → Files); saves are refused if the agent changed the file meanwhile
-  - **Changes** — git status, stage/unstage/discard, diff (unified/split), Commit & Push
-  - **Pull requests** — via your own `gh`, with checks/commits/files/comments
-  - **Terminals** — real PTYs (`$SHELL -l`) that survive panel hide / session switch
-- **Custom wallpaper** — pick an image, persisted to settings, with dim control.
+egant is a desktop app (Tauri: Rust + React) that wraps the agent CLIs you already have installed. You keep your own logins, your own `git`, your own `gh`. egant adds the workspace around them.
 
-## The window
+There is no egant account and no egant server. Everything runs on your machine.
 
-```text
-┌─────────────┬─────────────────────────┬──────────────┐
-│ sidebar     │ stage                   │ panel (⌘J)   │
-│ threads     │ chat + file/diff tabs   │ Files /      │
-│             │ composer                │ Changes /    │
-│             │                         │ Terminal     │
-└─────────────┴─────────────────────────┴──────────────┘
-```
+## What you get
 
-- **Sidebar:** thread list + project menu + wallpaper settings + `Local only` footer.
-- **Stage:** conversation transcript (user bubbles right, agent text left) + composer, or an open file/diff tab.
-- **Panel:** files, git changes, PRs, terminals. Closed by default.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-On launch you get a centered composer over the wallpaper. Type to pick a folder and start a session — the transcript takes over on the first message.
+### Chat with any agent
 
-Shortcuts: `⌘N` / `Ctrl+N` new session · `⌘K` / `Ctrl+K` filter · `⌘L` / `Ctrl+L` focus composer · `⌘B` / `Ctrl+B` sidebar · `⌘J` / `Ctrl+J` panel · `⌘⎋` / `Ctrl+Esc` interrupt · `⏎` send / `⇧⏎` newline.
+Start a session from the launch screen, pick an agent and model, and talk. Replies stream in token by token, tool calls show up as cards, and a subagent's work nests under the task that launched it. Interrupt mid-turn, switch permission modes, and answer permission prompts and questions inline.
+
+</td>
+<td width="50%" valign="top">
+
+### A workspace around the chat
+
+Press `⌘J` for a panel with a file tree, git changes, pull requests and real terminals. Open files and diffs as tabs next to the conversation, with a syntax-highlighted editor and autosave.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Isolated by default
+
+Each session can start in its own **git worktree** on its own branch, so parallel agents never step on each other or on your checkout.
+
+</td>
+<td valign="top">
+
+### Review and undo
+
+See exactly what changed in a working-tree diff (unified or split), commit and push from the app, and **revert a turn** with per-turn snapshots when an agent goes the wrong way.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Find anything
+
+`⌘K` searches across conversations and jumps to the exact message. `@` mentions a file in the composer and `/` opens the command menu.
+
+</td>
+<td valign="top">
+
+### One library for every agent
+
+Add MCP servers and skills once in the **Library**. egant syncs them into each agent's own config, so you stop maintaining them per tool.
+
+</td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/2-chat-and-editor.png" alt="A conversation beside the file editor and file tree" width="860"><br>
+  <sub>A conversation next to the editor, with the file tree in the panel.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/3-diff-and-browser.png" alt="Working tree diff and an in-app website preview" width="860"><br>
+  <sub>Review the working-tree diff, or preview the site the agent is building without leaving the window.</sub>
+</p>
+
+## Agents
+
+egant finds the agent CLIs on your machine and shows which ones are logged in. It does not ship or proxy any model.
+
+| Kind | Agents | How it runs |
+|------|--------|-------------|
+| **Chat** | Claude Code, Codex, opencode | A native transcript, composer, permissions and usage meter, driven over each agent's own protocol |
+| **CLI** | Cursor, Devin, Grok, Hermes, Pi, Copilot, Goose, Qwen and others | The agent's full terminal UI in a real PTY on the stage |
+
+Chat sessions get the full egant experience. CLI sessions give you the agent as-is, with egant's worktrees, panel and project handling around it.
+
+## Your phone, too
+
+<p align="center">
+  <img src="docs/screenshots/4-phone.png" alt="The egant phone client" width="520">
+</p>
+
+The desktop app serves a small web client you can open on your phone, over your Tailscale network. Pair it from Settings → Devices with a QR code. Start a chat, switch models, and follow a running session while you are away from your desk. The agents keep running on your computer; the phone is just another window onto it.
 
 ## Quickstart
 
-### Prerequisites
-
-| Need | Notes |
-|------|-------|
-| Rust 1.85+ | workspace is edition 2024 |
-| Node 20+ + npm | frontend dev server + builds |
-| macOS **or** Linux | see platform deps below |
-| `claude` on `PATH` + `claude login` | agent driver |
-| `gh` (optional) | only for Pull Requests section |
-
-#### macOS
-
-Command Line Tools only (`xcode-select --install`) — no full Xcode needed.
-
-#### Linux (Fedora)
-
-Tauri needs WebKitGTK 4.1 and friends. `dbus-devel` + `pkgconf-pkg-config` are required so `libdbus-sys` can find `dbus-1.pc`:
+You need Rust 1.85+, Node 20+, and at least one agent CLI on your `PATH` (for example `claude`, then `claude login`). Install `gh` if you want the Pull Requests section.
 
 ```bash
-sudo dnf group install c-development
-sudo dnf install \
-  webkit2gtk4.1-devel \
-  openssl-devel \
-  curl-devel \
-  wget \
-  file \
-  libappindicator-gtk3-devel \
-  librsvg2-devel \
-  libxdo-devel \
-  gtk3-devel \
-  dbus-devel \
-  pkgconf-pkg-config
-```
-
-Check: `pkg-config --exists dbus-1 webkit2gtk-4.1 && echo ok`.
-
-If `cc` on your `PATH` is Zig's clang wrapper (`~/.local/bin/cc` → `zig-cc`), `aws-lc-sys` (via rustls) fails with `UnknownOperatingSystem`. Prefer the system compiler for this project:
-
-```bash
-export CC=/usr/bin/gcc CXX=/usr/bin/g++
-```
-
-#### Linux (Ubuntu / Debian)
-
-```bash
-sudo apt update
-sudo apt install \
-  libwebkit2gtk-4.1-dev \
-  build-essential \
-  curl \
-  wget \
-  file \
-  libxdo-dev \
-  libssl-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev \
-  libdbus-1-dev \
-  pkg-config
-```
-
-### Run
-
-```bash
-npm install          # once: frontend deps
-# If ~/.local/bin/cc is zig-cc, point at system GCC first:
-#   export CC=/usr/bin/gcc CXX=/usr/bin/g++
-npm run tauri dev    # Vite dev server (:1420) + desktop window
-```
-
-### Second dev session (another worktree / port)
-
-Vite reads `VITE_PORT` (default `1420`, `strictPort: true` so a taken port
-fails loudly instead of drifting). Point Tauri at the same port via `--config`:
-
-```bash
-# terminal 1 (primary)
+git clone https://github.com/Dielldev/egant.git
+cd egant
+npm install
 npm run tauri dev
-
-# terminal 2 (secondary)
-VITE_PORT=1421 npm run tauri dev -- --config '{"build":{"devUrl":"http://localhost:1421"}}'
-# or the shortcut:
-npm run tauri:dev:1421
 ```
 
-`beforeDevCommand` (`npm run dev`) inherits `VITE_PORT`, so the spawned Vite
-server binds `:1421` to match the overridden `devUrl`. Each extra session
-takes the next free port (`1422`, …) the same way.
+On macOS the Xcode Command Line Tools are enough (`xcode-select --install`). Linux needs WebKitGTK 4.1 and a few libraries; see [Linux setup](#linux-setup).
 
-### Build / test
+### Build and test
 
 ```bash
-npm run tauri build   # release bundle (.app / .dmg on macOS; platform package on Linux)
-npm run build         # type-check + production frontend build
-
+npm run tauri build                                # release bundle
+npm run build                                      # type-check + frontend build
 cargo test -p egant -p egant-harness -p egant-vcs  # Rust tests, no window needed
 ```
 
-Window chrome: macOS uses an overlay title bar (`tauri.macos.conf.json` — transparent + `Overlay`). Linux uses normal decorations and an opaque window (`tauri.linux.conf.json`) with CSS glass; native vibrancy stays macOS-only.
+### Run a second copy
+
+Vite uses port `1420` by default and fails loudly if it is taken. For another worktree:
+
+```bash
+npm run tauri:dev:1421
+```
+
+### Linux setup
+
+<details>
+<summary>Fedora</summary>
+
+```bash
+sudo dnf group install c-development
+sudo dnf install webkit2gtk4.1-devel openssl-devel curl-devel wget file \
+  libappindicator-gtk3-devel librsvg2-devel libxdo-devel gtk3-devel \
+  dbus-devel pkgconf-pkg-config
+```
+
+If `cc` on your `PATH` is Zig's clang wrapper, point at the system compiler first: `export CC=/usr/bin/gcc CXX=/usr/bin/g++`.
+
+</details>
+
+<details>
+<summary>Ubuntu / Debian</summary>
+
+```bash
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+  libdbus-1-dev pkg-config
+```
+
+</details>
+
+## Shortcuts
+
+| | macOS | Linux |
+|---|---|---|
+| New session | `⌘N` | `Ctrl+N` |
+| Search conversations | `⌘K` | `Ctrl+K` |
+| Focus composer | `⌘L` | `Ctrl+L` |
+| Toggle sidebar | `⌘B` | `Ctrl+B` |
+| Toggle workspace panel | `⌘J` | `Ctrl+J` |
+| Interrupt the agent | `⌘⎋` | `Ctrl+Esc` |
+| Send / newline | `⏎` / `⇧⏎` | `⏎` / `⇧⏎` |
 
 ## How it works
 
 ```
-React (views only)  ⇄  Tauri IPC (commands + `session-event`)  ⇄  Rust backend (single source of truth)
-                                                                             ├─ Harness → `claude` subprocess
-                                                                             ├─ vcs crate → git2 (local) + `git` CLI (network/creds)
-                                                                             └─ PTY per terminal tab + `gh` for PRs
+React (views only)  ⇄  Tauri IPC  ⇄  Rust backend (owns all state)
+                                        ├─ harness crate → agent CLIs (one impl per agent)
+                                        ├─ vcs crate     → git2 locally, your `git` for the network
+                                        └─ PTYs for terminals, `gh` for pull requests
 ```
 
-- **Backend owns state, frontend owns pixels.** Rust holds `AppState`, sends flattened `WindowState` snapshots. Frontend sends commands, re-renders from the snapshot.
-- **Streaming is events, rest is commands.** Each turn folds `HarnessEvent`s into a backend `Transcript` and emits `session-event`. Frontend mirrors the same fold, so streaming is one small payload per token. Full snapshots only on session switch.
-- **Agent behind a trait.** `Harness` = send turn, interrupt, answer permission, stream events. Claude wire format stays in `crates/harness`. Adding another agent = new impl, no frontend change.
-- **Git split by need.** `git2` (libgit2, no openssl/ssh) for local status/diff/stage/commit. Your own `git` CLI for push/fetch/pull so keychain, SSH agent, `.gitconfig`, hooks all just work. Network ops run on `spawn_blocking` so UI never stalls.
-- **No polling.** Panel re-reads on open, after its own actions, and on `turn_ended` (when the agent stops editing).
-
-## Project layout
+- **The backend owns state, the frontend owns pixels.** Rust holds the sessions and sends snapshots. React renders them.
+- **Streaming is events.** Each turn becomes a small event per token instead of a full re-render.
+- **Agents sit behind a trait.** Adding one is a new implementation in `crates/harness`, with no frontend change.
+- **Git uses your setup.** Local status, diff and commit go through libgit2. Push, fetch and pull use your own `git`, so keychain, SSH agent and hooks just work.
 
 ```
-src-tauri/   Tauri backend — state only, no agent/git logic in the shell
-  state.rs / sessions.rs / commands.rs / dto.rs
-  project.rs files.rs pty.rs github.rs settings.rs
-src/         React frontend — views only
-  components/  Sidebar, SessionHeader, TranscriptView, Composer,
-               WorkspacePanel, FileTree, ChangesPanel, TerminalPane, DiffTabView…
-  lib/ store.ts  IPC wrappers, transcript fold, zustand store
+src-tauri/   Tauri shell: state, commands, PTYs, settings
+src/         React frontend
 crates/
-  harness/   agent backends behind `Harness` trait (protocol.rs, claude.rs, transcript.rs)
-  vcs/       git: local ops, remote ops, worktrees, file watching
-scripts/vendor-icons.py  regenerates file icons from Antigravity set
+  harness/   agent backends and the transcript model
+  vcs/       git, worktrees, file watching
+mobile/      the phone client
 ```
 
-> `crates/egant` (old GPUI shell) and `crates/webview` are excluded from the workspace but left on disk for reference. Tauri provides the webview natively.
+## Settings and data
 
-See `src/components/icons/LICENSE.md` for icon rebuild notes.
-
-## Settings & data
-
-- Wallpaper + dim: `~/Library/Application Support/egant/settings.json` on macOS; `~/.config/egant/settings.json` (or `$XDG_CONFIG_HOME/egant`) on Linux.
-- Webview gets the wallpaper as a data URL only — no filesystem access.
-- Planned: worktree per session at `~/.egant/worktrees/<slug>` on `egant/<slug>` branch (`WorktreeStore` written, not yet wired — sessions currently start in project root).
+Settings, including the wallpaper and its dim level, live in `~/Library/Application Support/egant/settings.json` on macOS and `~/.config/egant/settings.json` on Linux. Worktrees are created under `~/.egant/worktrees/`.
 
 ## Troubleshooting
 
-- **"Could not start the agent"** → `claude` not on `PATH`.
-- **"Failed to authenticate: OAuth session expired"** → run `claude login`.
-- **Blank window in `tauri dev`** → Vite must be on the port Tauri points at (`1420` by default, or `$VITE_PORT` with `strictPort` in `vite.config.ts`). Kill whatever holds the port, or move the session to a free one (see above).
-- **Opaque / black hole in UI** → on macOS the window is `transparent: true` and `body` must stay transparent (alpha colors only). On Linux the window is opaque (`tauri.linux.conf.json`) with a CSS glass fallback — if the UI looks empty, confirm `html[data-platform="linux"]` is set.
-- **`Package dbus-1 was not found` / missing `dbus-1.pc`** → install `dbus-devel` and `pkgconf-pkg-config` (Fedora) or `libdbus-1-dev` + `pkg-config` (Ubuntu).
+- **"Could not start the agent":** the agent CLI is not on `PATH`.
+- **"OAuth session expired":** run `claude login` (or the equivalent for your agent).
+- **Blank window in `tauri dev`:** Vite must be on the port Tauri points at. Free port `1420`, or use a second port as above.
+- **Empty or black UI on macOS:** the window is transparent, so `body` must keep alpha-only backgrounds.
+- **`dbus-1.pc` not found:** install `dbus-devel` and `pkgconf-pkg-config` (Fedora) or `libdbus-1-dev` and `pkg-config` (Ubuntu).
 
-## Roadmap
+## License
 
-1. Real turn end-to-end against live `claude` traffic, harden transcript fold
-2. Wire `WorktreeStore` into session creation
-3. Persist sessions (`session_id` → `--resume`)
-4. Per-file diff + stage/unstage/commit UI wiring
-5. Live-refresh Changes via `RepoWatcher`
-
-MIT — see `Cargo.toml` (`repository: https://github.com/dielldev/egant`).
+MIT. See `Cargo.toml`.
