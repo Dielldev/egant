@@ -16,7 +16,10 @@ futures-lite.workspace = true
 log.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
 serde.workspace = true
-serde_json.workspace = true
+# `preserve_order`: the Library rewrites agents' JSON configs (`~/.claude.json`)
+# and must hand them back in the order they were written, not sorted.
+serde_json = { workspace = true, features = ["preserve_order"] }
+toml_edit.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 

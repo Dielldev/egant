@@ -1309,6 +1309,8 @@ function NotificationsSection() {
 function ShortcutsSection() {
   const shortcuts: [string, string][] = [
     ["New conversation", modShortcut("N")],
+    ["Search", modShortcut("P")],
+    ["Open the Library", modShortcut("⇧L")],
     ["Filter conversations", modShortcut("K")],
     ["Focus composer", modShortcut("L")],
     ["Toggle sidebar", modShortcut("B")],

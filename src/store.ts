@@ -47,6 +47,8 @@ import type {
   WorktreeRenamedPayload,
 } from "./lib/types";
 
+export type LibrarySection = "mcp" | "skills";
+
 export type SettingsSection =
   | "devices"
   | "agents"
@@ -654,6 +656,14 @@ interface EgantStore {
   setAgentSheetId: (id: string | null) => void;
   closeSettings: () => void;
   setSettingsSection: (section: SettingsSection) => void;
+
+  /** Library (MCP servers and skills): takes the stage beside the sidebar,
+   * never open at the same time as Settings. Going to a conversation —
+   * picking one, starting one, stepping through them — closes it. */
+  libraryOpen: boolean;
+  librarySection: LibrarySection;
+  openLibrary: (section?: LibrarySection) => void;
+  closeLibrary: () => void;
 
   /** Appearance (Settings > Appearance). Persisted to localStorage and
    * painted onto the document by `applyAppearance`. */
@@ -2001,11 +2011,22 @@ export const useEgant = create<EgantStore>()((set, get) => {
     openSettings: (section, agentId) =>
       set((s) => ({
         settingsOpen: true,
+        libraryOpen: false,
         settingsSection: section ?? s.settingsSection,
         agentSheetId: agentId ?? null,
       })),
     closeSettings: () => set({ settingsOpen: false }),
     setSettingsSection: (settingsSection) => set({ settingsSection }),
+
+    libraryOpen: false,
+    librarySection: "mcp",
+    openLibrary: (section) =>
+      set((s) => ({
+        libraryOpen: true,
+        settingsOpen: false,
+        librarySection: section ?? s.librarySection,
+      })),
+    closeLibrary: () => set({ libraryOpen: false }),
 
     appearance: loadAppearance(),
     setAppearance: (patch) => {
@@ -2205,7 +2226,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     selectProject: async (id) => {
-      set({ startingNewSession: false, startingNewSessionWorktree: null });
+      set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
       // Picking a folder from the launch screen's chip while the sidebar lists
       // another one: the list follows, or the new session would land in a
       // folder the sidebar isn't showing.
@@ -2218,7 +2239,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     selectAllProjects: async () => {
-      set({ startingNewSession: false, startingNewSessionWorktree: null });
+      set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
       try {
         applySnapshot(await api.clearActiveProject());
       } catch (error) {
@@ -2249,11 +2270,15 @@ export const useEgant = create<EgantStore>()((set, get) => {
         await get().openFolderDialog();
         return;
       }
-      set({ startingNewSession: true, startingNewSessionWorktree: worktree ?? null });
+      set({
+        startingNewSession: true,
+        startingNewSessionWorktree: worktree ?? null,
+        libraryOpen: false,
+      });
     },
 
     selectSession: async (id) => {
-      set({ startingNewSession: false, startingNewSessionWorktree: null });
+      set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
       try {
         const snapshot = await api.selectSession(id);
         applySnapshot(snapshot);
@@ -2352,7 +2377,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         const snapshot = await api.unarchiveSession(id);
         // Brought back to be looked at: off the launch screen, and into a
         // list that shows it.
-        set({ startingNewSession: false, startingNewSessionWorktree: null });
+        set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
         applySnapshot(snapshot);
         const session = snapshot.sessions.find((s) => s.id === id);
         const listed = get().sidebarProject;
@@ -2387,7 +2412,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const index = listed.findIndex((s) => s.id === snapshot.activeSession);
       const target = index > 0 ? listed[index - 1] : undefined;
       if (!target) return;
-      set({ startingNewSession: false, startingNewSessionWorktree: null });
+      set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
       try {
         applySnapshot(await api.selectSession(target.id));
       } catch (error) {
@@ -2403,7 +2428,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const target =
         index >= 0 && index < listed.length - 1 ? listed[index + 1] : undefined;
       if (!target) return;
-      set({ startingNewSession: false, startingNewSessionWorktree: null });
+      set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
       try {
         applySnapshot(await api.selectSession(target.id));
       } catch (error) {
@@ -2482,7 +2507,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
           if (id == null) return;
           await applyComposerBypass(id);
         }
-        if (forceNew) set({ startingNewSession: false, startingNewSessionWorktree: null });
+        if (forceNew) set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
         await get().ensureTranscript(id);
         await get().send(id, text, images);
       } catch (error) {

@@ -11,6 +11,7 @@ import type {
   AgentStatus,
   AgentUpdate,
   ArchivedSession,
+  CatalogSkill,
   CheckoutPlan,
   ClaudeUsage,
   CloseResult,
@@ -20,11 +21,15 @@ import type {
   DecisionResponse,
   DiffHunk,
   DiffScope,
+  FeaturedSkillSource,
   FileContent,
   FileEntry,
   GhStatus,
   GitChange,
   HistoryPage,
+  McpCatalog,
+  McpLibrary,
+  McpServer,
   MobilePairing,
   MobileStatus,
   PermissionReply,
@@ -36,6 +41,8 @@ import type {
   RepoRef,
   RepoStatus,
   SettingsState,
+  SkillCommandOutcome,
+  SkillsLibrary,
   TranscriptDto,
   WindowState,
   WorktreeInfo,
@@ -524,6 +531,68 @@ export const api = {
   /** Hands a link to the platform browser — the PR conversation, a failed
    * check's log. */
   openUrl: (url: string) => traced("open_url", url, () => invoke<void>("open_url", { url })),
+
+  // Library: MCP servers and skills, synced into every agent's own config.
+  libraryMcp: () => traced("library_mcp", "", () => invoke<McpLibrary>("library_mcp")),
+  libraryMcpCatalog: (refresh: boolean) =>
+    traced("library_mcp_catalog", `refresh=${refresh}`, () =>
+      invoke<McpCatalog>("library_mcp_catalog", { refresh }),
+    ),
+  /** Never logs `server` itself — its env and headers hold credentials. */
+  libraryMcpSave: (server: McpServer, agents: string[], previousName: string | null) =>
+    traced("library_mcp_save", `${server.name} -> ${agents.join(",")}`, () =>
+      invoke<McpLibrary>("library_mcp_save", { server, agents, previousName }),
+    ),
+  libraryMcpRemove: (name: string) =>
+    traced("library_mcp_remove", name, () => invoke<McpLibrary>("library_mcp_remove", { name })),
+  librarySkills: () =>
+    traced("library_skills", "", () => invoke<SkillsLibrary>("library_skills")),
+  librarySkillsSearch: (query: string) =>
+    traced("library_skills_search", query, () =>
+      invoke<CatalogSkill[]>("library_skills_search", { query }),
+    ),
+  librarySkillsFeatured: (refresh: boolean) =>
+    traced("library_skills_featured", `refresh=${refresh}`, () =>
+      invoke<FeaturedSkillSource[]>("library_skills_featured", { refresh }),
+    ),
+  librarySkillsPopular: (refresh: boolean) =>
+    traced("library_skills_popular", `refresh=${refresh}`, () =>
+      invoke<CatalogSkill[]>("library_skills_popular", { refresh }),
+    ),
+  /** Names of installed skills with a newer version upstream. */
+  librarySkillsCheckUpdates: (refresh: boolean) =>
+    traced("library_skills_check_updates", `refresh=${refresh}`, () =>
+      invoke<string[]>("library_skills_check_updates", { refresh }),
+    ),
+  /** Empty `names` updates every skill the skills CLI installed. */
+  librarySkillsUpdate: (names: string[]) =>
+    traced("library_skills_update", names.join(",") || "all", () =>
+      invoke<SkillCommandOutcome>("library_skills_update", { names }),
+    ),
+  librarySkillReadInstalled: (id: string) =>
+    traced("library_skill_read_installed", id, () =>
+      invoke<string>("library_skill_read_installed", { id }),
+    ),
+  librarySkillReadRemote: (source: string, skillId: string, path: string | null) =>
+    traced("library_skill_read_remote", `${source}/${skillId}`, () =>
+      invoke<string>("library_skill_read_remote", { source, skillId, path }),
+    ),
+  librarySkillInstall: (source: string, skill: string, agents: string[]) =>
+    traced("library_skill_install", `${source} ${skill} -> ${agents.join(",")}`, () =>
+      invoke<SkillCommandOutcome>("library_skill_install", { source, skill, agents }),
+    ),
+  librarySkillUninstall: (id: string) =>
+    traced("library_skill_uninstall", id, () =>
+      invoke<SkillCommandOutcome>("library_skill_uninstall", { id }),
+    ),
+  librarySkillSetAgents: (id: string, agents: string[]) =>
+    traced("library_skill_set_agents", `${id} -> ${agents.join(",")}`, () =>
+      invoke<SkillsLibrary>("library_skill_set_agents", { id, agents }),
+    ),
+  librarySkillCreate: (name: string, description: string, body: string, agents: string[]) =>
+    traced("library_skill_create", `${name} -> ${agents.join(",")}`, () =>
+      invoke<SkillsLibrary>("library_skill_create", { name, description, body, agents }),
+    ),
   /** Opens the system page that decides whether egant may show banners. */
   openNotificationSettings: () =>
     traced("open_notification_settings", "", () => invoke<void>("open_notification_settings")),

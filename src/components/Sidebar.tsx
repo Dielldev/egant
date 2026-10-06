@@ -9,6 +9,7 @@ import {
   Folder,
   GitBranch,
   Laptop,
+  Library,
   List,
   ListFilter,
   MapPin,
@@ -18,11 +19,12 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { shouldOpenUpward } from "../lib/popover";
-import { modShortcut } from "../lib/platform";
+import { isMac, modShortcut } from "../lib/platform";
 import type { MobileDevice, SessionInfo } from "../lib/types";
 import { agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { EditableTitle } from "./EditableTitle";
@@ -70,6 +72,9 @@ export function Sidebar() {
   const unread = useEgant((s) => s.unread);
   const createSession = useEgant((s) => s.createSession);
   const openSettings = useEgant((s) => s.openSettings);
+  const openLibrary = useEgant((s) => s.openLibrary);
+  const closeLibrary = useEgant((s) => s.closeLibrary);
+  const libraryOpen = useEgant((s) => s.libraryOpen);
   const sidebarWidth = useEgant((s) => s.sidebarWidth);
   const setSidebarWidth = useEgant((s) => s.setSidebarWidth);
 
@@ -273,14 +278,6 @@ export function Sidebar() {
 
       <div data-tauri-drag-region className="flex w-full items-center gap-1 px-2 pt-1 pb-1">
         <ProjectMenu variant="header" machine={machine} />
-        <button
-          type="button"
-          title="Search sessions and projects"
-          onClick={() => openSearch()}
-          className="flex h-[29px] w-[29px] shrink-0 cursor-pointer items-center justify-center rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-        >
-          <Search size={15} strokeWidth={2} />
-        </button>
         <div className="relative shrink-0">
           <button
             ref={filterBtnRef}
@@ -490,10 +487,28 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* Where the agent runs. Everything in this window is a local process on
-        this machine, and the footer is the standing reminder of it — as well
-        as the way into Settings. */}
-      <div className="w-full shrink-0 px-2 py-2">
+      {/* The window-wide destinations, labeled with their keys — Search and
+        the Library — above where the agent runs. Everything in this window is
+        a local process on this machine, and the profile is the standing
+        reminder of it, as well as the way into Settings. */}
+      <div className="flex w-full shrink-0 flex-col gap-0.5 px-2 py-2">
+        <div className="mb-1 flex flex-col gap-0.5 border-y border-[var(--border)] py-1.5">
+          <NavRow
+            icon={Search}
+            label="Search…"
+            chord="P"
+            title="Search conversations and projects"
+            onClick={() => openSearch()}
+          />
+          <NavRow
+            icon={Library}
+            label="Library"
+            chord="⇧L"
+            title="MCP servers and skills for every agent"
+            active={libraryOpen}
+            onClick={() => (libraryOpen ? closeLibrary() : openLibrary())}
+          />
+        </div>
         <button
           type="button"
           title={`Open settings · ${modShortcut(",")}`}
@@ -523,6 +538,64 @@ export function Sidebar() {
         />
       </div>
     </aside>
+  );
+}
+
+/** One labeled destination in the sidebar's footer group, with its keyboard
+ * chord drawn as key caps. */
+function NavRow({
+  icon: Icon,
+  label,
+  chord,
+  title,
+  active,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  chord: string;
+  title: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={`${title} · ${modShortcut(chord)}`}
+      onClick={onClick}
+      className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] ${
+        active
+          ? "bg-[var(--selected)] font-medium text-[var(--ink)]"
+          : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+      }`}
+    >
+      <span className="flex w-7 shrink-0 items-center justify-center">
+        <Icon size={16} strokeWidth={2} />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+      <KeyCaps chord={chord} />
+    </button>
+  );
+}
+
+/** `⌘⇧L` as separate caps on a Mac, `Ctrl` `Shift` `L` elsewhere. */
+function KeyCaps({ chord }: { chord: string }) {
+  const keys = isMac()
+    ? ["⌘", ...chord]
+    : modShortcut(chord)
+        .split("+")
+        .filter(Boolean);
+  return (
+    <span className="flex shrink-0 items-center gap-0.5">
+      {keys.map((key, i) => (
+        <kbd
+          key={i}
+          className="flex h-[18px] min-w-[18px] items-center justify-center rounded-[5px] border border-[var(--border)] bg-[var(--card)] px-1 font-sans text-[10.5px] text-[var(--faint)]"
+        >
+          {key}
+        </kbd>
+      ))}
+    </span>
   );
 }
 

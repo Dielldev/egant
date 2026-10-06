@@ -11,6 +11,7 @@
 
 pub mod agents;
 pub mod catalog;
+pub mod library;
 pub mod claude;
 pub mod codex;
 pub mod models;

@@ -982,3 +982,113 @@ export interface WindowState {
    * account's plan can't run). Resets on relaunch. */
   badModels: Record<string, string[]>;
 }
+
+// ---------------------------------------------------------------------------
+// Library (`src-tauri/src/library.rs`, `crates/harness/src/library/`)
+// ---------------------------------------------------------------------------
+
+export type McpTransport = "stdio" | "http";
+
+/** One MCP server in the agent-neutral shape the Library edits. */
+export interface McpServer {
+  name: string;
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+}
+
+/** An agent the Library can sync MCP servers into. */
+export interface McpTarget {
+  id: string;
+  name: string;
+  /** Its CLI is installed, or its config file already exists. */
+  available: boolean;
+  configPath: string;
+  /** Set when the config can't be rewritten safely (JSONC with comments). */
+  error: string | null;
+}
+
+export interface InstalledMcp extends McpServer {
+  /** Agents whose config holds a server by this name. */
+  agents: string[];
+  /** The entries by this name don't all agree across agents. */
+  differs: boolean;
+  catalogId: string | null;
+}
+
+export interface McpLibrary {
+  targets: McpTarget[];
+  servers: InstalledMcp[];
+}
+
+export interface CatalogMcp {
+  id: string;
+  name: string;
+  description: string;
+  docsUrl: string;
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  /** Templates: `YOUR_API_KEY` marks the part a credential replaces. */
+  env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+  credentialKeys: { key: string; required: boolean }[];
+}
+
+/** The Recommended list: emdash's catalog, live from GitHub when it could
+ * be fetched (`live`), else the copy built into egant. */
+export interface McpCatalog {
+  entries: CatalogMcp[];
+  live: boolean;
+}
+
+export interface SkillAgent {
+  id: string;
+  name: string;
+  available: boolean;
+  dir: string;
+  /** Reads `~/.agents/skills` itself, so it follows the canonical copy. */
+  shared: boolean;
+}
+
+export interface InstalledSkill {
+  /** Folder name; what commands address it by. */
+  id: string;
+  name: string;
+  description: string;
+  agents: string[];
+  /** `owner/repo`, from the skills CLI's lock file. */
+  source: string | null;
+  path: string;
+}
+
+export interface SkillsLibrary {
+  agents: SkillAgent[];
+  installed: InstalledSkill[];
+}
+
+export interface CatalogSkill {
+  id: string;
+  source: string;
+  skillId: string;
+  name: string;
+  description: string | null;
+  installs: number | null;
+  path: string | null;
+}
+
+export interface FeaturedSkillSource {
+  source: string;
+  label: string;
+  skills: CatalogSkill[];
+}
+
+export interface SkillCommandOutcome {
+  success: boolean;
+  output: string;
+  library: SkillsLibrary;
+}

@@ -380,6 +380,17 @@ pub fn entry(id: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.id == id)
 }
 
+/// Whether this catalog agent's CLI is on this machine — the Library's
+/// "which agents can I sync to" probe. Same filesystem walk as [`list`].
+pub fn is_installed(id: &str) -> bool {
+    entry(id).is_some_and(|entry| locate(entry).is_some())
+}
+
+/// The catalog's display name for an agent id, or the id itself.
+pub fn display_name(id: &str) -> &str {
+    entry(id).map_or(id, |entry| entry.name)
+}
+
 // ---------------------------------------------------------------------------
 // Opening an agent's own CLI
 // ---------------------------------------------------------------------------
@@ -723,7 +734,7 @@ fn first_version(text: &str) -> Option<String> {
 
 /// Run one command through the user's login shell, capturing both streams
 /// and killing it if it outlives `deadline`. Returns `(exit success, output)`.
-fn run_in_login_shell(command: &str, deadline: Duration) -> Result<(bool, String), String> {
+pub(crate) fn run_in_login_shell(command: &str, deadline: Duration) -> Result<(bool, String), String> {
     let shell = login_shell();
     let mut spawn = std::process::Command::new(&shell);
     spawn.args(["-lc", command]);

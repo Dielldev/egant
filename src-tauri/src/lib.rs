@@ -15,6 +15,7 @@ mod commands;
 mod dto;
 mod files;
 mod github;
+mod library;
 mod mobile;
 mod notifications;
 mod persist;

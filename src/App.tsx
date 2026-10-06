@@ -10,6 +10,7 @@ import { LogoLoader } from "./components/Logo";
 import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
 import { log } from "./lib/logger";
+import { LibraryPage } from "./components/LibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { StageTabs } from "./components/StageTabs";
@@ -50,6 +51,7 @@ export default function App() {
   const snapshot = useEgant((s) => s.snapshot);
   const transcripts = useEgant((s) => s.transcripts);
   const settingsOpen = useEgant((s) => s.settingsOpen);
+  const libraryOpen = useEgant((s) => s.libraryOpen);
   const startingNewSession = useEgant((s) => s.startingNewSession);
   const panelMaximized = useEgant((s) => s.panelMaximized);
   // The launch screen has no workspace to show, so the panel is derived away
@@ -94,7 +96,8 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Plain `Esc` backs out of settings without touching the session.
+  // Plain `Esc` backs out of settings (or the Library) without touching the
+  // session.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -102,6 +105,9 @@ export default function App() {
       if (store.settingsOpen) {
         e.preventDefault();
         store.closeSettings();
+      } else if (store.libraryOpen) {
+        e.preventDefault();
+        store.closeLibrary();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -125,6 +131,10 @@ export default function App() {
           store.closeSettings();
           return;
         }
+        if (store.libraryOpen) {
+          store.closeLibrary();
+          return;
+        }
       }
       const active = store.snapshot?.activeSession;
       switch (e.key) {
@@ -139,6 +149,16 @@ export default function App() {
         case "l":
           e.preventDefault();
           store.requestFocusComposer();
+          break;
+        // Shift-L is the Library, beside plain ⌘L focusing the composer.
+        case "L":
+          e.preventDefault();
+          if (store.libraryOpen) store.closeLibrary();
+          else store.openLibrary();
+          break;
+        case "p":
+          e.preventDefault();
+          store.openSearch();
           break;
         case "b":
           e.preventDefault();
@@ -268,64 +288,72 @@ export default function App() {
             fill instead (see `.stage-glass`). The tint stays on underneath
             in every state now — `heroVisible`'s wallpaper dissolves off the
             top of it on dock instead of the stage cutting to it in one frame. */}
-          {/* The stage slides out from under a maximizing panel rather than
-            being squeezed by it: the panel's width animates over 280ms, and
-            without this the transcript would reflow through every width on the
-            way. Fading as it goes is what makes the squeeze invisible. */}
-          <div
-            style={{
-              transition:
-                "opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1)",
-            }}
-            className={`stage-glass relative flex h-full flex-1 flex-col overflow-hidden ${
-              // Only while there is a panel to have taken the room: the
-              // maximized flag outlives closing the panel, and a stage slid
-              // out from under nothing is an empty window.
-              panelMaximized && panelVisible
-                ? "pointer-events-none min-w-0 -translate-x-10 opacity-0"
-                : "min-w-0 translate-x-0 opacity-100"
-            }`}
-          >
-            {heroVisible && <Wallpaper launch exiting={docking} />}
-            {/* Outside the stage's own states: closing the last conversation
-              is exactly when there is something to say about its worktree,
-              and by then the transcript it would have sat above is gone. */}
-            <NoticeToast />
-            <div className="relative z-10 flex h-full flex-col">
-              <SessionHeader bare={stage !== "thread"} />
-              <StageTabs sessionKey={stageKey} />
-              {openTab?.kind === "diff" && openTab.status === "conflicted" ? (
-                <ConflictFileView tab={openTab} />
-              ) : openTab?.kind === "diff" ? (
-                <DiffTabView tab={openTab} />
-              ) : openTab ? (
-                <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
-              ) : cli ? (
-                <CliStage session={cli} />
-              ) : (
-                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-                  {threadVisible &&
-                    (loading ? (
-                      // Transcript still crossing the IPC boundary — one blank
-                      // frame, never a flash of the wrong screen.
-                      <div className="min-h-0 flex-1" />
-                    ) : (
-                      <div className="flex min-h-0 flex-1 overflow-hidden">
-                        <TranscriptView />
-                      </div>
-                    ))}
-                  {/* Absolutely stacked over the thread beneath it so the two
-                    overlap for the `docking` beat instead of stacking in flow. */}
-                  {heroVisible && (
-                    <div className="absolute inset-0 flex flex-col">
-                      <LaunchScreen exiting={docking} />
+          {/* The Library takes the stage, not the window: the sidebar stays,
+            so a conversation is one click away. */}
+          {libraryOpen ? (
+            <LibraryPage />
+          ) : (
+            <>
+              {/* The stage slides out from under a maximizing panel rather than
+                being squeezed by it: the panel's width animates over 280ms, and
+                without this the transcript would reflow through every width on the
+                way. Fading as it goes is what makes the squeeze invisible. */}
+              <div
+                style={{
+                  transition:
+                    "opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+                }}
+                className={`stage-glass relative flex h-full flex-1 flex-col overflow-hidden ${
+                  // Only while there is a panel to have taken the room: the
+                  // maximized flag outlives closing the panel, and a stage slid
+                  // out from under nothing is an empty window.
+                  panelMaximized && panelVisible
+                    ? "pointer-events-none min-w-0 -translate-x-10 opacity-0"
+                    : "min-w-0 translate-x-0 opacity-100"
+                }`}
+              >
+                {heroVisible && <Wallpaper launch exiting={docking} />}
+                {/* Outside the stage's own states: closing the last conversation
+                  is exactly when there is something to say about its worktree,
+                  and by then the transcript it would have sat above is gone. */}
+                <NoticeToast />
+                <div className="relative z-10 flex h-full flex-col">
+                  <SessionHeader bare={stage !== "thread"} />
+                  <StageTabs sessionKey={stageKey} />
+                  {openTab?.kind === "diff" && openTab.status === "conflicted" ? (
+                    <ConflictFileView tab={openTab} />
+                  ) : openTab?.kind === "diff" ? (
+                    <DiffTabView tab={openTab} />
+                  ) : openTab ? (
+                    <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
+                  ) : cli ? (
+                    <CliStage session={cli} />
+                  ) : (
+                    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                      {threadVisible &&
+                        (loading ? (
+                          // Transcript still crossing the IPC boundary — one blank
+                          // frame, never a flash of the wrong screen.
+                          <div className="min-h-0 flex-1" />
+                        ) : (
+                          <div className="flex min-h-0 flex-1 overflow-hidden">
+                            <TranscriptView />
+                          </div>
+                        ))}
+                      {/* Absolutely stacked over the thread beneath it so the two
+                        overlap for the `docking` beat instead of stacking in flow. */}
+                      {heroVisible && (
+                        <div className="absolute inset-0 flex flex-col">
+                          <LaunchScreen exiting={docking} />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          </div>
-          {panelVisible && <WorkspacePanel />}
+              </div>
+              {panelVisible && <WorkspacePanel />}
+            </>
+          )}
         </>
       )}
       {/* Outside the settings branch: the dialog is reachable both from the
