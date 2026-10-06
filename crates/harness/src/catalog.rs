@@ -734,7 +734,10 @@ fn first_version(text: &str) -> Option<String> {
 
 /// Run one command through the user's login shell, capturing both streams
 /// and killing it if it outlives `deadline`. Returns `(exit success, output)`.
-pub(crate) fn run_in_login_shell(command: &str, deadline: Duration) -> Result<(bool, String), String> {
+pub(crate) fn run_in_login_shell(
+    command: &str,
+    deadline: Duration,
+) -> Result<(bool, String), String> {
     let shell = login_shell();
     let mut spawn = std::process::Command::new(&shell);
     spawn.args(["-lc", command]);

@@ -1470,7 +1470,7 @@ mod tests {
         ]));
         assert_eq!(
             output,
-            "Screenshot taken\n[image: image/jpeg, 411 KB]\n[document: application/pdf, 1.7 MB]\n{\"tool_name\":\"WebFetch\",\"type\":\"tool_reference\"}"
+            "Screenshot taken\n[image: image/jpeg, 411 KB]\n[document: application/pdf, 1.7 MB]\n{\"type\":\"tool_reference\",\"tool_name\":\"WebFetch\"}"
         );
     }
 
