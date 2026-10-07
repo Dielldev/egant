@@ -11,3 +11,5 @@ dist/
 # point them here.
 /.egant
 .opencode/plugins/emdash-notifications.js
+.vercel
+.env*

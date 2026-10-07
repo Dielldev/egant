@@ -1,0 +1,11 @@
+# The landing page only needs its own folder plus the app source it borrows
+# (the mark and provider logos), the README screenshots and the root config.
+/*
+!/site
+!/src
+!/docs
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+!/vercel.json
+/site/dist
