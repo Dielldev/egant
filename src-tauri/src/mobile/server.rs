@@ -76,7 +76,12 @@ const MAX_DECISION_REPLY_BYTES: usize = 20_000;
 /// original that has no business crossing a phone connection.
 const MAX_WALLPAPER_BYTES: u64 = 25 * 1024 * 1024;
 /// The agents egant drives itself — the ones a phone can chat with.
-const CHAT_AGENTS: [AgentId; 3] = [AgentId::Claude, AgentId::Codex, AgentId::Opencode];
+const CHAT_AGENTS: [AgentId; 4] = [
+    AgentId::Claude,
+    AgentId::Codex,
+    AgentId::Opencode,
+    AgentId::Antigravity,
+];
 
 #[derive(Clone)]
 pub struct Ctx {

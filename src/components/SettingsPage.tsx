@@ -369,13 +369,13 @@ function AccountsSection() {
 
   const statusOf = (id: string) => agents.find((a) => a.id === id);
   const known = agents.length > 0;
-  const connectedCount = ["claude", "codex", "opencode", "cursor"].filter(
+  const connectedCount = ["claude", "codex", "opencode", "antigravity", "cursor"].filter(
     (id) => statusOf(id)?.connected,
   ).length;
 
   const refreshAll = () => {
     setSpinning(true);
-    const ids = ["claude", "codex", "opencode", "cursor"];
+    const ids = ["claude", "codex", "opencode", "antigravity", "cursor"];
     void Promise.all([
       refresh(),
       fetchAgents(),
@@ -391,7 +391,7 @@ function AccountsSection() {
       <SectionHead
         title="Accounts"
         count={connectedCount}
-        sub="The Claude Code, Codex, OpenCode, and Cursor logins on this device. Refresh re-checks each login with the CLI itself, not just whether a credentials file exists."
+        sub="The Claude Code, Codex, OpenCode, Antigravity, and Cursor logins on this device. Refresh re-checks each login with the CLI itself, not just whether a credentials file exists."
         right={
           <>
             <button
@@ -448,6 +448,20 @@ function AccountsSection() {
       />
 
       <AccountGroup
+        id="antigravity"
+        icon={<ProviderGlyph provider="antigravity" size={15} />}
+        name="Antigravity"
+        installed={!known || (statusOf("antigravity")?.installed ?? false)}
+        body={
+          <AccountBody
+            status={statusOf("antigravity")}
+            empty="Antigravity isn't installed on this device — install the agy CLI, then Add account to sign in with Google."
+            readySubtitle="agy installed — Add account to sign in with a different Google account"
+          />
+        }
+      />
+
+      <AccountGroup
         id="cursor"
         // No real Cursor mark ships in assets/logos yet — the plain Lucide
         // glyph stays until one is added, rather than guessing at a brand
@@ -465,8 +479,8 @@ function AccountsSection() {
 
       <p className="mt-4 max-w-[700px] text-[12px] leading-relaxed text-[var(--faint)]">
         Add account runs each CLI&apos;s own sign-in: Claude Code and Codex open a
-        browser tab in the background, OpenCode opens a Terminal window for its
-        provider picker. This device only ever holds one login per agent — Add
+        browser tab in the background, OpenCode and Antigravity open a Terminal
+        window for their own sign-in. This device only ever holds one login per agent — Add
         account replaces whichever one is currently signed in.
       </p>
     </div>

@@ -32,6 +32,17 @@ const OPENCODE_MODE_INFO: Record<NumberedMode, string> = {
   plan: "Same as Auto for opencode — there's no read-only sandbox to switch into.",
 };
 
+// Antigravity is turn-based like Codex and opencode: print mode soft-denies any
+// tool confirmation instead of asking, so each mode picks the CLI's own
+// `--mode` up front. Manual maps to the default mode, which is the one that
+// denies whatever would have needed a confirmation.
+const ANTIGRAVITY_MODE_INFO: Record<NumberedMode, string> = {
+  auto: "Edits go through; anything that needs a confirmation is declined, because there's nobody to ask mid-turn.",
+  manual: "No live approval channel here, so anything that needs a confirmation is declined.",
+  acceptEdits: "Same as Auto for Antigravity — file edits are accepted, nothing riskier is.",
+  plan: "Plan mode — Antigravity looks around and plans before it changes anything.",
+};
+
 /** Agents whose numbered modes (Auto/Manual/Accept edits/Plan) each mean
  * something different to the backend. Anything else falls back to a plain
  * note in the menu — but Bypass permissions (below) always works and is
@@ -40,4 +51,5 @@ export const MODE_INFO: Partial<Record<string, Record<NumberedMode, string>>> = 
   claude: CLAUDE_MODE_INFO,
   codex: CODEX_MODE_INFO,
   opencode: OPENCODE_MODE_INFO,
+  antigravity: ANTIGRAVITY_MODE_INFO,
 };

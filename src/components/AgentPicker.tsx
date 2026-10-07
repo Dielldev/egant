@@ -57,7 +57,7 @@ import { ProviderGlyph, ProviderLogo } from "./ProviderLogo";
  * The whole menu is one opaque pane (`isolate` + high z) so the launch-screen
  * labels can never bleed through it. */
 
-const RUNNABLE = ["claude", "codex", "opencode"] as const;
+const RUNNABLE = ["claude", "codex", "opencode", "antigravity"] as const;
 
 // The display constants live in `lib/agents` so the phone app can draw the
 // same logos; re-exported here for everything that already imports them.
