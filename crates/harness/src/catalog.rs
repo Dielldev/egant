@@ -207,12 +207,12 @@ pub const CATALOG: &[CatalogEntry] = &[
         // editor's `code`-style launcher — a different product that can't run
         // a turn — so it is deliberately not probed.
         binaries: &["agy", "antigravity"],
-        env_override: None,
+        env_override: Some("AGY_EXECUTABLE"),
         extra_paths: &[],
         vendor: "antigravity",
         website: "https://antigravity.google/docs/cli-overview",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
+        supports: FULL,
+        chat_ui: true,
         recommended: false,
         install_options: &[InstallOption {
             method: InstallMethod::Curl,
@@ -734,7 +734,10 @@ fn first_version(text: &str) -> Option<String> {
 
 /// Run one command through the user's login shell, capturing both streams
 /// and killing it if it outlives `deadline`. Returns `(exit success, output)`.
-pub(crate) fn run_in_login_shell(command: &str, deadline: Duration) -> Result<(bool, String), String> {
+pub(crate) fn run_in_login_shell(
+    command: &str,
+    deadline: Duration,
+) -> Result<(bool, String), String> {
     let shell = login_shell();
     let mut spawn = std::process::Command::new(&shell);
     spawn.args(["-lc", command]);
@@ -860,6 +863,16 @@ mod tests {
             assert!(entry.recommended);
             assert!(preferred(entry).is_some());
         }
+    }
+
+    /// Antigravity is drivable too, but not a recommended install: it is a
+    /// Google-account product, so it is offered rather than pushed.
+    #[test]
+    fn antigravity_is_drivable_but_not_recommended() {
+        let entry = entry("antigravity").expect("antigravity is in the catalog");
+        assert!(entry.chat_ui);
+        assert!(!entry.recommended);
+        assert!(entry.binaries.contains(&"agy"));
     }
 
     /// Every catalog row must be openable as a terminal session, so the

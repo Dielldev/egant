@@ -230,7 +230,7 @@ export function ModelSheet({
               key={model.id}
               label={model.name}
               detail={
-                agent === "opencode" && model.providerName
+                (agent === "opencode" || agent === "antigravity") && model.providerName
                   ? `${model.providerName}${model.description && model.description !== model.providerName ? ` · ${model.description}` : ""}`
                   : model.description || undefined
               }

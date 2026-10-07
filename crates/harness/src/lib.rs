@@ -10,10 +10,11 @@
 //! [`HarnessEvent`] is the vendor-neutral vocabulary the app renders.
 
 pub mod agents;
+pub mod antigravity;
 pub mod catalog;
-pub mod library;
 pub mod claude;
 pub mod codex;
+pub mod library;
 pub mod models;
 pub mod opencode;
 pub mod protocol;
@@ -28,6 +29,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub use agents::{AgentId, AgentStatus, detect_agents};
+pub use antigravity::{AntigravityOptions, AntigravityRun};
 pub use catalog::{CatalogStatus, InstallOutcome, UpdateInfo};
 pub use claude::{ClaudeCode, ClaudeOptions};
 pub use codex::{CodexExec, CodexOptions};

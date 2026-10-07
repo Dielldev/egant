@@ -71,15 +71,15 @@ export function Wallpaper({
   }
 
   const veil = (dim * 0.4).toFixed(3);
-  // Split structure (pure CSS, no Tailwind): the image element only lives in
-  // the top 88% — nothing image-related below that, just blank ground in the
-  // active theme's own stage color (so it reads as black in a dark palette
-  // and light in a light one, instead of always black). The bottom of that
-  // top section feather-melts into the blank with a long eased ramp (mask +
-  // multi-stop scrim), so the dissolve reads smooth with no straight-line
-  // seam.
+  // The picture fills the whole stage and melts into the blank ground over a
+  // long, eased ramp (smoothstep stops, so there is no visible start or end
+  // to the fade), landing on solid stage color only at the very bottom. The
+  // image itself sits taller than the stage and is lifted by 10%, which
+  // carries the scene up and away from the composer. The ground is the
+  // active theme's own stage color, so the dissolve reads dark in a dark
+  // palette and light in a light one.
   const sectionFade =
-    "linear-gradient(to bottom, #000 0%, #000 45%, transparent 100%)";
+    "linear-gradient(to bottom, #000 0%, #000 40%, rgba(0,0,0,0.972) 46%, rgba(0,0,0,0.896) 52%, rgba(0,0,0,0.784) 58%, rgba(0,0,0,0.648) 64%, rgba(0,0,0,0.5) 70%, rgba(0,0,0,0.352) 76%, rgba(0,0,0,0.216) 82%, rgba(0,0,0,0.104) 88%, rgba(0,0,0,0.028) 94%, transparent 100%)";
   return (
     <div
       className={exiting ? "dissolve-out" : undefined}
@@ -93,10 +93,7 @@ export function Wallpaper({
       <div
         style={{
           position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: "88%",
+          inset: 0,
           overflow: "hidden",
           maskImage: sectionFade,
           WebkitMaskImage: sectionFade,
@@ -109,9 +106,12 @@ export function Wallpaper({
           draggable={false}
           className="wallpaper-fade-in"
           style={{
+            position: "absolute",
+            top: "-10%",
+            left: 0,
             display: "block",
             width: "100%",
-            height: "100%",
+            height: "110%",
             objectFit: "cover",
             objectPosition: "center 90%",
             userSelect: "none",
@@ -122,7 +122,7 @@ export function Wallpaper({
           style={{
             position: "absolute",
             inset: 0,
-            background: `linear-gradient(to bottom, rgba(0,0,0,${veil}) 0%, rgba(0,0,0,${veil}) 30%, rgba(0,0,0,0.55) 65%, rgba(0,0,0,0.9) 88%, var(--stage) 100%)`,
+            background: `rgba(0,0,0,${veil})`,
           }}
         />
       </div>

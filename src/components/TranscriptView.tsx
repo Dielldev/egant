@@ -921,8 +921,9 @@ function PermissionRow({
   const [note, setNote] = useState("");
   const always = describeAlwaysAllow(pending, agent);
   // A note for the agent and "stop the turn" need a live channel to ride:
-  // opencode's denial has already happened by the time the row shows.
-  const live = agent !== "opencode";
+  // opencode's and Antigravity's denial has already happened by the time the
+  // row shows.
+  const live = agent !== "opencode" && agent !== "antigravity";
   const resource = permissionSummary(pending.input);
   const description = pending.description?.trim() || null;
   const root = cwd.endsWith("/") ? cwd : `${cwd}/`;

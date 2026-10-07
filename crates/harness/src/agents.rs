@@ -32,6 +32,7 @@ pub enum AgentId {
     Grok,
     Hermes,
     Pi,
+    Antigravity,
 }
 
 impl AgentId {
@@ -45,6 +46,7 @@ impl AgentId {
             AgentId::Grok => "grok",
             AgentId::Hermes => "hermes",
             AgentId::Pi => "pi",
+            AgentId::Antigravity => "antigravity",
         }
     }
 
@@ -58,11 +60,12 @@ impl AgentId {
             "grok" => Some(AgentId::Grok),
             "hermes" => Some(AgentId::Hermes),
             "pi" => Some(AgentId::Pi),
+            "antigravity" => Some(AgentId::Antigravity),
             _ => None,
         }
     }
 
-    pub fn all() -> [AgentId; 8] {
+    pub fn all() -> [AgentId; 9] {
         [
             AgentId::Claude,
             AgentId::Codex,
@@ -72,6 +75,7 @@ impl AgentId {
             AgentId::Grok,
             AgentId::Hermes,
             AgentId::Pi,
+            AgentId::Antigravity,
         ]
     }
 
@@ -196,6 +200,18 @@ const DESCRIPTORS: &[AgentDescriptor] = &[
         ],
         install_hint: "Install the pi CLI to enable",
     },
+    AgentDescriptor {
+        id: AgentId::Antigravity,
+        name: "Antigravity",
+        cli: "agy",
+        env_override: "AGY_EXECUTABLE",
+        extra_paths: &[
+            "~/.local/bin/agy",
+            "/opt/homebrew/bin/agy",
+            "/usr/local/bin/agy",
+        ],
+        install_hint: "Install the Antigravity CLI to enable (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), then run `agy` once to sign in",
+    },
 ];
 
 /// What the settings and composer render: presence, login, and how to fix it.
@@ -238,7 +254,13 @@ fn build_status(id: AgentId) -> AgentStatus {
     // all. `opencode_auth_file` still matters — it's what a specific
     // provider login (`opencode auth login`) writes — but its absence no
     // longer means "can't be used."
-    let (connected, email) = if id == AgentId::Opencode {
+    //
+    // Antigravity is the same case from the other side: `agy` keeps its
+    // sign-in in the OS keyring under a name this probe has no business
+    // guessing at, and prints no status. Installed is the most that can be
+    // known without a spawn; a lapsed login surfaces on the first turn, as
+    // the CLI's own error.
+    let (connected, email) = if matches!(id, AgentId::Opencode | AgentId::Antigravity) {
         (installed, None)
     } else {
         login_status(id)
@@ -339,6 +361,9 @@ pub fn connect(id: AgentId) -> Result<(), String> {
         AgentId::Codex => spawn_detached(&program, &["login"]),
         // An arrow-key provider picker: needs a real terminal to draw into.
         AgentId::Opencode => open_in_terminal(&program, &["auth", "login"]),
+        // Bare `agy` starts its TUI, which signs in through the browser on
+        // first run and needs a terminal to draw into while it does.
+        AgentId::Antigravity => open_in_terminal(&program, &[]),
         other => Err(format!(
             "{} sign-in isn't wired up yet.",
             other.descriptor().name
@@ -723,7 +748,7 @@ fn run_in_login_shell(script: &str) -> Option<Vec<u8>> {
 // Login status
 // ---------------------------------------------------------------------------
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
@@ -733,7 +758,11 @@ fn login_status(id: AgentId) -> (bool, Option<String>) {
         AgentId::Codex => (codex_auth_file().is_some(), None),
         AgentId::Opencode => (opencode_auth_file().is_some(), None),
         AgentId::Cursor => (cursor_auth_file().is_some(), None),
-        AgentId::Devin | AgentId::Grok | AgentId::Hermes | AgentId::Pi => (false, None),
+        // Never reached for Antigravity (see `build_status`), but the match
+        // stays exhaustive so a new agent can't forget to decide.
+        AgentId::Antigravity | AgentId::Devin | AgentId::Grok | AgentId::Hermes | AgentId::Pi => {
+            (false, None)
+        }
     }
 }
 

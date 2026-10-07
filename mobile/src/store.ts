@@ -40,7 +40,7 @@ import { useCheckouts } from "./checkouts";
 import { usePrefs } from "./prefs";
 
 /** The agents egant drives itself — the only ones a phone can chat with. */
-export const CHAT_AGENTS = ["claude", "codex", "opencode"] as const;
+export const CHAT_AGENTS = ["claude", "codex", "opencode", "antigravity"] as const;
 
 /** A website being shown inside the app, in a frame: the phone's preview pane. */
 export interface PreviewView {

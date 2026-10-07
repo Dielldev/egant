@@ -1,18 +1,22 @@
 //! Model catalogs: which models each agent can run.
 //!
-//! opencode reports its live catalog (`opencode models --verbose`: id,
+//! Antigravity's `agy models` prints one `id<TAB>name` per line, which is all it
+//! says: the vendor is read off the id, and no window is claimed — see
+//! [`antigravity_models`]. opencode reports its live catalog (`opencode models --verbose`: id,
 //! display name, provider, reasoning variants). Codex discovers its live
 //! catalog too, over `codex app-server`'s `model/list` — see
-//! [`discover_codex_models`]. Claude serves a small curated list: its CLI has
-//! no equivalent discovery call, so [`claude_models`] is what the picker and
-//! Settings both show, exactly as zeron's own (currently static-only)
-//! `claude/catalog.rs` does.
+//! [`discover_codex_models`]. Claude's CLI has no discovery call, but Anthropic
+//! publishes the catalog Claude Code itself reads — see
+//! [`fetch_claude_catalog`] — so the picker and Settings show whatever is
+//! live, with the last fetch kept on disk and [`claude_fallback_models`] only
+//! what a machine that has never been online falls back to.
 
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::agents::AgentId;
@@ -94,7 +98,11 @@ pub fn list_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
         agent.as_str(),
         models.len()
     );
-    if let Ok(mut cache) = catalog_cache().lock() {
+    // Claude's discovery never fails — it falls back to the compiled-in list
+    // when the network is down — so "no live catalog yet" is the failure to
+    // keep retryable, the same as a Codex spawn that errors.
+    let discovered = agent != AgentId::Claude || CLAUDE_FETCHED.load(Ordering::Relaxed);
+    if discovered && let Ok(mut cache) = catalog_cache().lock() {
         cache.insert(agent, (Instant::now(), models.clone()));
     }
     Ok(models)
@@ -122,7 +130,8 @@ fn discover_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
     match agent {
         AgentId::Opencode => opencode_models(),
         AgentId::Codex => Ok(codex_models_or_fallback()),
-        AgentId::Claude => Ok(claude_models()),
+        AgentId::Claude => Ok(claude_models_or_fallback()),
+        AgentId::Antigravity => antigravity_models(),
         other => Err(format!(
             "{} doesn't expose a model list yet",
             other.descriptor().name
@@ -131,17 +140,20 @@ fn discover_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
 }
 
 /// Whether `model` is still something `agent` can be asked to run, judged
-/// from compiled-in knowledge alone — never by spawning a CLI, because the
-/// caller is the path that revives a saved session, where a catalog probe
-/// would stall the first message behind a subprocess.
+/// without spawning a CLI or touching the network, because the caller is the
+/// path that revives a saved session, where a catalog probe would stall the
+/// first message.
 ///
-/// Only Claude can be answered honestly here: its catalog is the constant in
-/// [`claude_models`]. Codex and opencode discover theirs from the CLI at
-/// runtime, so any compiled-in list is a stale subset of what they really
-/// accept, and answering "unknown" would drop models that work. They get a
-/// flat `true`; a genuinely dead id there still fails the way it does today,
-/// through the turn's own error and [`crate::AgentId`]-keyed bad-model
-/// bookkeeping.
+/// Only Claude can be answered at all here, and only loosely: its catalog is
+/// fetched, so a compiled-in list would reject every model released since this
+/// build — the exact bug that hid Opus 5.5 and Sonnet 5.5. What the CLI
+/// actually refuses is an id with no `claude-` prefix and no alias
+/// (`sonnet-5`, `fable-5.1`), so that is what is checked. Codex and opencode
+/// discover theirs from the CLI at runtime, so any compiled-in list is a stale
+/// subset of what they really accept, and answering "unknown" would drop
+/// models that work. They get a flat `true`; a genuinely dead id there still
+/// fails the way it does today, through the turn's own error and
+/// [`crate::AgentId`]-keyed bad-model bookkeeping.
 pub fn is_known_model(agent: AgentId, model: &str) -> bool {
     match agent {
         AgentId::Claude => {
@@ -149,8 +161,8 @@ pub fn is_known_model(agent: AgentId, model: &str) -> bool {
             // that family) and an optional `[1m]` suffix asking for the
             // 1M-token window. Neither appears in the catalog; both are valid.
             const ALIASES: &[&str] = &["fable", "opus", "sonnet", "haiku"];
-            let id = model.split('[').next().unwrap_or(model).trim();
-            ALIASES.contains(&id) || claude_models().iter().any(|model| model.id == id)
+            let id = base_model_id(model);
+            ALIASES.contains(&id) || id.starts_with("claude-")
         }
         _ => true,
     }
@@ -229,16 +241,19 @@ fn codex_variants() -> Vec<String> {
         .collect()
 }
 
-/// Offline/failure fallback only — [`list_models`] tries [`discover_codex_models`]
-/// first, since the signed-in account's own `model/list` is authoritative
-/// (it already reflects that account's rollout and plan, which a static list
-/// never can). Kept newest-first, matching zeron's `codex/catalog.rs`
-/// fallback list verbatim: three of these nine (`gpt-5.6-sol`, `gpt-5.4`,
+/// The compiled-in Codex list: the last resort, for a machine with no Codex
+/// CLI cache at all. [`list_models`] tries [`discover_codex_models`] first —
+/// the signed-in account's own `model/list` is authoritative, since it already
+/// reflects that account's rollout and plan — and then the CLI's own cache
+/// ([`codex_cached_models`]), so this list is only reached on a first launch
+/// that is also offline. Three of these (`gpt-5.6-sol`, `gpt-5.4`,
 /// `gpt-5.4-mini`) came back `"not supported when using Codex with a ChatGPT
-/// account"` when live-tested against this project's own ChatGPT-based
-/// login, so they may not run on every account — that is exactly the
-/// failure mode live discovery exists to avoid, by asking the account what
-/// it can actually run instead of guessing from a fixed list.
+/// account"` when live-tested against a ChatGPT-based login, which is exactly
+/// the failure live discovery exists to avoid.
+///
+/// No context window is claimed: the one this used to assert (400K) disagreed
+/// with the 272K the CLI itself reports, and an unknown window just hides the
+/// badge.
 fn codex_models() -> Vec<AgentModel> {
     const MODELS: &[(&str, &str)] = &[
         (
@@ -261,8 +276,8 @@ fn codex_models() -> Vec<AgentModel> {
             provider: "openai".to_string(),
             provider_name: provider_name("openai"),
             description: desc.to_string(),
-            context: 400_000,
-            max_context: 400_000,
+            context: 0,
+            max_context: 0,
             variants: codex_variants(),
             default_variant: String::new(),
             cli_default: false,
@@ -422,21 +437,88 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
     Ok(models)
 }
 
-/// The context window for a discovered Codex model. `model/list` carries no
-/// window of its own — checked against a live `codex app-server`, whose rows
-/// are exactly id / model / displayName / description /
-/// supportedReasoningEfforts / defaultReasoningEffort / inputModalities /
-/// isDefault and friends, with nothing about limits anywhere — so the number
-/// the picker shows has to come from compiled-in knowledge. That is the same
-/// 400K the static fallback catalog asserts for this generation; an id from
-/// outside it that still looks like one of these models is given the same
-/// benefit, and anything else reports unknown rather than inventing a figure.
+/// Where the Codex CLI keeps the model catalog it last fetched
+/// (`$CODEX_HOME/models_cache.json`, default `~/.codex`). Unlike the app-server's
+/// `model/list`, it carries each model's context window.
+fn codex_cache_path() -> Option<PathBuf> {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| crate::agents::home_dir().map(|home| home.join(".codex")))?;
+    Some(home.join("models_cache.json"))
+}
+
+fn read_codex_cache() -> Option<Vec<u8>> {
+    std::fs::read(codex_cache_path()?).ok()
+}
+
+/// The context window for a discovered Codex model, from the CLI's own cache.
+/// `model/list` carries no window — checked against a live `codex app-server`,
+/// whose rows have nothing about limits anywhere — so this is the real source.
+/// Zero (unknown, hides the badge) when the cache has no such model, rather
+/// than a figure made up for the id.
 fn codex_context(id: &str) -> u64 {
-    if codex_models().iter().any(|model| model.id == id) || id.starts_with("gpt-") {
-        400_000
-    } else {
-        0
+    read_codex_cache()
+        .and_then(|body| parse_codex_cache(&body).ok())
+        .and_then(|rows| rows.into_iter().find(|model| model.id == id))
+        .map_or(0, |model| model.context)
+}
+
+/// The picker-visible rows of the Codex CLI's `models_cache.json`, in the
+/// CLI's own priority order. Hidden rows (`visibility: "hide"`, e.g. internal
+/// review models) are dropped. `context_window` is what a session actually
+/// gets; `max_context_window` is the ceiling a config override could reach,
+/// which egant doesn't set, so it isn't advertised.
+fn parse_codex_cache(body: &[u8]) -> Result<Vec<AgentModel>, String> {
+    let doc: serde_json::Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    let rows = doc["models"].as_array().ok_or("no `models` in the cache")?;
+    let mut rows: Vec<&serde_json::Value> = rows
+        .iter()
+        .filter(|row| row["visibility"] != "hide")
+        .collect();
+    rows.sort_by_key(|row| row["priority"].as_i64().unwrap_or(i64::MAX));
+    let models: Vec<AgentModel> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let id = row["slug"].as_str()?;
+            let context = row["context_window"].as_u64().unwrap_or(0);
+            Some(AgentModel {
+                id: id.to_string(),
+                name: row["display_name"].as_str().unwrap_or(id).to_string(),
+                provider: "openai".to_string(),
+                provider_name: provider_name("openai"),
+                description: row["description"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| provider_name("openai")),
+                context,
+                max_context: context,
+                variants: row["supported_reasoning_levels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|level| level["effort"].as_str().map(str::to_string))
+                    .collect(),
+                default_variant: row["default_reasoning_level"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                cli_default: false,
+            })
+        })
+        .collect();
+    if models.is_empty() {
+        return Err("the Codex cache listed no visible models".to_string());
     }
+    Ok(models)
+}
+
+/// What Codex shows when live discovery isn't available: the CLI's own cache
+/// of its last catalog if there is one, else the compiled-in list.
+fn codex_cached_models() -> Vec<AgentModel> {
+    read_codex_cache()
+        .and_then(|body| parse_codex_cache(&body).ok())
+        .unwrap_or_else(codex_models)
 }
 
 /// Parses one `model/list` page: `(model, is_default)` pairs plus the
@@ -531,14 +613,14 @@ fn parse_codex_model_list_page(
 fn codex_models_or_fallback() -> Vec<AgentModel> {
     let desc = AgentId::Codex.descriptor();
     let Some(program) = crate::agents::resolve_executable(desc) else {
-        return codex_models();
+        return codex_cached_models();
     };
     match discover_codex_models(&program) {
         Ok(models) if !models.is_empty() => models,
-        Ok(_) => codex_models(),
+        Ok(_) => codex_cached_models(),
         Err(error) => {
             log::debug!("codex model/list discovery failed; using fallback catalog: {error}");
-            codex_models()
+            codex_cached_models()
         }
     }
 }
@@ -551,7 +633,168 @@ fn claude_variants() -> Vec<String> {
         .collect()
 }
 
+/// The Claude list as the rest of the crate sees it: the live catalog once
+/// one has been fetched, the compiled-in fallback until then. Pure memory —
+/// session startup calls this (via [`max_context`]) and must never wait on the
+/// network.
 fn claude_models() -> Vec<AgentModel> {
+    let mut models = live_claude_models().unwrap_or_else(claude_fallback_models);
+    // Applied on read, not when the catalog is stored: a denial lands after
+    // the fetch and has to win over the catalog's own window.
+    for model in &mut models {
+        if wide_context_denied(&model.id) {
+            model.max_context = model.context;
+        }
+    }
+    models
+}
+
+/// What the picker is served: a fresh fetch when there is one, otherwise
+/// whatever [`claude_models`] has (the last good fetch, or the fallback).
+/// A failed fetch is logged, not surfaced — an empty or errored picker would
+/// be strictly worse than a slightly old list.
+fn claude_models_or_fallback() -> Vec<AgentModel> {
+    match fetch_claude_catalog() {
+        Ok((models, body)) => {
+            if let Ok(mut live) = live_claude_catalog().write() {
+                *live = Some(models);
+            }
+            CLAUDE_FETCHED.store(true, Ordering::Relaxed);
+            if let Some(path) = claude_catalog_path()
+                && let Some(dir) = path.parent()
+                && std::fs::create_dir_all(dir).is_ok()
+                && let Err(error) = std::fs::write(&path, &body)
+            {
+                log::debug!("could not save the claude model catalog: {error}");
+            }
+        }
+        Err(error) => {
+            log::warn!("claude model catalog fetch failed; using the last known list: {error}");
+        }
+    }
+    claude_models()
+}
+
+/// The catalog this run knows of: seeded once from the copy saved by an
+/// earlier run (so an offline launch still shows what was true the last time
+/// the network was up), then replaced by each successful fetch.
+fn live_claude_catalog() -> &'static RwLock<Option<Vec<AgentModel>>> {
+    static LIVE: OnceLock<RwLock<Option<Vec<AgentModel>>>> = OnceLock::new();
+    LIVE.get_or_init(|| {
+        let saved = claude_catalog_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|body| parse_claude_catalog(&body).ok());
+        RwLock::new(saved)
+    })
+}
+
+/// Set by the first successful fetch of this run. Distinct from the catalog
+/// being present, because a disk-seeded one is last run's news, not this
+/// run's: it is what a failed fetch falls back to, not proof the fetch worked.
+static CLAUDE_FETCHED: AtomicBool = AtomicBool::new(false);
+
+fn claude_catalog_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| crate::agents::home_dir().map(|home| home.join(".cache")))?;
+    Some(base.join("egant").join("claude-model-catalog.json"))
+}
+
+fn live_claude_models() -> Option<Vec<AgentModel>> {
+    live_claude_catalog().read().ok()?.clone()
+}
+
+/// Where Anthropic publishes the model catalog Claude Code itself reads (the
+/// CLI verifies its signature; this only fills a picker, where a bad row
+/// would fail on use rather than do harm, so it relies on TLS alone). Names
+/// every model with its context window and effort levels, and is updated the
+/// day a model ships — which a compiled-in table never is.
+const CLAUDE_CATALOG_URL: &str = "https://downloads.claude.ai/model-catalog/v1/catalog.json";
+
+/// The parsed rows and the raw body they came from (kept so it can be saved).
+fn fetch_claude_catalog() -> Result<(Vec<AgentModel>, Vec<u8>), String> {
+    let body = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .user_agent("egant")
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(CLAUDE_CATALOG_URL)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.bytes())
+        .map_err(|e| e.to_string())?;
+    Ok((parse_claude_catalog(&body)?, body.to_vec()))
+}
+
+/// The `cc` (Claude Code) surface of the published catalog → picker rows, in
+/// the catalog's own order (current models first, older ones after).
+///
+/// Rows come from `model_selector_config[id == "cc"].models`. Those only
+/// offered on cloud providers (Opus 4.1 is Bedrock/Vertex-only) are dropped,
+/// since egant signs in with the user's own Claude account.
+fn parse_claude_catalog(body: &[u8]) -> Result<Vec<AgentModel>, String> {
+    let doc: serde_json::Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    let rows = doc
+        .pointer("/surfaces/cc/model_selector_config")
+        .and_then(|configs| configs.as_array())
+        .and_then(|configs| configs.iter().find(|c| c["id"] == "cc"))
+        .and_then(|config| config["models"].as_array())
+        .ok_or("no `cc` model list in the catalog")?;
+
+    let models: Vec<AgentModel> = rows
+        .iter()
+        .filter_map(|row| {
+            let id = row["id"].as_str()?;
+            let name = row["name"].as_str()?;
+            if let Some(offered) = row["offered_on"].as_array()
+                && !offered.iter().any(|p| p == "first_party")
+            {
+                return None;
+            }
+            let runtime = &row["runtime"];
+            let window = runtime["max_input_tokens"].as_u64().unwrap_or(0);
+            let window = if window == 0 { 200_000 } else { window };
+            let description = row["description"].as_str().unwrap_or(
+                if row["section"] == "overflow" {
+                    "Earlier release"
+                } else {
+                    ""
+                },
+            );
+            let variants = runtime["effort_levels"]
+                .as_array()
+                .map(|levels| {
+                    levels
+                        .iter()
+                        .filter_map(|l| l.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(AgentModel {
+                id: id.to_string(),
+                name: name.to_string(),
+                provider: "anthropic".to_string(),
+                provider_name: provider_name("anthropic"),
+                description: description.to_string(),
+                context: window.min(200_000),
+                max_context: window,
+                variants,
+                default_variant: String::new(),
+                cli_default: false,
+            })
+        })
+        .collect();
+    if models.is_empty() {
+        return Err("the catalog's `cc` list had no usable models".to_string());
+    }
+    Ok(models)
+}
+
+/// The Claude list used when no catalog has ever been fetched or saved (an
+/// offline first launch). It is a fallback, not the source of truth, so it is
+/// allowed to go stale; the live fetch is what keeps the picker current.
+fn claude_fallback_models() -> Vec<AgentModel> {
     // One row per family member — no alias dupes (the picker's Default row
     // already covers the CLI default). Generalised so the list never
     // overlaps itself with near-identical rows.
@@ -582,6 +825,18 @@ fn claude_models() -> Vec<AgentModel> {
     // model here is, and a wrong guess degrades rather than fails — see
     // `deny_wide_context`.
     const MODELS: &[(&str, &str, &str, u64)] = &[
+        (
+            "claude-opus-5-5",
+            "Opus 5.5",
+            "For complex work and everyday tasks",
+            1_000_000,
+        ),
+        (
+            "claude-sonnet-5-5",
+            "Sonnet 5.5",
+            "Most efficient for simpler tasks",
+            1_000_000,
+        ),
         (
             "claude-fable-5-1",
             "Fable 5.1",
@@ -634,11 +889,7 @@ fn claude_models() -> Vec<AgentModel> {
             provider_name: provider_name("anthropic"),
             description: desc.to_string(),
             context: 200_000,
-            max_context: if wide_context_denied(id) {
-                200_000
-            } else {
-                *max_context
-            },
+            max_context: *max_context,
             variants: claude_variants(),
             default_variant: String::new(),
             cli_default: false,
@@ -730,6 +981,80 @@ fn opencode_models() -> Result<Vec<AgentModel>, String> {
         );
     }
     Ok(models)
+}
+
+/// Bound on `agy models`, which asks the service for the live list.
+const AGY_MODELS_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn antigravity_models() -> Result<Vec<AgentModel>, String> {
+    let desc = AgentId::Antigravity.descriptor();
+    let program =
+        crate::agents::resolve_executable(desc).ok_or_else(|| desc.install_hint.to_string())?;
+    let output = run_with_timeout(&program, &["models"], AGY_MODELS_TIMEOUT)
+        .ok_or_else(|| "listing Antigravity models timed out".to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "agy models failed".to_string()
+        } else {
+            stderr
+        });
+    }
+    let models = parse_antigravity(&output.stdout);
+    if models.is_empty() {
+        return Err("Antigravity advertised no models (run `agy` once to sign in)".to_string());
+    }
+    Ok(models)
+}
+
+/// `agy models`: a `Fetching available models...` banner, then `id<TAB>name`.
+/// A line without a tab is the banner (or whatever it prints next), not a
+/// model.
+fn parse_antigravity(out: &[u8]) -> Vec<AgentModel> {
+    String::from_utf8_lossy(out)
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(id, name)| (id.trim(), name.trim()))
+        .filter(|(id, _)| !id.is_empty())
+        .map(|(id, name)| {
+            let provider = antigravity_provider(id);
+            let provider_display = provider_name(provider);
+            AgentModel {
+                id: id.to_string(),
+                name: if name.is_empty() {
+                    prettify(id)
+                } else {
+                    name.to_string()
+                },
+                provider: provider.to_string(),
+                description: provider_display.clone(),
+                provider_name: provider_display,
+                // `agy models` says nothing about windows and nothing local
+                // does either, so none is claimed: unknown hides the badge.
+                context: 0,
+                max_context: 0,
+                // The effort is part of the id (`…-high`, `…-low`), so there
+                // is no second axis to offer.
+                variants: Vec::new(),
+                default_variant: String::new(),
+                cli_default: false,
+            }
+        })
+        .collect()
+}
+
+/// Which vendor's model an Antigravity id names. `agy` serves Google's own
+/// models alongside Anthropic's and OpenAI's open-weight ones but labels none
+/// of them, so this is read off the id — a grouping label, not model data. A
+/// family it doesn't recognize is filed under Google.
+fn antigravity_provider(id: &str) -> &'static str {
+    if id.starts_with("claude") {
+        "anthropic"
+    } else if id.starts_with("gpt") {
+        "openai"
+    } else {
+        "google"
+    }
 }
 
 struct CommandOutput {
@@ -884,6 +1209,21 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_models_parse_ids_names_and_vendors() {
+        // Captured from `agy models`, banner and all.
+        let out = b"Fetching available models...\ngemini-3.1-pro-high\tGemini 3.1 Pro (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n";
+        let models = parse_antigravity(out);
+        assert_eq!(models.len(), 3, "the banner is not a model");
+        assert_eq!(models[0].id, "gemini-3.1-pro-high");
+        assert_eq!(models[0].name, "Gemini 3.1 Pro (High)");
+        assert_eq!(models[0].provider_name, "Google");
+        assert_eq!(models[0].context, 0, "no source for a window, so none claimed");
+        assert_eq!(models[1].provider_name, "Anthropic");
+        assert_eq!(models[2].provider_name, "OpenAI");
+        assert!(models.iter().all(|m| m.variants.is_empty()));
+    }
+
+    #[test]
     fn unparseable_detail_falls_back_to_pretty_id() {
         let models = parse_verbose(b"acme/super-model-2.0\nnot json\n");
         assert_eq!(models.len(), 1);
@@ -902,7 +1242,7 @@ mod tests {
         assert!(claude_models().iter().all(|m| m.id != "opus"));
         // Curated context windows are wired for the composer badge.
         assert!(claude_models().iter().all(|m| m.context == 200_000));
-        assert!(codex_models().iter().all(|m| m.context == 400_000));
+        assert!(codex_models().iter().all(|m| m.context == 0));
     }
 
     #[test]
@@ -922,6 +1262,91 @@ mod tests {
         // answers with `unrecognized_model`.
         assert!(!is_known_model(AgentId::Claude, "sonnet-5"));
         assert!(!is_known_model(AgentId::Claude, "fable-5.1"));
+    }
+
+    #[test]
+    fn models_released_after_this_build_are_not_stale() {
+        // Not in any compiled-in list, and must still survive a revive —
+        // the failure that left saved sessions off Opus 5.5.
+        assert!(is_known_model(AgentId::Claude, "claude-opus-9-1"));
+        assert!(is_known_model(AgentId::Claude, "claude-opus-9-1[1m]"));
+    }
+
+    const CATALOG_FIXTURE: &str = r#"{
+      "surfaces": { "cc": { "model_selector_config": [ { "id": "cc", "models": [
+        { "id": "claude-opus-5-5", "name": "Opus 5.5", "description": "For complex work",
+          "section": "main", "offered_on": ["first_party", "bedrock"],
+          "runtime": { "max_input_tokens": 1000000,
+                       "effort_levels": ["low", "medium", "high", "xhigh", "max"] } },
+        { "id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5", "section": "main",
+          "offered_on": ["first_party"], "runtime": { "max_input_tokens": 200000 } },
+        { "id": "claude-sonnet-4-6", "name": "Sonnet 4.6", "section": "overflow",
+          "runtime": { "max_input_tokens": 1000000, "effort_levels": ["low", "high"] } },
+        { "id": "claude-opus-4-1-20250805", "name": "Opus 4.1", "section": "overflow",
+          "offered_on": ["bedrock", "vertex"], "runtime": { "max_input_tokens": 200000 } }
+      ] } ] } }
+    }"#;
+
+    #[test]
+    fn the_published_catalog_becomes_picker_rows() {
+        let models = parse_claude_catalog(CATALOG_FIXTURE.as_bytes()).unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        // Catalog order kept; the cloud-only row is dropped.
+        assert_eq!(
+            ids,
+            ["claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
+        );
+        let opus = &models[0];
+        assert_eq!(opus.name, "Opus 5.5");
+        // Runs at 200K unless asked, but can be asked for the catalog's window.
+        assert_eq!((opus.context, opus.max_context), (200_000, 1_000_000));
+        assert_eq!(opus.variants, ["low", "medium", "high", "xhigh", "max"]);
+        // No effort levels advertised → no effort picker.
+        assert!(models[1].variants.is_empty());
+        assert_eq!(models[1].max_context, 200_000);
+        // A row with no blurb gets a stand-in rather than an empty line.
+        assert_eq!(models[2].description, "Earlier release");
+    }
+
+    #[test]
+    fn a_catalog_without_a_claude_code_list_is_an_error_not_an_empty_picker() {
+        assert!(parse_claude_catalog(b"{}").is_err());
+        assert!(parse_claude_catalog(b"not json").is_err());
+        let empty = r#"{"surfaces":{"cc":{"model_selector_config":[{"id":"cc","models":[]}]}}}"#;
+        assert!(parse_claude_catalog(empty.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_codex_cli_cache_gives_real_windows_and_hides_internal_rows() {
+        let cache = r#"{ "models": [
+          { "slug": "gpt-b", "display_name": "GPT-B", "description": "Second", "priority": 5,
+            "visibility": "list", "context_window": 272000, "max_context_window": 872000,
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}] },
+          { "slug": "internal-review", "display_name": "Review", "priority": 1,
+            "visibility": "hide", "context_window": 272000 },
+          { "slug": "gpt-a", "display_name": "GPT-A", "priority": 2,
+            "visibility": "list", "context_window": 272000 }
+        ] }"#;
+        let models = parse_codex_cache(cache.as_bytes()).unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-a", "gpt-b"], "priority order, hidden row dropped");
+        // The window a session gets, not the override ceiling.
+        assert_eq!((models[1].context, models[1].max_context), (272_000, 272_000));
+        assert_eq!(models[1].variants, ["low", "high"]);
+        assert_eq!(models[1].default_variant, "medium");
+        assert!(parse_codex_cache(b"{}").is_err());
+    }
+
+    #[test]
+    #[ignore = "hits the live catalog on downloads.claude.ai"]
+    fn the_live_catalog_parses() {
+        let (models, _) = fetch_claude_catalog().unwrap();
+        for model in &models {
+            println!("{} | {} | {} | {:?}", model.id, model.name, model.max_context, model.variants);
+        }
+        assert!(models.iter().all(|m| m.id.starts_with("claude-")));
+        assert!(models.iter().any(|m| m.name.starts_with("Opus")));
     }
 
     #[test]

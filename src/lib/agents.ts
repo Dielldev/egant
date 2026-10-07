@@ -7,12 +7,14 @@ export const AGENT_PROVIDER: Record<string, string> = {
   claude: "claude",
   codex: "openai",
   opencode: "opencode",
+  antigravity: "antigravity",
 };
 
 export const AGENT_ACCENT: Record<string, string> = {
   claude: "#e8835a",
   codex: "#b9b9c4",
   opencode: "#8e7cf6",
+  antigravity: "#5b8def",
 };
 
 export function fallbackName(id: string): string {
@@ -23,6 +25,8 @@ export function fallbackName(id: string): string {
       return "Codex";
     case "opencode":
       return "OpenCode";
+    case "antigravity":
+      return "Antigravity";
     default:
       return id;
   }
@@ -34,6 +38,7 @@ export const SHORT_NAMES: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  antigravity: "Antigravity",
 };
 
 const VARIANT_LABELS: Record<string, string> = {

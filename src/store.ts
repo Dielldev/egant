@@ -1086,7 +1086,7 @@ export function usesChatUi(
 ): boolean {
   const entry = catalog.find((c) => c.id === agent);
   // Unknown to the catalog but known to the harness registry — the catalog
-  // hasn't loaded yet, in practice. The three harnessed agents are the ones
+  // hasn't loaded yet, in practice. The harnessed agents are the ones
   // this can be true of, so defaulting them to chat keeps the composer from
   // flickering into CLI mode on a cold start.
   const capable = entry ? entry.chatUi : HARNESSED.includes(agent);
@@ -1095,7 +1095,7 @@ export function usesChatUi(
 
 /** Agents egant ships a chat harness for. Mirrors the catalog's `chatUi`
  * column; only used before the catalog has crossed the IPC boundary. */
-export const HARNESSED: readonly string[] = ["claude", "codex", "opencode"];
+export const HARNESSED: readonly string[] = ["claude", "codex", "opencode", "antigravity"];
 
 /** Where the workspace panel points: the active conversation's working
  * directory, else the selected project, else the first project open. The
@@ -1888,6 +1888,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       claude: true,
       codex: true,
       opencode: true,
+      antigravity: true,
     }),
     setAgentEnabled: (id, on) => {
       const enabledAgents = { ...get().enabledAgents, [id]: on };

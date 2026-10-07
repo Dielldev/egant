@@ -712,10 +712,10 @@ export function describeAlwaysAllow(
   pending: PendingPermission,
   agent: string,
 ): { label: string; detail: string } | null {
-  if (agent === "opencode") {
+  if (agent === "opencode" || agent === "antigravity") {
     return {
       label: "Always allow",
-      detail: "opencode can't save a rule: this stops it asking for anything in this chat (Bypass permissions).",
+      detail: `${agent === "opencode" ? "opencode" : "Antigravity"} can't save a rule: this stops it asking for anything in this chat (Bypass permissions).`,
     };
   }
   const update = alwaysAllowUpdate(pending.suggestions);

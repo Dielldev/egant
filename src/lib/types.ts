@@ -387,7 +387,7 @@ export interface SessionInfo {
    * terminal running the agent's own CLI and there is no transcript at all. */
   kind: SessionKind;
   /** Agent running the session. A chat session names one of the harnesses
-   * (`claude` | `codex` | `opencode`); a CLI session names any agent in the
+   * (`claude` | `codex` | `opencode` | `antigravity`); a CLI session names any agent in the
    * install catalog (`pi`, `goose`, …). */
   agent: string;
   /** Model the session was started on, or last switched to, if any. */

@@ -17,8 +17,9 @@
 
 use async_channel::Sender;
 use egant_harness::{
-    AgentId, ClaudeCode, ClaudeOptions, CodexExec, CodexOptions, Harness, HarnessEvent,
-    OpencodeOptions, OpencodeRun, PermissionDecision, PermissionMode, Transcript, TranscriptEntry,
+    AgentId, AntigravityOptions, AntigravityRun, ClaudeCode, ClaudeOptions, CodexExec,
+    CodexOptions, Harness, HarnessEvent, OpencodeOptions, OpencodeRun, PermissionDecision,
+    PermissionMode, Transcript, TranscriptEntry,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -704,7 +705,7 @@ fn wire_harness(app: &AppHandle, id: u64, harness: Box<dyn Harness>) -> Sender<S
                         patterns,
                         input,
                         ..
-                    } if session.meta.agent != AgentId::Opencode
+                    } if !is_turn_based(session.meta.agent)
                         && !egant_harness::is_interactive_tool(tool_name)
                         && matches_allowlist(patterns, tool_name, &session.allowed_patterns) =>
                     {
@@ -1551,7 +1552,7 @@ fn next_to_flush(
     if !forced && (!clean_end || !session.transcript.pending_permissions.is_empty()) {
         return None;
     }
-    if forced && session.meta.agent != AgentId::Opencode {
+    if forced && !is_turn_based(session.meta.agent) {
         // An interrupted turn has nobody left to answer its prompts.
         session.transcript.clear_permissions();
     }
@@ -1806,7 +1807,7 @@ pub fn answer_permission(
         return Ok(None); // already answered (double-click, stale snapshot)
     };
     let pending = session.transcript.pending_permissions[position].clone();
-    let is_opencode = session.meta.agent == AgentId::Opencode;
+    let turn_based = is_turn_based(session.meta.agent);
 
     match (&answer, pending.tool_name.as_str()) {
         (PermissionAnswer::Deny { .. }, _)
@@ -1830,7 +1831,7 @@ pub fn answer_permission(
     match answer {
         PermissionAnswer::Deny { feedback, stop } => {
             session.transcript.resolve_permission(request_id);
-            if !is_opencode {
+            if !turn_based {
                 dispatch(
                     session,
                     SessionCommand::Permission {
@@ -1855,7 +1856,7 @@ pub fn answer_permission(
             Ok(None)
         }
         PermissionAnswer::AllowOnce => {
-            if is_opencode {
+            if turn_based {
                 session.transcript.clear_permissions();
                 dispatch(session, SessionCommand::ApproveNextTurn);
                 retry_last_turn(session);
@@ -1877,7 +1878,7 @@ pub fn answer_permission(
             state.persist_session(id);
             Ok(None)
         }
-        PermissionAnswer::AllowAlways if is_opencode => {
+        PermissionAnswer::AllowAlways if turn_based => {
             // `--auto` is all opencode has, so "always" can only mean it stops
             // asking in this chat — which the chip then says.
             remember_patterns(session, &pending);
@@ -2052,6 +2053,15 @@ pub fn matches_allowlist(request_patterns: &[String], tool_name: &str, allowed: 
         }
     }
     false
+}
+
+/// Whether an agent's permission denials arrive after the fact rather than as
+/// a live question: opencode and Antigravity both run one process per turn, and
+/// a tool their print mode refuses has already failed by the time the request
+/// shows. Answering one means retrying the turn approved — never replying to a
+/// channel that no longer exists.
+fn is_turn_based(agent: AgentId) -> bool {
+    matches!(agent, AgentId::Opencode | AgentId::Antigravity)
 }
 
 /// Re-sends the last user turn so a turn-based wire (opencode) retries with
@@ -2382,11 +2392,21 @@ fn start_harness(
         })
         .map(|harness| Box::new(harness) as Box<dyn Harness>)
         .map_err(|error| error.to_string()),
+        AgentId::Antigravity => AntigravityRun::spawn(AntigravityOptions {
+            program: resolve_cli(agent)?,
+            cwd,
+            project_name: Some(project_name),
+            model,
+            conversation: resume,
+            permission_mode,
+        })
+        .map(|harness| Box::new(harness) as Box<dyn Harness>)
+        .map_err(|error| error.to_string()),
         other => {
             let descriptor = other.descriptor();
             Err(if resolve_cli(other).is_ok() {
                 format!(
-                    "{} sessions aren't drivable yet — Claude, Codex and OpenCode are.",
+                    "{} sessions aren't drivable yet — Claude, Codex, OpenCode and Antigravity are.",
                     descriptor.name
                 )
             } else {
@@ -2889,6 +2909,27 @@ mod tests {
             pending(
                 "Read",
                 serde_json::json!({"filePath": "/tmp/x"}),
+                Vec::new(),
+            ),
+        );
+        let changed =
+            answer_permission(&mut state, 1, "r1", PermissionAnswer::AllowAlways).unwrap();
+        assert_eq!(changed, Some("bypassPermissions"));
+        assert_eq!(
+            state.sessions[&1].meta.permission_mode,
+            egant_harness::PermissionMode::BypassPermissions
+        );
+    }
+
+    #[test]
+    fn antigravity_always_allow_also_means_stop_asking() {
+        // Its print mode has no rules to save either: "always" is
+        // `--dangerously-skip-permissions` from here on.
+        let (mut state, _rx) = waiting_on(
+            egant_harness::AgentId::Antigravity,
+            pending(
+                "Bash",
+                serde_json::json!({"command": "echo hi"}),
                 Vec::new(),
             ),
         );
