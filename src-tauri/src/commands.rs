@@ -976,9 +976,8 @@ async fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
     tauri::async_runtime::spawn_blocking(move || egant_harness::agents::verify_agent(id))
         .await
         .map_err(|error| error.to_string())
-        .map(|status| {
+        .inspect(|status| {
             log::info!("check_agent_login {agent} connected={}", status.connected);
-            status
         })
 }
 

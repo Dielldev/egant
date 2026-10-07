@@ -189,12 +189,9 @@ pub fn provider_name(provider: &str) -> String {
                     name.push(' ');
                 }
                 let mut chars = word.chars();
-                match chars.next() {
-                    Some(first) => {
-                        name.push(first.to_ascii_uppercase());
-                        name.push_str(chars.as_str());
-                    }
-                    None => {}
+                if let Some(first) = chars.next() {
+                    name.push(first.to_ascii_uppercase());
+                    name.push_str(chars.as_str());
                 }
             }
             if name.is_empty() {
@@ -216,17 +213,9 @@ fn prettify(model_id: &str) -> String {
             name.push(' ');
         }
         let mut chars = word.chars();
-        match chars.next() {
-            Some(first) => {
-                if first.is_ascii_alphabetic() {
-                    name.push(first.to_ascii_uppercase());
-                    name.push_str(chars.as_str());
-                } else {
-                    name.push(first);
-                    name.push_str(chars.as_str());
-                }
-            }
-            None => {}
+        if let Some(first) = chars.next() {
+            name.push(first.to_ascii_uppercase());
+            name.push_str(chars.as_str());
         }
     }
     name
@@ -755,13 +744,14 @@ fn parse_claude_catalog(body: &[u8]) -> Result<Vec<AgentModel>, String> {
             let runtime = &row["runtime"];
             let window = runtime["max_input_tokens"].as_u64().unwrap_or(0);
             let window = if window == 0 { 200_000 } else { window };
-            let description = row["description"].as_str().unwrap_or(
-                if row["section"] == "overflow" {
-                    "Earlier release"
-                } else {
-                    ""
-                },
-            );
+            let description =
+                row["description"]
+                    .as_str()
+                    .unwrap_or(if row["section"] == "overflow" {
+                        "Earlier release"
+                    } else {
+                        ""
+                    });
             let variants = runtime["effort_levels"]
                 .as_array()
                 .map(|levels| {
@@ -1217,7 +1207,10 @@ mod tests {
         assert_eq!(models[0].id, "gemini-3.1-pro-high");
         assert_eq!(models[0].name, "Gemini 3.1 Pro (High)");
         assert_eq!(models[0].provider_name, "Google");
-        assert_eq!(models[0].context, 0, "no source for a window, so none claimed");
+        assert_eq!(
+            models[0].context, 0,
+            "no source for a window, so none claimed"
+        );
         assert_eq!(models[1].provider_name, "Anthropic");
         assert_eq!(models[2].provider_name, "OpenAI");
         assert!(models.iter().all(|m| m.variants.is_empty()));
@@ -1294,7 +1287,11 @@ mod tests {
         // Catalog order kept; the cloud-only row is dropped.
         assert_eq!(
             ids,
-            ["claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
+            [
+                "claude-opus-5-5",
+                "claude-haiku-4-5-20251001",
+                "claude-sonnet-4-6"
+            ]
         );
         let opus = &models[0];
         assert_eq!(opus.name, "Opus 5.5");
@@ -1330,9 +1327,16 @@ mod tests {
         ] }"#;
         let models = parse_codex_cache(cache.as_bytes()).unwrap();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["gpt-a", "gpt-b"], "priority order, hidden row dropped");
+        assert_eq!(
+            ids,
+            ["gpt-a", "gpt-b"],
+            "priority order, hidden row dropped"
+        );
         // The window a session gets, not the override ceiling.
-        assert_eq!((models[1].context, models[1].max_context), (272_000, 272_000));
+        assert_eq!(
+            (models[1].context, models[1].max_context),
+            (272_000, 272_000)
+        );
         assert_eq!(models[1].variants, ["low", "high"]);
         assert_eq!(models[1].default_variant, "medium");
         assert!(parse_codex_cache(b"{}").is_err());
@@ -1343,7 +1347,10 @@ mod tests {
     fn the_live_catalog_parses() {
         let (models, _) = fetch_claude_catalog().unwrap();
         for model in &models {
-            println!("{} | {} | {} | {:?}", model.id, model.name, model.max_context, model.variants);
+            println!(
+                "{} | {} | {} | {:?}",
+                model.id, model.name, model.max_context, model.variants
+            );
         }
         assert!(models.iter().all(|m| m.id.starts_with("claude-")));
         assert!(models.iter().any(|m| m.name.starts_with("Opus")));

@@ -1288,6 +1288,7 @@ mod tests {
 
     /// The whole harness through the runner, against a stand-in CLI that
     /// answers the way `agy` does — plus, `#[ignore]`d, against the real one.
+    #[cfg(unix)]
     mod live {
         use super::*;
         use std::os::unix::fs::PermissionsExt;

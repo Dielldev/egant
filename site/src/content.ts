@@ -12,6 +12,13 @@ import runShot from "./assets/shots/run-website.jpg";
 
 export const REPO = "https://github.com/Dielldev/egant";
 
+/** The release asset keeps a version-less name so this link never goes stale. */
+export const DOWNLOAD = {
+  url: `${REPO}/releases/latest/download/egant-macos-arm64.dmg`,
+  label: "Download for macOS",
+  detail: "Apple Silicon · 10 MB",
+};
+
 export type Agent = { name: string; provider: string; kind: "chat" | "cli" };
 
 /** Chat agents get egant's native transcript; CLI agents run in a real PTY. */

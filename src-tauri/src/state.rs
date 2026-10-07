@@ -464,10 +464,7 @@ pub(crate) fn restore_session(
     // pruned) leaves a directory that looks fine to `is_dir` and is no
     // longer part of the repository.
     let expected_worktree = persisted.meta.worktree.is_some();
-    let worktree = persisted
-        .meta
-        .worktree
-        .filter(|worktree| crate::worktrees::is_live(worktree));
+    let worktree = persisted.meta.worktree.filter(crate::worktrees::is_live);
     if expected_worktree && worktree.is_none() {
         log::info!(
             "session {} lost its worktree — reopening in {}",
