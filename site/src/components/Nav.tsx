@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { REPO } from "../content";
-import { GithubIcon } from "./GithubIcon";
+import { Download } from "lucide-react";
+import { DOWNLOAD } from "../content";
 import { Mark } from "./Mark";
 
 export function Nav() {
@@ -23,11 +23,11 @@ export function Nav() {
         <a href="#tour">Tour</a>
         <a href="#themes">Themes</a>
         <a href="#phone">Phone</a>
-        <a href="#start">Quickstart</a>
+        <a href="#start">Build it</a>
       </nav>
-      <a className="btn btn-primary btn-sm" href={REPO}>
-        <GithubIcon />
-        GitHub
+      <a className="btn btn-primary btn-sm" href={DOWNLOAD.url}>
+        <Download size={14} />
+        Download
       </a>
     </header>
   );

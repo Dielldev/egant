@@ -39,11 +39,14 @@ export function Quickstart() {
   return (
     <section className="section" id="start">
       <Reveal className="section-head">
-        <p className="eyebrow">Quickstart</p>
+        <p className="eyebrow">Build from source</p>
         <h2>
           Four commands. <span className="dim">That's it.</span>
         </h2>
-        <p className="lead">Rust 1.85+, Node 20+, and at least one agent CLI on your PATH.</p>
+        <p className="lead">
+          Prefer to build it yourself? You'll need Rust 1.85+, Node 20+, and at least one agent CLI
+          on your PATH.
+        </p>
       </Reveal>
       <Reveal className="terminal glass">
         <div className="terminal-bar">

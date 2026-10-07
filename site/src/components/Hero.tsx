@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { ArrowRight } from "lucide-react";
-import { HERO_SHOT, REPO } from "../content";
+import { Download } from "lucide-react";
+import { DOWNLOAD, HERO_SHOT, REPO } from "../content";
 import { prefersReducedMotion } from "../useReveal";
 import { GithubIcon } from "./GithubIcon";
 import { Mark } from "./Mark";
@@ -35,7 +35,7 @@ export function Hero() {
   return (
     <section className="hero" id="top">
       <div className="hero-mark intro" style={{ animationDelay: "0ms" }}>
-        <Mark width={72} wave />
+        <Mark width={52} wave />
       </div>
       <h1 className="hero-title">
         {HEADLINE.map((word, i) => (
@@ -47,17 +47,21 @@ export function Hero() {
         ))}
       </h1>
       <p className="hero-sub intro" style={{ animationDelay: "650ms" }}>
-        A native desktop app for the agent CLIs you already use — with worktrees, diffs, terminals
-        and git right beside the chat. Styled the way you like it. Local, no account, no proxy.
+        A native desktop app for the agent CLIs you already use — worktrees, diffs, terminals and
+        git beside the chat. Local, no account, no proxy.
       </p>
       <div className="hero-cta intro" style={{ animationDelay: "800ms" }}>
-        <a className="btn btn-primary" href="#start">
-          Get started <ArrowRight size={15} />
+        <a className="btn btn-primary" href={DOWNLOAD.url}>
+          <Download size={15} /> {DOWNLOAD.label}
         </a>
         <a className="btn btn-glass" href={REPO}>
           <GithubIcon /> View source
         </a>
       </div>
+
+      <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
+        {DOWNLOAD.detail} · first launch: right-click egant, then Open
+      </p>
 
       <div className="hero-stage intro" style={{ animationDelay: "1000ms" }}>
         <div className="hero-frame glass" ref={frame}>

@@ -1,5 +1,5 @@
-import { ArrowRight } from "lucide-react";
-import { REPO } from "../content";
+import { Download } from "lucide-react";
+import { DOWNLOAD, REPO } from "../content";
 import { Mark } from "./Mark";
 import { Reveal } from "./Reveal";
 
@@ -14,8 +14,8 @@ export function Footer() {
             <br />
             <span className="dim">Start running agents.</span>
           </h2>
-          <a className="btn btn-primary" href={REPO}>
-            Get egant on GitHub <ArrowRight size={15} />
+          <a className="btn btn-primary" href={DOWNLOAD.url}>
+            <Download size={15} /> {DOWNLOAD.label}
           </a>
         </Reveal>
       </section>
