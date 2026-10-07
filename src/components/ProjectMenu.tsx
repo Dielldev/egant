@@ -30,6 +30,7 @@ export function ProjectMenu({
   const openFolderDialog = useEgant((s) => s.openFolderDialog);
   const sidebarProject = useEgant((s) => s.sidebarProject);
   const setSidebarProject = useEgant((s) => s.setSidebarProject);
+  const sidebarWidth = useEgant((s) => s.sidebarWidth);
 
   const projects = snapshot?.projects ?? [];
   const header = variant === "header";
@@ -113,8 +114,14 @@ export function ProjectMenu({
         <>
           <div className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} />
           <div
-            style={{ transformOrigin: openUpward ? "bottom left" : "top left" }}
-            className={`menu absolute z-50 flex max-h-[min(420px,65vh)] w-[264px] flex-col overflow-hidden rounded-xl text-[13px] ${
+            style={{
+              transformOrigin: openUpward ? "bottom left" : "top left",
+              // The sidebar clips anything wider than itself, which cut off
+              // the check marks and machine names; the header's menu spans
+              // the column (8px gutters, as the trigger row has) instead.
+              width: header ? Math.min(264, sidebarWidth - 16) : 264,
+            }}
+            className={`menu absolute z-50 flex max-h-[min(420px,65vh)] flex-col overflow-hidden rounded-xl text-[13px] ${
               openUpward ? "menu-pop-up bottom-full mb-1.5" : "menu-pop top-full mt-1.5"
             } ${header ? "left-0" : "right-0"}`}
           >
