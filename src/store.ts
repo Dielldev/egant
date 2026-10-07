@@ -1200,8 +1200,14 @@ export const useEgant = create<EgantStore>()((set, get) => {
     const taken = new Set(existing.map((tab) => tab.key));
     const merged = [...existing, ...orphans.filter((tab) => !taken.has(tab.key))];
 
-    const { [-1]: _dropped, ...rest } = stageTabs;
-    const { [-1]: orphanShowing, ...restShowing } = stageTab;
+    // Copy-and-delete rather than `{ [-1]: _, ...rest }`: Vite 8's minifier
+    // folds that key to a literal and emits `{-1:a,...b}`, which is a syntax
+    // error and leaves the release build blank.
+    const rest = { ...stageTabs };
+    delete rest[-1];
+    const orphanShowing = stageTab[-1];
+    const restShowing = { ...stageTab };
+    delete restShowing[-1];
     set({
       stageTabs: { ...rest, [activeSession]: merged },
       stageTab: {

@@ -829,7 +829,6 @@ mod tests {
     #[cfg(unix)]
     mod live {
         use super::*;
-        use crate::Harness as _;
         use std::os::unix::fs::PermissionsExt;
 
         #[test]

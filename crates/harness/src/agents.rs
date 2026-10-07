@@ -859,17 +859,6 @@ fn keychain_has(_service: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn descriptor_for(cli: &'static str) -> AgentDescriptor {
-        AgentDescriptor {
-            id: AgentId::Pi,
-            name: "Test",
-            cli,
-            env_override: "EGANT_TEST_EXECUTABLE",
-            extra_paths: &[],
-            install_hint: "test",
-        }
-    }
-
     #[test]
     fn agent_ids_round_trip_through_strings() {
         for id in AgentId::all() {
