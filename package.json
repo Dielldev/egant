@@ -9,6 +9,8 @@
     "build": "tsc --noEmit && vite build && npm run build:mobile",
     "build:mobile": "tsc --noEmit -p mobile/tsconfig.json && vite build --config mobile/vite.config.ts",
     "dev:mobile": "vite --config mobile/vite.config.ts",
+    "dev:site": "vite --config site/vite.config.ts",
+    "build:site": "tsc --noEmit -p site/tsconfig.json && vite build --config site/vite.config.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev:1421": "VITE_PORT=1421 tauri dev --config '{\"build\":{\"devUrl\":\"http://localhost:1421\",\"beforeDevCommand\":\"npm run dev:1421\"}}'"
