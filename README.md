@@ -16,8 +16,6 @@ Coding agents live in terminals. That works, until you have five of them going a
 
 egant is a desktop app (Tauri: Rust + React) that wraps the agent CLIs you already have installed. You keep your own logins, your own `git`, your own `gh`. egant adds the workspace around them.
 
-There is no egant account and no egant server. Everything runs on your machine.
-
 ## What you get
 
 <table>
@@ -99,6 +97,29 @@ Chat sessions get the full egant experience. CLI sessions give you the agent as-
 </p>
 
 The desktop app serves a small web client you can open on your phone, over your Tailscale network. Pair it from Settings → Devices with a QR code. Start a chat, switch models, and follow a running session while you are away from your desk. The agents keep running on your computer; the phone is just another window onto it.
+
+### Connect your phone to your computer
+
+Do this on the computer that runs egant:
+
+1. **Install [Tailscale](https://tailscale.com/download) and sign in.** It's the only thing that carries your phone's connection to egant; egant itself only ever listens on `127.0.0.1`.
+2. **Turn on HTTPS certificates** for your tailnet in Tailscale's [DNS settings](https://login.tailscale.com/admin/dns), if they aren't already. egant links you there if it needs them.
+3. Open **Settings → Devices** and click **Connect device**. This turns phone access on and sets up `tailscale serve`. If the public link (Tailscale Funnel) isn't open yet, the dialog offers **Open public link** — that's what lets the phone reach you from any network.
+4. **Scan the QR code** with your phone's camera. If you can't scan, type the code shown under it instead. A code works once and expires after 5 minutes — hit **New code** for another.
+
+The phone then shows up under **Settings → Devices** and remembers your computer. **Try it on this Mac** opens the same app in your computer's browser, paired with that code, if you want to look before picking up the phone.
+
+Phone access is off until you connect a device, and **Allow phone connections** in the same panel turns it off again. To disconnect a phone, revoke it from the Devices list.
+
+### What the phone can do
+
+- See your sessions, send messages, stop an agent and answer its prompts
+- Start a chat in a project the computer already has open, and switch a session's model, effort or permission mode
+- Use the wallpaper you picked on the computer
+
+It can't browse files, open a terminal, run git or name a path. Anyone can open the public address, but only a phone you've paired gets in.
+
+There is no egant account and no egant server. Everything runs on your machine.
 
 ## Quickstart
 
