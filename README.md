@@ -123,7 +123,7 @@ There is no egant account and no egant server. Everything runs on your machine.
 
 ## Quickstart
 
-You need Rust 1.85+, Node 20+, and at least one agent CLI on your `PATH` (for example `claude`, then `claude login`). Install `gh` if you want the Pull Requests section.
+You need Rust 1.88+, Node 20+, and at least one agent CLI on your `PATH` (for example `claude`, then `claude login`). Install `gh` if you want the Pull Requests section.
 
 ```bash
 git clone https://github.com/Dielldev/egant.git
@@ -227,4 +227,4 @@ Settings, including the wallpaper and its dim level, live in `~/Library/Applicat
 
 ## License
 
-MIT. See `Cargo.toml`.
+MIT. See [LICENSE](LICENSE).

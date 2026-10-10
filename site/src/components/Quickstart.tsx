@@ -44,7 +44,7 @@ export function Quickstart() {
           Four commands. <span className="dim">That's it.</span>
         </h2>
         <p className="lead">
-          Prefer to build it yourself? You'll need Rust 1.85+, Node 20+, and at least one agent CLI
+          Prefer to build it yourself? You'll need Rust 1.88+, Node 20+, and at least one agent CLI
           on your PATH.
         </p>
       </Reveal>
