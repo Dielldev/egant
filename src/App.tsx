@@ -12,6 +12,7 @@ import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
 import { useColumnLayout } from "./lib/layout";
 import { log } from "./lib/logger";
+import { checkForUpdates } from "./lib/updater";
 import { LibraryPage } from "./components/LibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
@@ -80,6 +81,18 @@ export default function App() {
     return () => {
       cancelled = true;
       unlisten?.();
+    };
+  }, []);
+
+  // Look for a newer release shortly after launch and every few hours after,
+  // so a window left open for days still finds out. Quiet unless there is one:
+  // the sidebar's Update button is the whole announcement.
+  useEffect(() => {
+    const first = setTimeout(() => void checkForUpdates(), 20_000);
+    const every = setInterval(() => void checkForUpdates(), 4 * 60 * 60 * 1000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
     };
   }, []);
 
@@ -159,6 +172,9 @@ export default function App() {
         break;
       case "shortcuts":
         store.openSettings("shortcuts");
+        break;
+      case "check-updates":
+        void checkForUpdates(true);
         break;
     }
   };

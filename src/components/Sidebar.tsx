@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArrowDownToLine,
   Bot,
   Calendar,
   Check,
@@ -26,6 +27,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/api";
+import { installUpdate, useUpdater } from "../lib/updater";
 import { shouldOpenUpward } from "../lib/popover";
 import { isMac, modShortcut } from "../lib/platform";
 import type { MobileDevice, SessionInfo } from "../lib/types";
@@ -542,17 +544,20 @@ export function Sidebar() {
             onClick={() => (libraryOpen ? closeLibrary() : openLibrary())}
           />
         </div>
-        <button
-          type="button"
-          title={`Open settings · ${modShortcut(",")}`}
-          onClick={() => openSettings()}
-          className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-[var(--hover)]"
-        >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--bubble)] text-[11px] font-medium text-[var(--ink)]">
-            L
-          </span>
-          <span className="truncate text-[13px] text-[var(--muted)]">Local only</span>
-        </button>
+        <div className="flex w-full items-center gap-1">
+          <button
+            type="button"
+            title={`Open settings · ${modShortcut(",")}`}
+            onClick={() => openSettings()}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-[var(--hover)]"
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--bubble)] text-[11px] font-medium text-[var(--ink)]">
+              L
+            </span>
+            <span className="truncate text-[13px] text-[var(--muted)]">Local only</span>
+          </button>
+          <UpdateButton />
+        </div>
       </div>
 
       {/* Drag-to-resize. A hair-thin hit target grown by its own padding so
@@ -975,5 +980,37 @@ function RowMenu({
       </div>
     </div>,
     document.body,
+  );
+}
+
+/** "Update", beside Settings, once a newer release is out. Absent otherwise —
+ * a permanent button for something that is usually not true is clutter. */
+function UpdateButton() {
+  const status = useUpdater((s) => s.status);
+  const version = useUpdater((s) => s.version);
+  const progress = useUpdater((s) => s.progress);
+  if (status !== "available" && status !== "downloading" && status !== "installed") return null;
+  const busy = status !== "available";
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      title={
+        busy
+          ? "Installing — egant restarts when it is done"
+          : `Install egant ${version ?? ""} and restart`
+      }
+      onClick={() => void installUpdate()}
+      className="mr-1 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-[var(--accent)] px-2.5 py-1 text-[12px] font-medium text-white hover:opacity-90 disabled:cursor-default disabled:opacity-70"
+    >
+      <ArrowDownToLine size={12} strokeWidth={2.2} className="shrink-0" />
+      {status === "available"
+        ? "Update"
+        : status === "installed"
+          ? "Restarting…"
+          : progress != null
+            ? `${Math.round(progress * 100)}%`
+            : "Updating…"}
+    </button>
   );
 }

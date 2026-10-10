@@ -21,6 +21,8 @@ egant-vcs.workspace = true
 tauri = { workspace = true, features = ["macos-private-api", "unstable"] }
 tauri-plugin-dialog.workspace = true
 tauri-plugin-notification.workspace = true
+tauri-plugin-updater.workspace = true
+tauri-plugin-process.workspace = true
 
 anyhow.workspace = true
 async-channel.workspace = true

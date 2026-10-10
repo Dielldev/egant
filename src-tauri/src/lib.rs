@@ -42,6 +42,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Mutex::new(AppState::new()))
         // Terminals live beside the window state rather than inside it: the
         // reader thread behind every terminal tab must never wait on the lock

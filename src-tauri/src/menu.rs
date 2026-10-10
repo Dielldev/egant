@@ -33,6 +33,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     )?;
     let library = item("library", "Library", Some("CmdOrCtrl+Shift+L"))?;
     let shortcuts = item("shortcuts", "Keyboard Shortcuts", None)?;
+    let check_updates = item("check-updates", "Check for Updates…", None)?;
 
     // Only macOS keeps a menu named for the app; there Settings lives in it.
     // Elsewhere the first menu is File, and Settings goes at its foot.
@@ -71,13 +72,19 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .maximize()
         .build()?;
 
-    let help = SubmenuBuilder::new(app, "Help").item(&shortcuts).build()?;
+    let mut help = SubmenuBuilder::new(app, "Help").item(&shortcuts);
+    // macOS keeps this in the app menu; elsewhere Help is where it lives.
+    if !cfg!(target_os = "macos") {
+        help = help.item(&check_updates);
+    }
+    let help = help.build()?;
 
     let mut menu = MenuBuilder::new(app);
     if cfg!(target_os = "macos") {
         let name = app.package_info().name.clone();
         let app_menu = SubmenuBuilder::new(app, name)
             .about(None)
+            .item(&check_updates)
             .separator()
             .item(&settings)
             .separator()

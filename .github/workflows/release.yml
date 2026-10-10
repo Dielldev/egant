@@ -1,0 +1,58 @@
+name: Release
+
+# Pushing a tag like v0.1.2 builds the macOS app and publishes a release that
+# running copies of egant update from. The same thing scripts/release.sh does
+# by hand. Needs the repository secret TAURI_SIGNING_PRIVATE_KEY (the contents
+# of ~/.tauri/egant-updater.key) — see the README, "Releasing".
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS (Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: egant ${{ github.ref_name }}
+          releaseBody: See the commit history for what changed.
+          releaseDraft: false
+          prerelease: false
+          args: --target aarch64-apple-darwin --bundles app,dmg
+
+      # The website's download button links a version-less name.
+      - name: Add the version-less DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG="$(find target -name '*.dmg' | head -1)"
+          cp "$DMG" egant-macos-arm64.dmg
+          gh release upload "${{ github.ref_name }}" egant-macos-arm64.dmg --clobber

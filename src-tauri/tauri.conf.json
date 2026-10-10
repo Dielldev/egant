@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "egant",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.egant.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -36,6 +36,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "category": "DeveloperTool"
+    "category": "DeveloperTool",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk3MkVFMEFCMTgwNUI0OTkKUldTWnRBVVlxK0F1bDMyV3NzcXNXYnhLUDlxZGVwMXE3RDlVZDNpTjdJVnNUWHMvM0VBRkdPV2UK",
+      "endpoints": [
+        "https://github.com/Dielldev/egant/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

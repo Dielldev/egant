@@ -217,6 +217,14 @@ mobile/      the phone client
 
 Settings, including the wallpaper and its dim level, live in `~/Library/Application Support/egant/settings.json` on macOS and `~/.config/egant/settings.json` on Linux. Worktrees are created under `~/.egant/worktrees/`.
 
+## Updates
+
+egant checks GitHub for a newer release a little after it starts and every few hours after. When there is one, an **Update** button appears beside Settings in the sidebar: it downloads the new version, checks its signature, replaces the app and restarts. **egant → Check for Updates…** asks right now. Copies installed before updates existed (v0.1.0) have to be downloaded once more; from then on they update themselves.
+
+### Releasing
+
+Bump the version in `src-tauri/tauri.conf.json`, `Cargo.toml` and `package.json`, commit and push to `main`, then either run `scripts/release.sh` (builds on your Mac and publishes the release) or push a tag (`git tag v0.1.2 && git push egant-old v0.1.2`) and let the *Release* workflow do it. Both need the updater signing key: `scripts/release.sh` reads `~/.tauri/egant-updater.key`, the workflow reads the repository secret `TAURI_SIGNING_PRIVATE_KEY` (`gh secret set TAURI_SIGNING_PRIVATE_KEY -R Dielldev/egant < ~/.tauri/egant-updater.key`). Keep a backup of the key: without it, installed copies can't be updated.
+
 ## Troubleshooting
 
 - **"Could not start the agent":** the agent CLI is not on `PATH`.

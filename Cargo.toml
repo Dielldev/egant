@@ -16,7 +16,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -42,6 +42,10 @@ tauri-build = "2"
 tauri-plugin-dialog = "2"
 # Desktop banners for session events that land while egant is in the background.
 tauri-plugin-notification = "2"
+# In-app updates: egant checks the latest GitHub release and installs it.
+tauri-plugin-updater = "2"
+# Relaunch after an update has been installed.
+tauri-plugin-process = "2"
 base64 = "0.22"
 # Real PTYs for the workspace panel's terminal tabs.
 portable-pty = "0.9"
