@@ -60,7 +60,7 @@ export function Hero() {
       </div>
 
       <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
-        {DOWNLOAD.detail} · first launch: right-click egant, then Open
+        {DOWNLOAD.detail} · first launch: System Settings → Privacy &amp; Security → Open Anyway
       </p>
 
       <div className="hero-stage intro" style={{ animationDelay: "1000ms" }}>

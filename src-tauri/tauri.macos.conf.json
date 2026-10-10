@@ -17,6 +17,7 @@
   },
   "bundle": {
     "macOS": {
+      "signingIdentity": "-",
       "dmg": {
         "background": "dmg/background.png",
         "windowSize": {
