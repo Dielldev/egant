@@ -1,4 +1,5 @@
 import { ChevronLeft, ChevronRight, PanelLeft, Plus } from "lucide-react";
+import { useColumnLayout } from "../lib/layout";
 import { modShortcut, windowBarPadClass } from "../lib/platform";
 import { sessionsInProject, useEgant } from "../store";
 
@@ -17,9 +18,13 @@ export function WindowBar() {
   const sidebarProject = useEgant((s) => s.sidebarProject);
   const sessions = sessionsInProject(snapshot, sidebarProject);
   const index = sessions.findIndex((s) => s.id === snapshot?.activeSession);
-  const canBack = index > 0;
+  // From the new-conversation screen the conversation you left is one step
+  // back, not the one before it in the list.
+  const startingNew = useEgant((s) => s.startingNewSession) && snapshot?.activeSession != null;
+  const canBack = startingNew || index > 0;
   const canForward = index >= 0 && index < sessions.length - 1;
-  const open = snapshot?.sidebarVisible ?? true;
+  const { sidebarShown: open, sidebarYielded } = useColumnLayout();
+  const togglePanel = useEgant((s) => s.togglePanel);
 
   return (
     <div
@@ -37,8 +42,14 @@ export function WindowBar() {
         style={{ borderRadius: "999px" }}
       >
       <Button
-        label={`Toggle sidebar · ${modShortcut("B")}`}
-        onClick={() => void toggleSidebar()}
+        label={
+          sidebarYielded
+            ? "Sidebar hidden to make room for the panel — closes the panel"
+            : `Toggle sidebar · ${modShortcut("B")}`
+        }
+        // There is no room for both columns, so showing the sidebar means
+        // closing the one that displaced it.
+        onClick={() => (sidebarYielded ? togglePanel() : void toggleSidebar())}
         active={open}
       >
         <PanelLeft size={15} strokeWidth={2} />

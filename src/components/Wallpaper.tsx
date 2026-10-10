@@ -56,17 +56,22 @@ export function Wallpaper({
       <div className={`bg-effect bg-effect-${bgEffect}`} />
     );
 
+  // No picture to show: the same glass ground the conversation has, rather
+  // than a solid black pane beside a translucent sidebar. (Only Opaque, and
+  // Linux with no native blur, get a flat fill — as in the conversation.)
   if (!wallpaperUrl) {
     return (
-      <div className={`absolute inset-0 bg-[var(--stage)] ${exiting ? "dissolve-out" : ""}`}>
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "linear-gradient(to bottom, transparent 0%, transparent 30%, var(--stage) 60%, var(--stage) 100%)",
-          }}
-        />
-      </div>
+      <div
+        className={`absolute inset-0 ${exiting ? "dissolve-out" : ""}`}
+        style={{
+          background:
+            glass === "opaque" || isLinux()
+              ? "var(--stage)"
+              : glass === "clear"
+                ? "transparent"
+                : "var(--stage-tint)",
+        }}
+      />
     );
   }
 

@@ -690,7 +690,10 @@ export function Composer({
           </div>
         </div>
       </div>
-      <div className="flex min-w-0 items-center justify-between gap-3 px-4 pt-2.5 text-[13px] text-[var(--muted)] select-none">
+      <div
+        data-composer-footer
+        className="flex min-w-0 items-center justify-between gap-3 px-4 pt-2.5 text-[13px] text-[var(--muted)] select-none"
+      >
         <div className="flex min-w-0 items-center gap-4">
           <span
             title={

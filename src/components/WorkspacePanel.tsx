@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useColumnLayout } from "../lib/layout";
 import { modShortcut } from "../lib/platform";
 import type { PanelTabKind } from "../store";
 import { useEgant, workspaceRoot } from "../store";
@@ -27,7 +28,7 @@ import { disposeTerminalsExcept, TerminalPane } from "./TerminalPane";
  * conversation: a shell running a build should not disappear because the
  * sidebar moved to another thread. */
 export function WorkspacePanel() {
-  const panelWidth = useEgant((s) => s.panelWidth);
+  const { panelWidth, sidebarShown, windowWidth } = useColumnLayout();
   const setPanelWidth = useEgant((s) => s.setPanelWidth);
   const tabs = useEgant((s) => s.panelTabs);
   const activeTab = useEgant((s) => s.panelTab);
@@ -43,20 +44,13 @@ export function WorkspacePanel() {
   const maximized = useEgant((s) => s.panelMaximized);
   const toggleMaximized = useEgant((s) => s.togglePanelMaximized);
   const sidebarWidth = useEgant((s) => s.sidebarWidth);
-  const sidebarVisible = snapshot?.sidebarVisible ?? true;
 
   const [adding, setAdding] = useState(false);
   const [resizing, setResizing] = useState(false);
   // Maximized means "everything the sidebar isn't using". Held as a number
   // rather than a class so the width can be animated between the two states —
   // `flex-1` has nothing to transition from.
-  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
-  useEffect(() => {
-    const onResize = () => setWindowWidth(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  const fullWidth = Math.max(320, windowWidth - (sidebarVisible ? sidebarWidth : 0));
+  const fullWidth = Math.max(320, windowWidth - (sidebarShown ? sidebarWidth : 0));
 
   // The file tree follows the conversation in front of you; a terminal keeps
   // the directory it was opened in.
@@ -101,7 +95,7 @@ export function WorkspacePanel() {
         data-tauri-drag-region
         className="flex h-[38px] w-full shrink-0 items-center gap-1 pr-1.5 pl-1.5"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
           {tabs.map((tab) => (
             <PanelTabButton
               key={tab.id}
@@ -346,8 +340,16 @@ function PanelTabButton({
   onClick: () => void;
   onClose: () => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // The strip scrolls sideways when the tabs don't fit; whichever one is in
+  // front must never be the one off-screen (a new terminal opens at the end).
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [active]);
+
   return (
     <div
+      ref={ref}
       role="button"
       tabIndex={0}
       onClick={onClick}
@@ -355,10 +357,12 @@ function PanelTabButton({
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
       title={title}
-      className={`group flex max-w-[140px] min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 pl-1.5 text-[13px] ${
+      // The tab in front keeps its label; the rest give way to their icons
+      // when the strip is short of room, rather than pushing it past the edge.
+      className={`group flex max-w-[140px] cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 pl-1.5 text-[13px] ${
         active
-          ? "bg-[var(--selected)] text-[var(--ink)]"
-          : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          ? "shrink-0 bg-[var(--selected)] text-[var(--ink)]"
+          : "min-w-[30px] shrink text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
       } ${dim ? "opacity-55" : ""}`}
     >
       <span className="shrink-0 text-[var(--faint)]">{icon}</span>
@@ -370,7 +374,10 @@ function PanelTabButton({
           e.stopPropagation();
           onClose();
         }}
-        className="shrink-0 cursor-pointer rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+        className={`shrink-0 cursor-pointer rounded-sm p-0.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
+          // An icon-only tab has no room for a close button until it is pointed at.
+          active ? "opacity-0 group-hover:opacity-100" : "hidden group-hover:block"
+        }`}
       >
         <X size={11} strokeWidth={2.2} />
       </button>

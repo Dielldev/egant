@@ -102,6 +102,13 @@ export function SettingsPage() {
     setIndex(nextHist.length - 1);
     setSection(next);
   };
+  // A section asked for from outside while the page is already open (Help >
+  // Keyboard Shortcuts) — the page's own clicks set the store to what they
+  // already show, so only a foreign change gets through this.
+  useEffect(() => {
+    if (section !== hist[index]) go(section);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
   const step = (delta: -1 | 1) => {
     const next = index + delta;
     if (next < 0 || next >= hist.length) return;
@@ -1499,7 +1506,7 @@ function archivedAgo(atMs: number, nowMs: number): string {
 
 function Placeholder({ text }: { text: string }) {
   return (
-    <div className="flex h-[40vh] items-center justify-center text-[13px] text-[var(--faint)]">
+    <div className="flex h-[40vh] items-center justify-center text-[13px] text-[var(--muted)]">
       {text}
     </div>
   );

@@ -10,6 +10,7 @@ export function EditableTitle({
   className,
   inputClassName,
   hint,
+  editSignal,
 }: {
   title: string;
   onRename: (title: string) => void;
@@ -18,10 +19,20 @@ export function EditableTitle({
   /** A tooltip for the resting title. Left out where something around it
    * already has one worth keeping. */
   hint?: string;
+  /** Bumping this starts an edit from outside — a context menu's Rename. */
+  editSignal?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editSignal) return;
+    setDraft(title);
+    setEditing(true);
+    // Only a new signal starts an edit; a title changing underneath must not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSignal]);
 
   useEffect(() => {
     if (!editing) return;

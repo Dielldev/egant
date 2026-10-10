@@ -142,7 +142,7 @@ function rowClass(checked: boolean, disabled: boolean, dimmed: boolean, layout: 
     checked
       ? "border-[var(--accent)]/50 bg-[var(--accent)]/10"
       : `border-[var(--border)] bg-[var(--card)] ${disabled ? "" : "hover:bg-[var(--hover)]"}`,
-    dimmed ? "opacity-40" : "",
+    dimmed ? "opacity-65" : "",
   ]
     .filter(Boolean)
     .join(" ");

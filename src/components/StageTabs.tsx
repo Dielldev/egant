@@ -1,4 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
+import { useEffect, useRef } from "react";
 import { MessageSquare, TerminalSquare, X } from "lucide-react";
 import { dropDraft, useDirtyFiles } from "../lib/editorDrafts";
 import type { StageTab } from "../store";
@@ -46,7 +47,7 @@ export function StageTabs({ sessionKey }: { sessionKey: number }) {
   };
 
   return (
-    <div className="flex w-full shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--border)] px-3 pb-1.5">
+    <div className="no-scrollbar flex w-full shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[var(--border)] px-3 pb-1.5">
       <Tab
         // The first tab is whatever the session *is* — a transcript for a
         // chat session, the agent's terminal for a CLI one.
@@ -105,8 +106,14 @@ function Tab({
   onClick: () => void;
   onClose?: () => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [active]);
+
   return (
     <div
+      ref={ref}
       role="button"
       tabIndex={0}
       title={hint ?? label}

@@ -24,8 +24,8 @@
   --stage: #0d0d0d;
   --border: rgba(255, 255, 255, 0.06);
   --ink: #e0e0e0;
-  --muted: #8b8b95;
-  --faint: #5d5d67;
+  --muted: #9999a1;
+  --faint: #828289;
   --hover: rgba(255, 255, 255, 0.05);
   --selected: #2a2a2a;
   --bubble: rgba(255, 255, 255, 0.09);
@@ -76,8 +76,8 @@ html[data-palette="zeron-light"] {
   --stage: #f2f2f5;
   --border: rgba(0, 0, 0, 0.08);
   --ink: #17171c;
-  --muted: #62626c;
-  --faint: #9a9aa5;
+  --muted: #53535c;
+  --faint: #676770;
   --hover: rgba(0, 0, 0, 0.045);
   --selected: rgba(0, 0, 0, 0.06);
   --bubble: rgba(0, 0, 0, 0.06);
@@ -92,8 +92,8 @@ html[data-palette="sand"] {
   --stage: #efe9dd;
   --border: rgba(90, 70, 40, 0.14);
   --ink: #221c12;
-  --muted: #6f6350;
-  --faint: #a2937a;
+  --muted: #574d3d;
+  --faint: #6c614e;
   --hover: rgba(90, 70, 40, 0.07);
   --selected: rgba(90, 70, 40, 0.1);
   --bubble: rgba(90, 70, 40, 0.09);
@@ -109,7 +109,7 @@ html[data-palette="midnight"] {
   --border: rgba(140, 170, 255, 0.1);
   --ink: #e4eafc;
   --muted: #8b96b5;
-  --faint: #525b78;
+  --faint: #757d98;
   --hover: rgba(140, 170, 255, 0.07);
   --selected: rgba(140, 170, 255, 0.1);
   --bubble: rgba(140, 170, 255, 0.12);
@@ -127,8 +127,8 @@ html[data-palette="dark-plus"] {
   --stage: #1e1e1e;
   --border: rgba(255, 255, 255, 0.08);
   --ink: #d4d4d4;
-  --muted: #9a9a9a;
-  --faint: #6a6a6a;
+  --muted: #a6a6a6;
+  --faint: #8d8d8d;
   --hover: rgba(0, 122, 204, 0.08);
   --selected: rgba(0, 122, 204, 0.16);
   --bubble: rgba(255, 255, 255, 0.08);
@@ -143,7 +143,7 @@ html[data-palette="catppuccin-mocha"] {
   --border: rgba(203, 166, 247, 0.12);
   --ink: #cdd6f4;
   --muted: #a6adc8;
-  --faint: #6c7086;
+  --faint: #888ea6;
   --hover: rgba(203, 166, 247, 0.07);
   --selected: rgba(203, 166, 247, 0.14);
   --bubble: rgba(203, 166, 247, 0.1);
@@ -158,7 +158,7 @@ html[data-palette="tokyo-night"] {
   --border: rgba(122, 162, 247, 0.1);
   --ink: #c0caf5;
   --muted: #a9b1d6;
-  --faint: #565f89;
+  --faint: #808ab4;
   --hover: rgba(122, 162, 247, 0.06);
   --selected: rgba(122, 162, 247, 0.12);
   --bubble: rgba(122, 162, 247, 0.09);
@@ -173,7 +173,7 @@ html[data-palette="dracula"] {
   --border: rgba(189, 147, 249, 0.12);
   --ink: #f8f8f2;
   --muted: #b3b4c6;
-  --faint: #6272a4;
+  --faint: #8e99bb;
   --hover: rgba(189, 147, 249, 0.07);
   --selected: rgba(189, 147, 249, 0.14);
   --bubble: rgba(189, 147, 249, 0.1);
@@ -187,8 +187,8 @@ html[data-palette="github-dark"] {
   --stage: #0d1117;
   --border: rgba(88, 166, 255, 0.12);
   --ink: #c9d1d9;
-  --muted: #8b949e;
-  --faint: #545d68;
+  --muted: #949da6;
+  --faint: #7c848e;
   --hover: rgba(88, 166, 255, 0.07);
   --selected: rgba(88, 166, 255, 0.14);
   --bubble: rgba(88, 166, 255, 0.1);
@@ -202,8 +202,8 @@ html[data-palette="ayu-dark"] {
   --stage: #0a0e14;
   --border: rgba(255, 180, 84, 0.12);
   --ink: #b3b1ad;
-  --muted: #6c7380;
-  --faint: #4a5160;
+  --muted: #98999c;
+  --faint: #808287;
   --hover: rgba(255, 180, 84, 0.07);
   --selected: rgba(255, 180, 84, 0.14);
   --bubble: rgba(255, 180, 84, 0.1);
@@ -217,8 +217,8 @@ html[data-palette="ayu-mirage"] {
   --stage: #1f2430;
   --border: rgba(255, 204, 102, 0.12);
   --ink: #cbccc6;
-  --muted: #8a9199;
-  --faint: #565b66;
+  --muted: #a9adae;
+  --faint: #909496;
   --hover: rgba(255, 204, 102, 0.07);
   --selected: rgba(255, 204, 102, 0.14);
   --bubble: rgba(255, 204, 102, 0.1);
@@ -232,8 +232,8 @@ html[data-palette="gruvbox-dark"] {
   --stage: #282828;
   --border: rgba(184, 187, 38, 0.12);
   --ink: #ebdbb2;
-  --muted: #a89984;
-  --faint: #7c6f64;
+  --muted: #beaf93;
+  --faint: #a3957f;
   --hover: rgba(250, 189, 47, 0.07);
   --selected: rgba(250, 189, 47, 0.14);
   --bubble: rgba(250, 189, 47, 0.1);
@@ -247,8 +247,8 @@ html[data-palette="rose-pine-moon"] {
   --stage: #232136;
   --border: rgba(234, 154, 151, 0.12);
   --ink: #e0def4;
-  --muted: #908caa;
-  --faint: #6e6a86;
+  --muted: #aca9c4;
+  --faint: #928fa9;
   --hover: rgba(156, 207, 216, 0.07);
   --selected: rgba(156, 207, 216, 0.14);
   --bubble: rgba(234, 154, 151, 0.1);
@@ -262,8 +262,8 @@ html[data-palette="nord"] {
   --stage: #2e3440;
   --border: rgba(136, 192, 208, 0.12);
   --ink: #d8dee9;
-  --muted: #9aa5b1;
-  --faint: #616e7f;
+  --muted: #b8c0cc;
+  --faint: #9ba5b3;
   --hover: rgba(136, 192, 208, 0.07);
   --selected: rgba(136, 192, 208, 0.14);
   --bubble: rgba(136, 192, 208, 0.1);
@@ -277,8 +277,8 @@ html[data-palette="one-dark-pro"] {
   --stage: #282c34;
   --border: rgba(97, 175, 239, 0.12);
   --ink: #abb2bf;
-  --muted: #7f848e;
-  --faint: #545862;
+  --muted: #abb2bf;
+  --faint: #959ca8;
   --hover: rgba(97, 175, 239, 0.07);
   --selected: rgba(97, 175, 239, 0.14);
   --bubble: rgba(97, 175, 239, 0.1);
@@ -292,8 +292,8 @@ html[data-palette="atom-one-dark"] {
   --stage: #21252b;
   --border: rgba(82, 139, 255, 0.12);
   --ink: #abb2bf;
-  --muted: #7f848e;
-  --faint: #545862;
+  --muted: #a6adba;
+  --faint: #8d939f;
   --hover: rgba(82, 139, 255, 0.07);
   --selected: rgba(82, 139, 255, 0.14);
   --bubble: rgba(82, 139, 255, 0.1);
@@ -307,8 +307,8 @@ html[data-palette="night-owl"] {
   --stage: #011627;
   --border: rgba(130, 170, 255, 0.12);
   --ink: #d6deeb;
-  --muted: #829bb2;
-  --faint: #4b6479;
+  --muted: #89a0b7;
+  --faint: #75899b;
   --hover: rgba(130, 170, 255, 0.07);
   --selected: rgba(130, 170, 255, 0.14);
   --bubble: rgba(130, 170, 255, 0.1);
@@ -322,8 +322,8 @@ html[data-palette="winter-is-coming-dark-blue"] {
   --stage: #0e1c36;
   --border: rgba(106, 159, 181, 0.12);
   --ink: #cdd7e0;
-  --muted: #8a9bab;
-  --faint: #566578;
+  --muted: #97a6b5;
+  --faint: #808d9c;
   --hover: rgba(106, 159, 181, 0.07);
   --selected: rgba(106, 159, 181, 0.14);
   --bubble: rgba(106, 159, 181, 0.1);
@@ -337,8 +337,8 @@ html[data-palette="palenight"] {
   --stage: #292d3e;
   --border: rgba(199, 146, 234, 0.12);
   --ink: #a6accd;
-  --muted: #767c9d;
-  --faint: #4b5065;
+  --muted: #a6accd;
+  --faint: #969bba;
   --hover: rgba(199, 146, 234, 0.07);
   --selected: rgba(199, 146, 234, 0.14);
   --bubble: rgba(199, 146, 234, 0.1);
@@ -352,8 +352,8 @@ html[data-palette="synthwave-84"] {
   --stage: #262335;
   --border: rgba(255, 126, 219, 0.14);
   --ink: #f2e9e9;
-  --muted: #b893ce;
-  --faint: #6f5b7e;
+  --muted: #c2a2d3;
+  --faint: #9e8ea5;
   --hover: rgba(255, 126, 219, 0.08);
   --selected: rgba(255, 126, 219, 0.16);
   --bubble: rgba(255, 126, 219, 0.12);
@@ -367,8 +367,8 @@ html[data-palette="shades-of-purple"] {
   --stage: #2d2b55;
   --border: rgba(250, 208, 0, 0.12);
   --ink: #e3dfff;
-  --muted: #9d97c9;
-  --faint: #625d94;
+  --muted: #bbb6e0;
+  --faint: #a09bc7;
   --hover: rgba(250, 208, 0, 0.07);
   --selected: rgba(250, 208, 0, 0.14);
   --bubble: rgba(157, 140, 255, 0.1);
@@ -382,8 +382,8 @@ html[data-palette="cobalt2"] {
   --stage: #193549;
   --border: rgba(255, 198, 0, 0.12);
   --ink: #ffffff;
-  --muted: #9dc0d1;
-  --faint: #5a7f92;
+  --muted: #a1c3d3;
+  --faint: #8da7b4;
   --hover: rgba(255, 198, 0, 0.07);
   --selected: rgba(255, 198, 0, 0.14);
   --bubble: rgba(255, 198, 0, 0.1);
@@ -397,8 +397,8 @@ html[data-palette="andromeda"] {
   --stage: #23262e;
   --border: rgba(199, 77, 237, 0.12);
   --ink: #d5ced9;
-  --muted: #8d8391;
-  --faint: #57505c;
+  --muted: #b4acb8;
+  --faint: #9a939e;
   --hover: rgba(199, 77, 237, 0.07);
   --selected: rgba(199, 77, 237, 0.14);
   --bubble: rgba(199, 77, 237, 0.1);
@@ -925,6 +925,14 @@ input {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--ink) 20%, transparent);
+}
+/* A strip that scrolls but shouldn't look it — tab rows, where a bar under
+ * the tabs costs height and says nothing the clipped tab doesn't. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* ---------------------------------------------------------------------------

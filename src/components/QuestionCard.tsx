@@ -158,8 +158,14 @@ export function QuestionCard({
 
       {!settled && (
         <div className="flex items-center justify-end gap-2">
+          {/* A hint for what is still missing; once every question has an
+            answer there is nothing left to tell. */}
           <span className="mr-auto text-[11px] text-[var(--faint)]">
-            {questions.length > 1 ? "Answer each question" : "Pick an answer"}
+            {complete
+              ? ""
+              : questions.length > 1
+                ? "Answer each question"
+                : "Pick an answer"}
           </span>
           <button
             type="button"

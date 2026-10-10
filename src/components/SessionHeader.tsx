@@ -1,4 +1,5 @@
 import { PanelRight, PanelRightClose } from "lucide-react";
+import { useColumnLayout } from "../lib/layout";
 import { modShortcut } from "../lib/platform";
 import { selectOnLaunchScreen, useEgant } from "../store";
 import { log } from "../lib/logger";
@@ -43,12 +44,20 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
   const agents = useEgant((s) => s.agents);
   const catalog = useEgant((s) => s.catalog);
   const renameSession = useEgant((s) => s.renameSession);
-  const sidebarVisible = snapshot?.sidebarVisible ?? true;
+  const { sidebarShown: sidebarVisible } = useColumnLayout();
   // The catalog names every agent, including the ones with no harness behind
   // them; `agentName` alone would print a bare `goose` for a CLI session.
   const agentLabel = active?.agent
     ? (catalog.find((c) => c.id === active.agent)?.name ?? agentName(agents, active.agent))
     : "";
+
+  // A CLI session is titled after its agent ("Codex CLI"), which the glyph and
+  // this line would otherwise say twice more.
+  const agentWithKind = agentLabel === "" ? "" : `${agentLabel}${active?.kind === "cli" ? " CLI" : ""}`;
+  const subtitleAgent =
+    agentWithKind !== "" && active?.title.toLowerCase().includes(agentLabel.toLowerCase())
+      ? ""
+      : agentWithKind;
 
   return (
     <div className="flex w-full shrink-0 flex-col">
@@ -89,8 +98,7 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
               className="min-w-0 flex-1 truncate text-xs text-[var(--faint)]"
             >
               {project.name} @ {active?.device ?? snapshot?.machineName ?? ""}
-              {agentLabel !== "" &&
-                ` · ${agentLabel}${active?.kind === "cli" ? " CLI" : ""}`}
+              {subtitleAgent !== "" && ` · ${subtitleAgent}`}
             </span>
           )}
           {/* A session in a worktree is not in the folder its project names,

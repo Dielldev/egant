@@ -16,6 +16,7 @@ mod dto;
 mod files;
 mod github;
 mod library;
+mod menu;
 mod mobile;
 mod notifications;
 mod persist;
@@ -51,6 +52,8 @@ pub fn run() {
         // before them; `setup` hands them the app once it exists.
         .manage(sync::SyncHub::new())
         .manage(mobile::MobileService::load())
+        .menu(menu::build)
+        .on_menu_event(|app, event| menu::forward(app, event.id().as_ref()))
         .invoke_handler(commands::handlers())
         .setup(|app| {
             {

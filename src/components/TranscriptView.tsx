@@ -11,6 +11,7 @@ import {
   permissionSummary,
   planOf,
   timeLabel,
+  toolCategory,
   truncate,
 } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "../lib/types";
@@ -211,6 +212,18 @@ export function TranscriptView() {
   // nothing would still split two neighbouring Reads into separate cards, for
   // a reason invisible on screen.
   const entries = (transcript?.entries ?? []).filter((entry) => entry.kind !== "thinking");
+  // The Run pill offers to run what the last turn *changed*; a turn that only
+  // answered a question or ran `echo` has nothing new to run.
+  const lastTurnChangedFiles = (() => {
+    for (let k = entries.length - 1; k >= 0; k--) {
+      const entry = entries[k]!;
+      if (entry.kind === "user") return false;
+      if (entry.kind !== "tool" || entry.isError) continue;
+      const cat = toolCategory(entry.name);
+      if (cat === "edit" || cat === "write") return true;
+    }
+    return false;
+  })();
 
   // A message opened from the search window: once its session is on screen
   // and loaded, scroll to it and flash it. Found by kind and ordinal — the
@@ -360,8 +373,13 @@ export function TranscriptView() {
     setViewportH(root.clientHeight || 600);
     const observer = new ResizeObserver(() => {
       setViewportH(root.clientHeight || 600);
+      // Growth that doesn't re-render this component — the Run pill resolving
+      // after its directory scan, a queued message folding into the column —
+      // would otherwise leave the tail half behind the composer.
+      if (stickRef.current) root.scrollTop = root.scrollHeight;
     });
     observer.observe(root);
+    if (root.firstElementChild) observer.observe(root.firstElementChild);
     return () => observer.disconnect();
   }, [activeId]);
 
@@ -418,7 +436,7 @@ export function TranscriptView() {
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
           updateActiveFromScroll();
         }}
-        className="rise flex flex-1 items-start justify-center overflow-y-auto px-6 pt-4 pb-2"
+        className="rise flex flex-1 items-start justify-center overflow-y-auto px-6 pt-4 pb-6"
         style={{ animationDelay: "90ms" }}
       >
         <div className="flex w-full max-w-[735px] flex-col gap-5">
@@ -561,7 +579,7 @@ export function TranscriptView() {
           {/* The task is done — offer to run what it just changed, in the
             checkout it changed it in. A worktree session's work isn't in the
             folder you opened, so the pill names the branch it runs on. */}
-          {!busy && transcript && entries.length > 0 && (
+          {!busy && transcript && lastTurnChangedFiles && (
             <div className="-mt-1">
               <RunPill cwd={active.cwd} worktree={active.worktree} />
             </div>

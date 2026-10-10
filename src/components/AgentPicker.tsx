@@ -730,7 +730,7 @@ export function AgentPicker() {
             <>
           {/* Agent — named segments, because which CLI runs the turn is the
             first thing being chosen and an icon alone doesn't say it. */}
-          <div className="flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl bg-[var(--card)] p-1">
+          <div className="flex shrink-0 flex-wrap items-center gap-1 rounded-xl bg-[var(--card)] p-1">
             {visibleAgents.map((id) => {
               const s = agents.find((a) => a.id === id);
               const entry = agentCatalog.find((c) => c.id === id);

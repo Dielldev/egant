@@ -2415,6 +2415,13 @@ export const useEgant = create<EgantStore>()((set, get) => {
     selectPrevSession: async () => {
       const snapshot = get().snapshot;
       if (!snapshot) return;
+      // "+" only asks for the launch screen; the session it was asked from is
+      // still the active one. Back from there is that session, not the one
+      // before it in the list.
+      if (get().startingNewSession && snapshot.activeSession != null) {
+        set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
+        return;
+      }
       const listed = sessionsInProject(snapshot, get().sidebarProject);
       const index = listed.findIndex((s) => s.id === snapshot.activeSession);
       const target = index > 0 ? listed[index - 1] : undefined;

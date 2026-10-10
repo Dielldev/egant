@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Clock,
+  Copy,
   FolderGit2,
   Folder,
   GitBranch,
@@ -13,6 +14,7 @@ import {
   List,
   ListFilter,
   MapPin,
+  Pencil,
   Plus,
   Search,
   Smartphone,
@@ -22,6 +24,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { shouldOpenUpward } from "../lib/popover";
 import { isMac, modShortcut } from "../lib/platform";
@@ -157,6 +160,28 @@ export function Sidebar() {
 
   const pairedDevices = usePairedDevices();
 
+  // A session that appears in a collapsed group — a new chat started in it, or
+  // one opened from Search — expands the group, otherwise the active session
+  // is nowhere in the list. Keyed on the active session alone so collapsing
+  // its group by hand afterwards sticks.
+  const activeSessionId = snapshot?.activeSession ?? null;
+  // The session already open at launch keeps whatever collapse state was saved.
+  const lastActive = useRef(activeSessionId);
+  useEffect(() => {
+    if (lastActive.current === activeSessionId) return;
+    lastActive.current = activeSessionId;
+    if (activeSessionId == null || sidebarOrganize === "flat") return;
+    const active = useEgant.getState().snapshot?.sessions.find((s) => s.id === activeSessionId);
+    if (!active) return;
+    const key =
+      sidebarOrganize === "byProject"
+        ? `project:${active.projectId}`
+        : `device:${active.device ?? machine}`;
+    if (useEgant.getState().collapsedGroups[key]) toggleGroupCollapsed(key);
+    // `machine` and the setters are stable for a session's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId]);
+
   // Grouping preserves the sort order above — a group's position is wherever
   // its first (by that order) session lands, so switching sort still moves the
   // groups sensibly instead of relying on project-list order. By device is the
@@ -228,6 +253,16 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, sessions, sidebarOrganize, machine, projects, pairedDevices, needle, listedProject]);
 
+  // The subtitle says only what the group header above the row doesn't: under
+  // a project the project is already named, under a device the device is, and
+  // a chat from this Mac under a project has nothing left to add.
+  const locationOf = (session: SessionInfo, project: string) => {
+    const place = session.device ?? machine;
+    if (sidebarOrganize === "byProject") return session.device != null ? `@ ${place}` : null;
+    if (sidebarOrganize === "byDevice") return project;
+    return place ? `${project} @ ${place}` : project;
+  };
+
   const rowProps = (session: SessionInfo) => {
     const project = projectNameOf(session.projectId);
     const branch = sidebarShowBranch ? (session.worktree?.branch ?? session.branch) : null;
@@ -236,9 +271,7 @@ export function Sidebar() {
     return {
       title: session.title,
       tooltip: `${session.title} — ${project} @ ${session.device ?? machine}${session.branch ? ` · ${session.branch}` : ""} · ${harness}`,
-      location: sidebarShowLocation
-        ? `${project}${(session.device ?? machine) ? ` @ ${session.device ?? machine}` : ""}`
-        : null,
+      location: sidebarShowLocation ? locationOf(session, project) : null,
       startedUnixMs: session.startedUnixMs,
       now,
       selected: session.id === snapshot?.activeSession,
@@ -272,7 +305,7 @@ export function Sidebar() {
   return (
     <aside
       style={{ width: sidebarWidth }}
-      className="sidebar-glass relative flex h-full shrink-0 flex-col text-[var(--muted)]"
+      className="sidebar-glass relative flex h-full shrink-0 flex-col text-[var(--muted)] select-none"
     >
       <WindowBar />
 
@@ -735,6 +768,11 @@ function SessionRow({
   /** Double-clicking the title edits it in place. */
   onRename: (title: string) => void;
 }) {
+  // Right-click: the row's own menu, in place of WebKit's (Look Up, Translate,
+  // Share…), which has nothing to say about a conversation.
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const [editSignal, setEditSignal] = useState(0);
+
   // The corner: what's happening now, swapped for Archive while the pointer
   // is on the card. Same slot either way, so nothing on the card shifts. A
   // session waiting on the user says so in its own colour and holds still —
@@ -791,6 +829,10 @@ function SessionRow({
       tabIndex={0}
       title={tooltip}
       onClick={onClick}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuAt({ x: e.clientX, y: e.clientY });
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
@@ -798,6 +840,25 @@ function SessionRow({
         selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"
       }`}
     >
+      {menuAt && (
+        <RowMenu
+          at={menuAt}
+          onClose={() => setMenuAt(null)}
+          items={[
+            {
+              icon: Pencil,
+              label: "Rename",
+              run: () => setEditSignal((n) => n + 1),
+            },
+            {
+              icon: Copy,
+              label: "Copy title",
+              run: () => void navigator.clipboard?.writeText(title).catch(() => {}),
+            },
+            { icon: Archive, label: "Archive", run: onArchive },
+          ]}
+        />
+      )}
       {location != null && (
         <div className="flex w-full items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-[11px] leading-[14px] text-[var(--muted)]/70">
@@ -819,6 +880,7 @@ function SessionRow({
         <EditableTitle
           title={title}
           onRename={onRename}
+          editSignal={editSignal}
           className={`min-w-0 flex-1 truncate text-[13px] leading-[17px] ${
             selected
               ? "text-[var(--ink)]"
@@ -850,5 +912,68 @@ function SessionRow({
         </div>
       )}
     </div>
+  );
+}
+
+/** A small menu at the pointer, for a row's right-click. Fixed-positioned and
+ * clamped to the window, since the sidebar scrolls and clips its children. A
+ * click anywhere else, Escape, or a second right-click dismisses it. */
+function RowMenu({
+  at,
+  items,
+  onClose,
+}: {
+  at: { x: number; y: number };
+  items: { icon: LucideIcon; label: string; run: () => void }[];
+  onClose: () => void;
+}) {
+  const WIDTH = 168;
+  const height = items.length * 30 + 12;
+  const left = Math.max(8, Math.min(at.x, window.innerWidth - WIDTH - 8));
+  const top = Math.max(8, Math.min(at.y, window.innerHeight - height - 8));
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Portaled out: the sidebar's backdrop blur makes it the containing block of
+  // anything `fixed` inside it, which would pin the backdrop to the sidebar.
+  // React still bubbles events through the portal to the row, so the wrapper
+  // stops a click on the menu from also selecting the conversation.
+  return createPortal(
+    <div onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+      <div
+        className="fixed inset-0 z-40 cursor-default"
+        onClick={onClose}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onClose();
+        }}
+      />
+      <div
+        style={{ left, top, width: WIDTH }}
+        className="menu menu-pop fixed z-50 flex flex-col overflow-hidden rounded-xl p-1.5 text-[13px]"
+      >
+        {items.map(({ icon: Icon, label, run }) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => {
+              onClose();
+              run();
+            }}
+            className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          >
+            <Icon size={13} strokeWidth={2} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+          </button>
+        ))}
+      </div>
+    </div>,
+    document.body,
   );
 }

@@ -59,12 +59,14 @@ export function fitMenu(
 export function fitBelow(
   triggerRef: RefObject<HTMLElement | null>,
   preferredHeight: number,
-  margin = 8,
+  // 8px of it is the gap the menu keeps under its trigger; the rest is what
+  // is left between the menu and the window's bottom edge.
+  margin = 28,
 ): number {
   const rect = triggerRef.current?.getBoundingClientRect();
   if (!rect) return preferredHeight;
   const spaceBelow = window.innerHeight - rect.bottom - margin;
-  return Math.max(240, Math.min(preferredHeight, spaceBelow));
+  return Math.max(200, Math.min(preferredHeight, spaceBelow));
 }
 
 /** Same idea, sideways: a menu anchored to `left-0` of a trigger sitting near

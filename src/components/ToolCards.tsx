@@ -54,6 +54,9 @@ function editOpStat(oldText: string, newText: string): { added: number; removed:
 }
 
 function entryStat(entry: ToolEntry): { added: number; removed: number } {
+  // A refused or failed edit changed nothing; counting it would put "+1 −0"
+  // beside a file the agent never touched.
+  if (entry.isError) return { added: 0, removed: 0 };
   const cat = toolCategory(entry.name);
   if (cat === "edit") {
     const { edits } = normalizeEdit(entry.name, entry.input);
@@ -791,8 +794,18 @@ export function ToolActivityRow({ entry }: { entry: ToolEntry }) {
           )}
         </span>
         {showFileIcon && <FileIcon name={fileName} isDir={fileIsDir} size={13} />}
-        <span className="min-w-0 flex-1 truncate text-[var(--muted)]">{label.text}</span>
-        {label.hasDiff && <DiffCounts added={label.added} removed={label.removed} />}
+        <span
+          className={`min-w-0 flex-1 truncate text-[var(--muted)] ${
+            entry.isError && (cat === "edit" || cat === "write") ? "line-through opacity-70" : ""
+          }`}
+        >
+          {label.text}
+        </span>
+        {entry.isError && (cat === "edit" || cat === "write") ? (
+          <span className="shrink-0 text-[11px] text-[var(--danger)]">not applied</span>
+        ) : (
+          label.hasDiff && <DiffCounts added={label.added} removed={label.removed} />
+        )}
         {busy && !entry.isError && (
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />
         )}
@@ -973,15 +986,23 @@ function GroupRowVerb({ kind, entry }: { kind: GroupRowKind; entry: ToolEntry })
 
 /** The file pill: file-type icon plus basename on a fill, full path on hover
  * — the `[🦀 composer.rs]` chip in the reference. */
-function FilePill({ path }: { path: string }) {
+function FilePill({ path, struck }: { path: string; struck?: boolean }) {
   const base = basename(path) || "file";
   return (
     <span
       title={path}
-      className="flex min-w-0 items-center gap-1.5 rounded-md bg-[var(--bubble)] px-2 py-0.5"
+      className={`flex min-w-0 items-center gap-1.5 rounded-md bg-[var(--bubble)] px-2 py-0.5 ${
+        struck ? "opacity-60" : ""
+      }`}
     >
       <FileIcon name={base} size={13} />
-      <span className="truncate text-[12px] text-[var(--ink)]">{base}</span>
+      <span
+        className={`truncate text-[12px] ${
+          struck ? "text-[var(--muted)] line-through" : "text-[var(--ink)]"
+        }`}
+      >
+        {base}
+      </span>
     </span>
   );
 }
@@ -1007,8 +1028,13 @@ function GroupToolRow({
   // Line counts for the pill: computed from the input snippets, so they show
   // even while the call is still streaming.
   const stat = useMemo(() => entryStat(entry), [entry]);
+  // A write or edit that was refused (or failed) changed nothing, so it shows
+  // no diff stat — "+1 −0" next to it reads as though the change applied.
+  const notApplied = entry.isError && (cat === "edit" || cat === "write");
   const showCounts =
-    (cat === "edit" || cat === "write") && (stat.added > 0 || stat.removed > 0);
+    (cat === "edit" || cat === "write") &&
+    !entry.isError &&
+    (stat.added > 0 || stat.removed > 0);
   const detail = (() => {
     switch (kind) {
       case "read":
@@ -1017,8 +1043,11 @@ function GroupToolRow({
         if (filePath)
           return (
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
-              <FilePill path={filePath} />
+              <FilePill path={filePath} struck={notApplied} />
               {showCounts && <DiffCounts added={stat.added} removed={stat.removed} />}
+              {notApplied && (
+                <span className="shrink-0 text-[11px] text-[var(--danger)]">not applied</span>
+              )}
             </span>
           );
         return (

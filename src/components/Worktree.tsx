@@ -324,13 +324,36 @@ function MenuRow({
  * folder is on whatever branch the user put it on, and the workspace panel
  * already says which. */
 export function WorktreeChip({ worktree }: { worktree: WorktreeInfo }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1400);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  // Copies the branch name — the one thing a chip like this is usually
+  // clicked for — and says so, since a click with no visible result reads as
+  // a dead button.
+  const copy = () => {
+    navigator.clipboard
+      ?.writeText(worktree.branch)
+      .then(() => setCopied(true))
+      .catch(() => {});
+  };
+
   return (
-    <span
-      title={`Running in its own worktree at ${worktree.path}, on ${worktree.branch} (cut from ${worktree.base})`}
-      className="flex min-w-0 shrink-0 items-center gap-1 rounded-md bg-[var(--bubble)] px-1.5 py-0.5 text-[11px] text-[var(--muted)]"
+    <button
+      type="button"
+      onClick={copy}
+      title={`Running in its own worktree at ${worktree.path}, on ${worktree.branch} (cut from ${worktree.base}). Click to copy the branch name.`}
+      className="flex min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-[var(--bubble)] px-1.5 py-0.5 text-[11px] text-[var(--muted)] hover:text-[var(--ink)]"
     >
-      <GitBranch size={11} strokeWidth={2} className="shrink-0" />
-      <span className="max-w-[160px] truncate">{worktree.branch}</span>
-    </span>
+      {copied ? (
+        <Check size={11} strokeWidth={2.4} className="shrink-0 text-[var(--ink)]" />
+      ) : (
+        <GitBranch size={11} strokeWidth={2} className="shrink-0" />
+      )}
+      <span className="max-w-[160px] truncate">{copied ? "Copied" : worktree.branch}</span>
+    </button>
   );
 }

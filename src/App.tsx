@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { CliLaunchDialog } from "./components/CliLaunchDialog";
 import { CliStage } from "./components/CliStage";
@@ -9,6 +10,7 @@ import { NoticeToast } from "./components/NoticeToast";
 import { LogoLoader } from "./components/Logo";
 import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
+import { useColumnLayout } from "./lib/layout";
 import { log } from "./lib/logger";
 import { LibraryPage } from "./components/LibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
@@ -58,6 +60,10 @@ export default function App() {
   // there — whatever `panelOpen` was persisted as, including at startup and
   // after "+" from a session that had it open.
   const panelVisible = useEgant((s) => s.panelOpen && !selectOnLaunchScreen(s));
+  const { sidebarShown, sidebarYielded } = useColumnLayout();
+  // The key handler below is installed once; this is how it sees the live value.
+  const yielded = useRef(sidebarYielded);
+  yielded.current = sidebarYielded;
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -114,6 +120,66 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // The window-wide actions a key chord and a native menu item both reach.
+  // The menu carries the same accelerators as the keys below, and whichever of
+  // the two the OS delivers first wins — but a platform that hands the press to
+  // both would run it twice, which for ⌘N is two conversations. Hence the
+  // short refractory period per action.
+  const lastRun = useRef<Record<string, number>>({});
+  const perform = (action: string) => {
+    const now = performance.now();
+    if (now - (lastRun.current[action] ?? -1000) < 250) return;
+    lastRun.current[action] = now;
+    const store = useEgant.getState();
+    switch (action) {
+      case "settings":
+        store.openSettings();
+        break;
+      case "new-conversation":
+        void store.createSession();
+        break;
+      case "open-folder":
+        void store.openFolderDialog();
+        break;
+      case "search":
+        store.openSearch();
+        break;
+      case "library":
+        if (store.libraryOpen) store.closeLibrary();
+        else store.openLibrary();
+        break;
+      case "toggle-sidebar":
+        // With the sidebar stepped aside for the panel, showing it means
+        // closing the panel (see `useColumnLayout`).
+        if (yielded.current) store.togglePanel();
+        else void store.toggleSidebar();
+        break;
+      case "toggle-panel":
+        store.togglePanel();
+        break;
+      case "shortcuts":
+        store.openSettings("shortcuts");
+        break;
+    }
+  };
+  // The key handler below is installed once, so it reaches the latest closure
+  // through this.
+  const performRef = useRef(perform);
+  performRef.current = perform;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listen<string>("menu-action", (event) => performRef.current(event.payload)).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Global shortcuts. Mirrors the GPUI shell's key bindings.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -121,7 +187,7 @@ export default function App() {
       const store = useEgant.getState();
       if (e.key === ",") {
         e.preventDefault();
-        store.openSettings();
+        performRef.current("settings");
         return;
       }
       // Settings open: `Esc` backs out instead of touching the session.
@@ -140,7 +206,7 @@ export default function App() {
       switch (e.key) {
         case "n":
           e.preventDefault();
-          void store.createSession();
+          performRef.current("new-conversation");
           break;
         case "k":
           e.preventDefault();
@@ -153,22 +219,21 @@ export default function App() {
         // Shift-L is the Library, beside plain ⌘L focusing the composer.
         case "L":
           e.preventDefault();
-          if (store.libraryOpen) store.closeLibrary();
-          else store.openLibrary();
+          performRef.current("library");
           break;
         case "p":
           e.preventDefault();
-          store.openSearch();
+          performRef.current("search");
           break;
         case "b":
           e.preventDefault();
-          void store.toggleSidebar();
+          performRef.current("toggle-sidebar");
           break;
         // The workspace panel — files and terminals — mirroring ⌘B for the
         // sidebar on the other side of the window.
         case "j":
           e.preventDefault();
-          store.togglePanel();
+          performRef.current("toggle-panel");
           break;
         // Shift makes it fill the window. `e.key` is already the shifted
         // character, which is what tells the two apart.
@@ -280,7 +345,7 @@ export default function App() {
         <SettingsPage />
       ) : (
         <>
-          {(snapshot?.sidebarVisible ?? true) && <Sidebar />}
+          {sidebarShown && <Sidebar />}
           {/* One stage in every state: the launch wallpaper and the
             conversation's `--stage-tint` wash over the transparent Tauri
             window's native macOS blur are the same surface with a different
