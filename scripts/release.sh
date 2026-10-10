@@ -21,9 +21,12 @@ REPO="Dielldev/egant"
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
 TAG="v${VERSION}"
 
-export TAURI_SIGNING_PRIVATE_KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/egant-updater.key}"
+KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/egant-updater.key}"
+[ -f "$KEY_PATH" ] || { echo "No signing key at $KEY_PATH" >&2; exit 1; }
+# The CLI wants the key's contents here; the *_PATH variant it ignores.
+export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_PATH")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
-[ -f "$TAURI_SIGNING_PRIVATE_KEY_PATH" ] || { echo "No signing key at $TAURI_SIGNING_PRIVATE_KEY_PATH" >&2; exit 1; }
+unset TAURI_SIGNING_PRIVATE_KEY_PATH
 
 # The release is cut from what is on GitHub, not from what is on this disk.
 git fetch -q egant-old main
