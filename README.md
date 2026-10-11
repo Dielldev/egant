@@ -10,6 +10,12 @@
   <img src="docs/screenshots/1-launch.png" alt="egant launch screen" width="860">
 </p>
 
+## Download
+
+**macOS (Apple Silicon):** [download egant](https://github.com/Dielldev/egant/releases/latest/download/egant-macos-arm64.dmg), open the DMG and drag egant to Applications. egant isn't notarized by Apple yet, so the first time you open it macOS says it can't verify the app: go to **System Settings → Privacy & Security** and choose **Open Anyway**. After that it keeps itself up to date (see [Updates](#updates)). egant drives the agent CLIs you already have, so install at least one first (for example `claude`, then `claude login`).
+
+Intel Macs and Linux: build from source, see the [Quickstart](#quickstart).
+
 ## What is egant?
 
 Coding agents live in terminals. That works, until you have five of them going across three projects and you want to see what they changed, review a diff, run the app, and pick up from your phone.
