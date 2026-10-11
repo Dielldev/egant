@@ -298,8 +298,8 @@ const APPEARANCE_KEY = "egant.appearance";
 
 const DEFAULT_APPEARANCE: AppearanceState = {
   mode: "dark",
-  lightTheme: "zeron-light",
-  darkTheme: "zeron-dark",
+  lightTheme: "egant-light",
+  darkTheme: "egant-dark",
   accent: "default",
   glass: "default",
   bgEffect: "none",
@@ -310,7 +310,16 @@ function loadAppearance(): AppearanceState {
     const raw = localStorage.getItem(APPEARANCE_KEY);
     if (!raw) return DEFAULT_APPEARANCE;
     const parsed = JSON.parse(raw) as Partial<AppearanceState>;
-    return { ...DEFAULT_APPEARANCE, ...parsed };
+    // The two default palettes were once named for another app; a saved choice
+    // of either carries over to its new name.
+    const renamed = (theme: string | undefined) =>
+      theme === "zeron-light" ? "egant-light" : theme === "zeron-dark" ? "egant-dark" : theme;
+    return {
+      ...DEFAULT_APPEARANCE,
+      ...parsed,
+      lightTheme: renamed(parsed.lightTheme) ?? DEFAULT_APPEARANCE.lightTheme,
+      darkTheme: renamed(parsed.darkTheme) ?? DEFAULT_APPEARANCE.darkTheme,
+    };
   } catch {
     return DEFAULT_APPEARANCE;
   }

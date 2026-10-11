@@ -9,12 +9,12 @@ export interface ThemeOption {
 }
 
 export const LIGHT_THEMES: ThemeOption[] = [
-  { value: "zeron-light", label: "Zeron Light", swatch: ["#f2f2f5", "#8e7cf6"] },
+  { value: "egant-light", label: "Egant Light", swatch: ["#f2f2f5", "#8e7cf6"] },
   { value: "sand", label: "Sand", swatch: ["#efe9dd", "#b3803f"] },
 ];
 
 export const DARK_THEMES: ThemeOption[] = [
-  { value: "zeron-dark", label: "Zeron Dark", swatch: ["#0d0d0d", "#8e7cf6"] },
+  { value: "egant-dark", label: "Egant Dark", swatch: ["#0d0d0d", "#8e7cf6"] },
   { value: "dark-plus", label: "Dark+", swatch: ["#1e1e1e", "#007acc"] },
   { value: "catppuccin-mocha", label: "Catppuccin Mocha", swatch: ["#1e1e2e", "#cba6f7"] },
   { value: "tokyo-night", label: "Tokyo Night", swatch: ["#1a1b26", "#7aa2f7"] },

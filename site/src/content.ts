@@ -119,8 +119,8 @@ export type Theme = {
 };
 
 export const THEMES: Theme[] = [
-  { id: "zeron-dark", name: "Zeron Dark", stage: "#0d0d0d", sidebar: "rgba(9,9,9,0.94)", ink: "#e0e0e0", muted: "#8b8b95", border: "rgba(255,255,255,0.06)", bubble: "rgba(255,255,255,0.09)", accent: "#8e7cf6" },
-  { id: "zeron-light", name: "Zeron Light", stage: "#f2f2f5", sidebar: "rgba(244,244,247,0.9)", ink: "#17171c", muted: "#62626c", border: "rgba(0,0,0,0.08)", bubble: "rgba(0,0,0,0.06)", accent: "#8e7cf6" },
+  { id: "egant-dark", name: "Egant Dark", stage: "#0d0d0d", sidebar: "rgba(9,9,9,0.94)", ink: "#e0e0e0", muted: "#8b8b95", border: "rgba(255,255,255,0.06)", bubble: "rgba(255,255,255,0.09)", accent: "#8e7cf6" },
+  { id: "egant-light", name: "Egant Light", stage: "#f2f2f5", sidebar: "rgba(244,244,247,0.9)", ink: "#17171c", muted: "#62626c", border: "rgba(0,0,0,0.08)", bubble: "rgba(0,0,0,0.06)", accent: "#8e7cf6" },
   { id: "sand", name: "Sand", stage: "#efe9dd", sidebar: "rgba(243,238,229,0.92)", ink: "#221c12", muted: "#6f6350", border: "rgba(90,70,40,0.14)", bubble: "rgba(90,70,40,0.09)", accent: "#b3803f" },
   { id: "midnight", name: "Midnight", stage: "#02040a", sidebar: "rgba(4,6,14,0.96)", ink: "#e4eafc", muted: "#8b96b5", border: "rgba(140,170,255,0.1)", bubble: "rgba(140,170,255,0.12)", accent: "#8ca0ff" },
   { id: "catppuccin-mocha", name: "Catppuccin Mocha", stage: "#1e1e2e", sidebar: "rgba(17,17,27,0.94)", ink: "#cdd6f4", muted: "#a6adc8", border: "rgba(203,166,247,0.12)", bubble: "rgba(203,166,247,0.1)", accent: "#cba6f7" },

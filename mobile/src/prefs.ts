@@ -91,7 +91,7 @@ export function applyTheme(prefs: Prefs): void {
   html.dataset.theme = scheme;
   // The light scheme starts from the desktop's light palette; the dark one
   // is the stylesheet's root.
-  if (scheme === "light") html.dataset.palette = "zeron-light";
+  if (scheme === "light") html.dataset.palette = "egant-light";
   else delete html.dataset.palette;
   document
     .querySelector('meta[name="theme-color"]')

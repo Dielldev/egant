@@ -71,7 +71,7 @@
 /* Light palettes. Every surface in the window reads from the vars above, so
  * flipping the palette re-skins the whole app — sidebar, stage, composer,
  * menus and settings alike. */
-html[data-palette="zeron-light"] {
+html[data-palette="egant-light"] {
   --sidebar: rgba(244, 244, 247, 0.9);
   --stage: #f2f2f5;
   --border: rgba(0, 0, 0, 0.08);
@@ -520,7 +520,7 @@ html[data-glass="clear"] .composer {
   border: none;
   padding: 0;
 }
-html[data-palette="zeron-light"] .switch,
+html[data-palette="egant-light"] .switch,
 html[data-palette="sand"] .switch {
   background: rgba(0, 0, 0, 0.16);
 }
@@ -680,7 +680,7 @@ input {
 /* Chat-outline hover card entrance — zeron `MENU_IN` (motion.rs): 140ms
  * ease, fade + translateY −2→0. Scale is approximated away on purpose:
  * gpui divs have no scale transform, so menu-in is fade + translate only. */
-@keyframes zeron-menu-in {
+@keyframes egant-menu-in {
   from {
     opacity: 0;
     transform: translateY(-2px);
@@ -691,7 +691,7 @@ input {
   }
 }
 .rail-card-in {
-  animation: zeron-menu-in 140ms cubic-bezier(0.25, 0.1, 0.25, 1) backwards;
+  animation: egant-menu-in 140ms cubic-bezier(0.25, 0.1, 0.25, 1) backwards;
 }
 @media (prefers-reduced-motion: reduce) {
   .rail-card-in {
