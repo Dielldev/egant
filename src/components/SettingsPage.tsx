@@ -1335,6 +1335,10 @@ function ShortcutsSection() {
     ["Filter conversations", modShortcut("K")],
     ["Focus composer", modShortcut("L")],
     ["Toggle sidebar", modShortcut("B")],
+    ["Toggle workspace panel", modShortcut("J")],
+    ["Fill the window with the panel", modShortcut("⇧J")],
+    ["Stop the agent", modShortcut("Esc")],
+    ["Zoom in / out / actual size", `${modShortcut("+")}  ${modShortcut("-")}  ${modShortcut("0")}`],
     ["Open settings", modShortcut(",")],
     ["Close settings", "Esc"],
   ];

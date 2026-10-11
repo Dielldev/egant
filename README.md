@@ -193,6 +193,8 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
 | Focus composer | `⌘L` | `Ctrl+L` |
 | Toggle sidebar | `⌘B` | `Ctrl+B` |
 | Toggle workspace panel | `⌘J` | `Ctrl+J` |
+| Fill the window with the panel | `⌘⇧J` | `Ctrl+Shift+J` |
+| Zoom in / out / actual size | `⌘+` `⌘-` `⌘0` | `Ctrl+` `Ctrl-` `Ctrl+0` |
 | Interrupt the agent | `⌘⎋` | `Ctrl+Esc` |
 | Send / newline | `⏎` / `⇧⏎` | `⏎` / `⇧⏎` |
 

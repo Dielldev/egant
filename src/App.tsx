@@ -13,6 +13,7 @@ import { SessionHeader } from "./components/SessionHeader";
 import { useColumnLayout } from "./lib/layout";
 import { log } from "./lib/logger";
 import { checkForUpdates } from "./lib/updater";
+import { resetZoom, restoreZoom, zoomIn, zoomOut } from "./lib/zoom";
 import { LibraryPage } from "./components/LibraryPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
@@ -82,6 +83,10 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
+  }, []);
+
+  useEffect(() => {
+    restoreZoom();
   }, []);
 
   // Look for a newer release shortly after launch and every few hours after,
@@ -176,6 +181,48 @@ export default function App() {
       case "check-updates":
         void checkForUpdates(true);
         break;
+      case "filter":
+        store.openFilter();
+        break;
+      case "focus-composer":
+        store.requestFocusComposer();
+        break;
+      case "toggle-panel-maximized":
+        store.togglePanelMaximized();
+        break;
+      case "previous-conversation":
+        void store.selectPrevSession();
+        break;
+      case "next-conversation":
+        void store.selectNextSession();
+        break;
+      case "archive-conversation": {
+        const active = store.snapshot?.activeSession;
+        if (active != null) void store.archiveSession(active);
+        break;
+      }
+      // ⌘Esc: backs out of Settings or the Library first, and only then stops
+      // the agent — the same order the key has always had.
+      case "interrupt": {
+        if (store.settingsOpen) {
+          store.closeSettings();
+        } else if (store.libraryOpen) {
+          store.closeLibrary();
+        } else {
+          const active = store.snapshot?.activeSession;
+          if (active != null) void store.interrupt(active);
+        }
+        break;
+      }
+      case "zoom-in":
+        zoomIn();
+        break;
+      case "zoom-out":
+        zoomOut();
+        break;
+      case "zoom-reset":
+        resetZoom();
+        break;
     }
   };
   // The key handler below is installed once, so it reaches the latest closure
@@ -200,7 +247,6 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      const store = useEgant.getState();
       if (e.key === ",") {
         e.preventDefault();
         performRef.current("settings");
@@ -209,16 +255,9 @@ export default function App() {
       // Settings open: `Esc` backs out instead of touching the session.
       if (e.key === "Escape") {
         e.preventDefault();
-        if (store.settingsOpen) {
-          store.closeSettings();
-          return;
-        }
-        if (store.libraryOpen) {
-          store.closeLibrary();
-          return;
-        }
+        performRef.current("interrupt");
+        return;
       }
-      const active = store.snapshot?.activeSession;
       switch (e.key) {
         case "n":
           e.preventDefault();
@@ -226,11 +265,11 @@ export default function App() {
           break;
         case "k":
           e.preventDefault();
-          store.openFilter();
+          performRef.current("filter");
           break;
         case "l":
           e.preventDefault();
-          store.requestFocusComposer();
+          performRef.current("focus-composer");
           break;
         // Shift-L is the Library, beside plain ⌘L focusing the composer.
         case "L":
@@ -255,11 +294,7 @@ export default function App() {
         // character, which is what tells the two apart.
         case "J":
           e.preventDefault();
-          store.togglePanelMaximized();
-          break;
-        case "Escape":
-          e.preventDefault();
-          if (active != null) void store.interrupt(active);
+          performRef.current("toggle-panel-maximized");
           break;
       }
     };
