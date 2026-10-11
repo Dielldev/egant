@@ -3,8 +3,8 @@ import { useEgant } from "../store";
 
 /** Where the launch picture starts to melt into the ground, and where it is
  * gone, as fractions of the stage's height. */
-const FADE_FROM = 0.3;
-const FADE_TO = 0.82;
+const FADE_FROM = 0.35;
+const FADE_TO = 0.91;
 
 /** A mask that is opaque down to `from`, transparent from `to`, and eased
  * between (smoothstep: zero slope at both ends, so there is no visible seam
