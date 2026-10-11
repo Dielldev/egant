@@ -91,14 +91,38 @@ impl Settings {
             }
         };
 
-        // A wallpaper that has since been moved or deleted would render as a
-        // blank rectangle with no way to tell why, so forget it instead.
-        if settings
-            .wallpaper
-            .as_deref()
-            .is_some_and(|path| !path.is_file())
-        {
-            settings.wallpaper = None;
+        // The wallpaper is kept in egant's own folder (see `keep_wallpaper`), so
+        // it can't vanish with the original. One saved before that — a path to
+        // a file somewhere else — is moved in now, while the original is still
+        // there to copy.
+        //
+        // A path that is not a readable file is *not* forgotten. It used to be,
+        // and that is how a wallpaper disappeared: a drive that was not mounted
+        // yet, or a Desktop/Downloads folder macOS had not granted this launch,
+        // read as "missing", and the next save wrote the loss to disk for good.
+        // The picture just isn't drawn until the file is readable again (see
+        // `wallpaper_data_url`), and picking another one replaces the setting.
+        if let Some(path) = settings.wallpaper.clone() {
+            if path.is_file() {
+                if let Some(dir) = wallpaper_dir() {
+                    match keep_wallpaper(&path, &dir) {
+                        Ok(kept) if kept != path => {
+                            settings.wallpaper = Some(kept);
+                            settings.save();
+                        }
+                        Ok(_) => {}
+                        Err(error) => log::warn!(
+                            "could not copy the wallpaper into {}: {error}",
+                            dir.display()
+                        ),
+                    }
+                }
+            } else {
+                log::warn!(
+                    "wallpaper {} is not readable right now; keeping the setting",
+                    path.display()
+                );
+            }
         }
         settings.wallpaper_dim = clamp_dim(settings.wallpaper_dim);
         settings
@@ -128,8 +152,27 @@ impl Settings {
         }
     }
 
+    /// Sets (or, with `None`, clears) the wallpaper. A picture is copied into
+    /// egant's own folder first, so what is drawn no longer depends on the
+    /// original staying where it was; if the copy fails the original path is
+    /// used as it always was.
     pub fn set_wallpaper(&mut self, wallpaper: Option<PathBuf>) {
-        self.wallpaper = wallpaper;
+        self.wallpaper = match wallpaper {
+            Some(source) => match wallpaper_dir().map(|dir| keep_wallpaper(&source, &dir)) {
+                Some(Ok(copy)) => Some(copy),
+                Some(Err(error)) => {
+                    log::warn!("could not copy the wallpaper, using it in place: {error}");
+                    Some(source)
+                }
+                None => Some(source),
+            },
+            None => {
+                if let Some(dir) = wallpaper_dir() {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                None
+            }
+        };
         self.save();
     }
 
@@ -197,6 +240,46 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
     Some(home?.join(".config/egant"))
 }
 
+/// Where the chosen wallpaper is kept: beside `settings.json`.
+fn wallpaper_dir() -> Option<PathBuf> {
+    Some(config_dir()?.join("wallpaper"))
+}
+
+/// Copies `source` into `dir` and returns the copy's path, so the wallpaper
+/// survives the original being moved, deleted, on an unmounted drive, or behind
+/// a folder permission macOS only grants some launches.
+///
+/// Each pick gets a folder of its own named for the moment it was made, with
+/// the original file name inside. A fresh path per pick is what tells the
+/// window to load the new picture even when the name and type are unchanged,
+/// and keeping the name is what Settings shows. Earlier picks are removed once
+/// the new copy is in place; a source that is already in `dir` is left alone.
+fn keep_wallpaper(source: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    if source.starts_with(dir) {
+        return Ok(source.to_path_buf());
+    }
+    let name = source
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("the wallpaper has no file name"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let folder = dir.join(stamp.to_string());
+    std::fs::create_dir_all(&folder)?;
+    let copy = folder.join(name);
+    std::fs::copy(source, &copy)?;
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.path() != folder {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    Ok(copy)
+}
+
 fn clamp_dim(dim: f32) -> f32 {
     if dim.is_nan() {
         return DEFAULT_DIM;
@@ -217,8 +300,61 @@ pub fn is_supported_image(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_DIM, Settings, clamp_dim, is_supported_image};
-    use std::path::Path;
+    use super::{DEFAULT_DIM, Settings, clamp_dim, is_supported_image, keep_wallpaper};
+    use std::path::{Path, PathBuf};
+
+    /// A scratch folder of its own, so these tests never touch the real
+    /// settings directory.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "egant-wallpaper-test-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn a_kept_wallpaper_outlives_its_original() {
+        let root = scratch("outlives");
+        let original = root.join("photo.png");
+        std::fs::write(&original, b"picture").expect("writes");
+        let dir = root.join("kept");
+
+        let copy = keep_wallpaper(&original, &dir).expect("copies");
+        assert!(copy.starts_with(&dir));
+        assert_eq!(copy.file_name(), original.file_name());
+
+        std::fs::remove_file(&original).expect("removes the original");
+        assert_eq!(std::fs::read(&copy).expect("still readable"), b"picture");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn picking_again_replaces_the_earlier_copy_and_a_kept_one_is_left_alone() {
+        let root = scratch("replaces");
+        let first = root.join("one.png");
+        let second = root.join("two.png");
+        std::fs::write(&first, b"1").expect("writes");
+        std::fs::write(&second, b"2").expect("writes");
+        let dir = root.join("kept");
+
+        let one = keep_wallpaper(&first, &dir).expect("copies");
+        // Already ours: no second copy.
+        assert_eq!(keep_wallpaper(&one, &dir).expect("keeps"), one);
+
+        // Sleep a tick so the two picks can't share a millisecond folder name.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let two = keep_wallpaper(&second, &dir).expect("copies");
+        assert_ne!(one, two);
+        assert!(!one.exists(), "the earlier pick is cleared out");
+        assert!(two.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_dim_stays_inside_its_range() {
