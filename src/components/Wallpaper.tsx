@@ -1,6 +1,26 @@
 import { isLinux } from "../lib/platform";
 import { useEgant } from "../store";
 
+/** Where the launch picture starts to melt into the ground, and where it is
+ * gone, as fractions of the stage's height. */
+const FADE_FROM = 0.3;
+const FADE_TO = 0.82;
+
+/** A mask that is opaque down to `from`, transparent from `to`, and eased
+ * between (smoothstep: zero slope at both ends, so there is no visible seam
+ * where the fade begins or finishes). */
+function fadeToGround(from: number, to: number): string {
+  const steps = 10;
+  const stops: string[] = [`#000 ${from * 100}%`];
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const alpha = 1 - t * t * (3 - 2 * t);
+    stops.push(`rgba(0,0,0,${alpha.toFixed(3)}) ${((from + (to - from) * t) * 100).toFixed(1)}%`);
+  }
+  stops.push(`transparent ${to * 100}%`);
+  return `linear-gradient(to bottom, ${stops.join(", ")})`;
+}
+
 /** What sits behind the stage, in the two states the window has.
  *
  * On the launch screen the image reads full-bleed and dissolves into black
@@ -76,15 +96,15 @@ export function Wallpaper({
   }
 
   const veil = (dim * 0.4).toFixed(3);
-  // The picture fills the whole stage and melts into the blank ground over a
-  // long, eased ramp (smoothstep stops, so there is no visible start or end
-  // to the fade), landing on solid stage color only at the very bottom. The
-  // image itself sits taller than the stage and is lifted by 10%, which
-  // carries the scene up and away from the composer. The ground is the
-  // active theme's own stage color, so the dissolve reads dark in a dark
-  // palette and light in a light one.
-  const sectionFade =
-    "linear-gradient(to bottom, #000 0%, #000 40%, rgba(0,0,0,0.972) 46%, rgba(0,0,0,0.896) 52%, rgba(0,0,0,0.784) 58%, rgba(0,0,0,0.648) 64%, rgba(0,0,0,0.5) 70%, rgba(0,0,0,0.352) 76%, rgba(0,0,0,0.216) 82%, rgba(0,0,0,0.104) 88%, rgba(0,0,0,0.028) 94%, transparent 100%)";
+  // The picture fills the stage but only the upper part of it is really
+  // shown: it holds at full strength to FADE_FROM, then melts into the blank
+  // ground along a smoothstep ramp (no visible start or end to the fade) and is
+  // gone by FADE_TO, so the lower part of the window is the theme's own stage
+  // color — black in a dark palette, light in a light one — flowing up into the
+  // picture rather than the picture running to the bottom edge. The image
+  // itself sits taller than the stage and is lifted by 10%, which carries the
+  // scene up and away from the composer.
+  const sectionFade = fadeToGround(FADE_FROM, FADE_TO);
   return (
     <div
       className={exiting ? "dissolve-out" : undefined}
