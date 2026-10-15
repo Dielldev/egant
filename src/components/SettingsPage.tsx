@@ -16,6 +16,7 @@ import {
   AlignLeft,
   KeyRound,
   Keyboard,
+  ChartColumn,
   LayoutGrid,
   MessageCircle,
   Monitor,
@@ -911,6 +912,18 @@ function AppearanceSection() {
               options={BG_EFFECTS}
               value={appearance.bgEffect}
               onChange={(bgEffect) => setAppearance({ bgEffect })}
+            />
+          }
+        />
+        <Row
+          icon={ChartColumn}
+          title="Activity panel"
+          sub="The token calendar and per-agent split under the new thread composer."
+          control={
+            <Toggle
+              on={appearance.showActivity}
+              onChange={(showActivity) => setAppearance({ showActivity })}
+              label="Activity panel"
             />
           }
         />

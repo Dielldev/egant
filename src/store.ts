@@ -286,6 +286,8 @@ export interface AppearanceState {
   accent: string;
   glass: GlassMode;
   bgEffect: BgEffect;
+  /** The token-activity panel under the launch screen's composer. */
+  showActivity: boolean;
 }
 
 // The workspace panel's hard ceiling — a fixed pixel position, not one
@@ -303,6 +305,7 @@ const DEFAULT_APPEARANCE: AppearanceState = {
   accent: "default",
   glass: "default",
   bgEffect: "none",
+  showActivity: true,
 };
 
 function loadAppearance(): AppearanceState {

@@ -1,5 +1,6 @@
 import { Monitor } from "lucide-react";
 import { useEgant } from "../store";
+import { ActivityPanel } from "./ActivityPanel";
 import { Composer } from "./Composer";
 import { ProjectMenu } from "./ProjectMenu";
 import { CheckoutChips } from "./Worktree";
@@ -14,7 +15,7 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col items-center px-6"
+      className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-8"
       style={{ paddingTop: "32vh" }}
     >
       <div className={`w-full max-w-[735px] ${exiting ? "dock-exit" : "rise"}`}>
@@ -47,6 +48,10 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
         >
           <CheckoutChips />
         </div>
+        {/* Below the composer, where a long window has room for it and a short
+          one scrolls to it: the stage owns the scrolling so the composer keeps
+          the place it has always had. */}
+        <ActivityPanel />
       </div>
     </div>
   );

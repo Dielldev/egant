@@ -1801,6 +1801,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         connect_agent,
         list_models,
         claude_usage_limits,
+        crate::activity::token_activity,
         wallpaper_data_url,
         sync_window_appearance,
         crate::files::list_dir,

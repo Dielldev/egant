@@ -43,6 +43,7 @@ import type {
   SettingsState,
   SkillCommandOutcome,
   SkillsLibrary,
+  TokenActivity,
   TranscriptDto,
   WindowState,
   WorktreeInfo,
@@ -295,6 +296,15 @@ export const api = {
    * call — the composer polls it, not the hot render path. */
   claudeUsageLimits: () =>
     traced("claude_usage_limits", "", () => invoke<ClaudeUsage | null>("claude_usage_limits")),
+  /** Tokens per agent, model and day, read from the CLIs' own logs. The
+   * first call after a fresh install reads a gigabyte, so it takes a couple
+   * of seconds; later ones only re-read what changed. */
+  tokenActivity: () =>
+    traced("token_activity", "", () =>
+      invoke<TokenActivity>("token_activity", {
+        tzOffsetMinutes: new Date().getTimezoneOffset(),
+      }),
+    ),
   wallpaperDataUrl: () =>
     traced("wallpaper_data_url", "", () => invoke<string | null>("wallpaper_data_url")),
   /** Keeps the native window's titlebar theme and macOS frosted-glass blur

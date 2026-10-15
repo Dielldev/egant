@@ -631,6 +631,30 @@ export interface ClaudeUsage {
   sevenDaySonnet: UsageWindow | null;
 }
 
+/** What one model spent on one day (`token_activity`). Cache reads and writes
+ * are counted: they are most of the volume. */
+export interface ModelDay {
+  /** `claude`, `codex` or `opencode` — the same ids as `AGENT_ACCENT`. */
+  agent: string;
+  model: string;
+  input: number;
+  output: number;
+  cache: number;
+}
+
+/** One local calendar day, `YYYY-MM-DD`. Quiet days are left out. */
+export interface DayActivity {
+  date: string;
+  models: ModelDay[];
+}
+
+/** Every token moved through the agents' own logs, oldest day first, for the
+ * launch screen's activity panel. Totals and splits are the panel's to sum,
+ * so a range is just a filter over the days. */
+export interface TokenActivity {
+  days: DayActivity[];
+}
+
 /** 200000 → "200K", 1048576 → "1M", 0 → "". Used for the composer's
  * `High · 200K` badge. */
 export function formatContext(context: number): string {

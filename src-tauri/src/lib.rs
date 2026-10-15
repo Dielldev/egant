@@ -10,6 +10,7 @@
 //! see [`worktrees`] for which, and for what becomes of the checkout when the
 //! conversation is closed.
 
+mod activity;
 mod browser;
 mod commands;
 mod dto;
@@ -34,10 +35,42 @@ mod worktrees;
 use state::AppState;
 use std::sync::Mutex;
 
+/// A panic on the main thread aborts the app (it unwinds into AppKit's
+/// event hook, which cannot unwind), and a launched `.app` has no terminal to
+/// print the message to — so the crash report only says "abort". Keep the
+/// message, place and backtrace in `crash.log` beside the saved sessions.
+fn keep_panic_reports() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(dir) = settings::config_dir() {
+            use std::io::Write;
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or_default();
+            let thread = std::thread::current();
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("crash.log"))
+            {
+                let _ = writeln!(
+                    file,
+                    "[{stamp}] panic on thread {:?}: {info}\n{backtrace}\n",
+                    thread.name().unwrap_or("<unnamed>"),
+                );
+            }
+        }
+        previous(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("egant starting (set RUST_LOG=debug for protocol details)");
+    keep_panic_reports();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
