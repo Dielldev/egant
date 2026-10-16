@@ -38,6 +38,7 @@ import {
   truncate,
 } from "@egant/lib/transcript";
 import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "@egant/lib/types";
+import { modelWindowFor } from "@egant/lib/types";
 import type { MobileSession } from "../api";
 import { localLink } from "../localLink";
 import { usePrefs } from "../prefs";
@@ -729,10 +730,17 @@ function ChatComposer({ session, transcript }: { session: MobileSession; transcr
   const ended = session.ended && transcript.sessionId == null;
   const mode = session.permissionMode;
   const place = session.worktree?.name ?? session.branch;
+  // The catalog's window for the running model — what the strip measures
+  // against until (and unless) the backend names the real one.
+  const catalog = useMobile((s) => s.models[session.agent]);
+  const modelWindow = modelWindowFor(
+    catalog,
+    transcript.model ?? session.requestedModel ?? session.model ?? null,
+  );
 
   return (
     <>
-      <UsageStrip agent={session.agent} usage={transcript.usage} />
+      <UsageStrip agent={session.agent} usage={transcript.usage} modelWindow={modelWindow} />
       <Composer
         value={text}
         onChange={setText}

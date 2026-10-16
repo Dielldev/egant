@@ -2367,18 +2367,31 @@ fn start_harness(
             tauri::async_runtime::spawn(pump.run());
             Ok(Box::new(harness))
         }
-        AgentId::Codex => CodexExec::spawn(CodexOptions {
-            program: resolve_cli(agent)?,
-            cwd,
-            project_name: Some(project_name),
-            model,
-            context_window: context,
-            reasoning_effort: variant,
-            thread: resume,
-            permission_mode,
-        })
-        .map(|harness| Box::new(harness) as Box<dyn Harness>)
-        .map_err(|error| error.to_string()),
+        AgentId::Codex => {
+            // Like Claude, the wide window is the default: the CLI's own
+            // `max_context_window` is the ceiling it advertises for the
+            // model, and a session that quietly took a third of what the
+            // model can hold is the kind of thing nobody thinks to go and
+            // turn on. An explicit choice still wins, which is the only way
+            // to ask for less.
+            let context_window = context.or_else(|| {
+                model
+                    .as_deref()
+                    .and_then(|id| egant_harness::models::max_context(AgentId::Codex, id))
+            });
+            CodexExec::spawn(CodexOptions {
+                program: resolve_cli(agent)?,
+                cwd,
+                project_name: Some(project_name),
+                model,
+                context_window,
+                reasoning_effort: variant,
+                thread: resume,
+                permission_mode,
+            })
+            .map(|harness| Box::new(harness) as Box<dyn Harness>)
+            .map_err(|error| error.to_string())
+        }
         AgentId::Opencode => OpencodeRun::spawn(OpencodeOptions {
             program: resolve_cli(agent)?,
             cwd,

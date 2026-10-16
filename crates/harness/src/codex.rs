@@ -242,11 +242,15 @@ impl CodexTranslator {
         let turn = std::mem::take(&mut self.turn);
         self.settled = true;
         // This wire accounts for prompt and reply only; it says nothing
-        // about cache splits or the window, which stay at zero rather
-        // than being invented here.
+        // about cache splits, which stay at zero rather than being invented
+        // here. The window is the one the session asked for (the catalog's
+        // wide window by default — see `models::max_context`), which is what
+        // the meter measures occupancy against.
+        let window = self.context_window.unwrap_or(0);
         let usage = crate::TurnUsage {
             input_tokens: turn.input_tokens,
             output_tokens: turn.output_tokens,
+            context_window: window,
             ..Default::default()
         };
         let mut events = Vec::new();

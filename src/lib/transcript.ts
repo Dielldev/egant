@@ -823,21 +823,31 @@ export function timeLabel(atMs: number): string {
   });
 }
 
-/** The window to measure against before an agent has named its own. Every
- * current Claude model ships with at least this much, and a session running a
- * larger one (`claude-opus-5[1m]`) reports its real window on the first turn,
- * so this only ever governs an empty transcript. */
-const DEFAULT_CONTEXT_WINDOW = 200_000;
+/** The window to measure against when neither the agent nor the catalog named
+ * one (a custom-typed id, an offline list that predates the model). Assumed
+ * wide: every current model across the agents runs at a million tokens
+ * except a handful of legacy small ones, and those name their real window on
+ * the first turn anyway. */
+const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 
-/** How full the context window is, 0..1. */
-export function contextFraction(usage: SessionUsage): number {
-  const window = usage.contextWindow > 0 ? usage.contextWindow : DEFAULT_CONTEXT_WINDOW;
+/** How full the context window is, 0..1. `modelWindow` is the catalog's
+ * window for the running model — what the reading is measured against until
+ * (and unless) the backend names the real one. */
+export function contextFraction(usage: SessionUsage, modelWindow = 0): number {
+  const window =
+    usage.contextWindow > 0
+      ? usage.contextWindow
+      : modelWindow > 0
+        ? modelWindow
+        : DEFAULT_CONTEXT_WINDOW;
   return Math.min(1, usage.contextTokens / window);
 }
 
 /** The window a reading is measured against, resolved for display. */
-export function contextWindow(usage: SessionUsage): number {
-  return usage.contextWindow > 0 ? usage.contextWindow : DEFAULT_CONTEXT_WINDOW;
+export function contextWindow(usage: SessionUsage, modelWindow = 0): number {
+  if (usage.contextWindow > 0) return usage.contextWindow;
+  if (modelWindow > 0) return modelWindow;
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 /** Token counts at a glance: `25k`, `1.2M`. Exact figures belong in the

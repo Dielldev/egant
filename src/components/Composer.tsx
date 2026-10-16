@@ -21,6 +21,7 @@ import { modShortcut } from "../lib/platform";
 import { commandItems, findTrigger, mention } from "../lib/composerMenu";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { contextFraction } from "../lib/transcript";
+import { modelWindowFor } from "../lib/types";
 import { selectNextAgent, useEgant, usesChatUi } from "../store";
 import { AgentPicker, agentName } from "./AgentPicker";
 import { ComposerMenu, type MenuItem } from "./ComposerMenu";
@@ -160,6 +161,17 @@ export function Composer({
   const resumable = (session?.ended ?? false) && transcript?.sessionId != null;
   const ended = (session?.ended ?? false) && !resumable;
   const hasText = text.trim().length > 0;
+  // The catalog's window for the running model — what the meter measures
+  // against until (and unless) the backend names the real one. Warmed by the
+  // model picker, so this is usually already here rather than a fetch.
+  const modelCatalog = useEgant((s) => {
+    const a = s.snapshot?.sessions.find((x) => x.id === sessionId)?.agent;
+    return a ? s.modelCache[a] : undefined;
+  });
+  const modelWindow = modelWindowFor(
+    modelCatalog,
+    transcript?.model ?? session?.modelOverride ?? null,
+  );
   // Claude's own `/compact`, offered once the window is mostly full: it
   // summarizes the conversation so far and carries on from the summary. Only
   // for Claude — the one agent whose compaction egant can see happen — and
@@ -170,7 +182,7 @@ export function Composer({
     !busy &&
     !ended &&
     transcript.usage.contextTokens > 0 &&
-    contextFraction(transcript.usage) >= COMPACT_OFFER_AT;
+    contextFraction(transcript.usage, modelWindow) >= COMPACT_OFFER_AT;
   // The `/` and `@` menus: only in a conversation, where there is a session
   // to list commands for and a folder to list files in.
   const trigger = sessionId != null && !hero ? findTrigger(text, caret) : null;
@@ -738,6 +750,7 @@ export function Composer({
               costUsd={transcript.totalCostUsd}
               claudeUsage={claudeActive ? claudeUsage : null}
               showPercent
+              modelWindow={modelWindow}
             />
           )}
         </div>

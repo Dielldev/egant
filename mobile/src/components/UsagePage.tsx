@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useNow } from "@egant/components/useNow";
 import { fallbackName } from "@egant/lib/agents";
 import { contextFraction, contextWindow, formatCost, formatTokens } from "@egant/lib/transcript";
+import { modelWindowFor } from "@egant/lib/types";
 import type { SessionUsage, UsageWindow } from "@egant/lib/types";
 import { formatResetIn, isUsageCritical, roundPercent } from "@egant/lib/usageLimits";
 import { useMobile } from "../store";
@@ -30,6 +31,13 @@ export function UsagePage() {
 
   const hasWindows = claude != null && (claude.fiveHour || claude.sevenDay || claude.sevenDaySonnet);
   const context = transcript && transcript.usage.contextTokens > 0 ? transcript.usage : null;
+  // The catalog's window for the running model — what the reading is measured
+  // against until (and unless) the backend names the real one.
+  const catalog = useMobile((s) => (session ? s.models[session.agent] : undefined));
+  const modelWindow = modelWindowFor(
+    catalog,
+    transcript?.model ?? session?.requestedModel ?? session?.model ?? null,
+  );
 
   return (
     <div className="page-in fixed inset-0 z-[55] flex flex-col bg-[var(--stage)]">
@@ -60,7 +68,7 @@ export function UsagePage() {
           {context && session && (
             <Group label="This chat" note={`${session.title} · ${fallbackName(session.agent)}`}>
               <div className="px-4 py-4">
-                <ContextBlock usage={context} costUsd={transcript?.totalCostUsd ?? 0} />
+                <ContextBlock usage={context} costUsd={transcript?.totalCostUsd ?? 0} modelWindow={modelWindow} />
               </div>
             </Group>
           )}
@@ -117,8 +125,8 @@ function Limit({ label, window, now }: { label: string; window: UsageWindow; now
   );
 }
 
-function ContextBlock({ usage, costUsd }: { usage: SessionUsage; costUsd: number }) {
-  const fraction = contextFraction(usage);
+function ContextBlock({ usage, costUsd, modelWindow }: { usage: SessionUsage; costUsd: number; modelWindow: number }) {
+  const fraction = contextFraction(usage, modelWindow);
   const percent = Math.max(1, Math.round(fraction * 100));
   return (
     <>
@@ -129,7 +137,7 @@ function ContextBlock({ usage, costUsd }: { usage: SessionUsage; costUsd: number
       <Bar percent={percent} critical={fraction >= 0.9} />
       <div className="mt-2 flex justify-between text-[13px] text-[var(--muted)]">
         <span>
-          {formatTokens(usage.contextTokens)} of {formatTokens(contextWindow(usage))} tokens
+          {formatTokens(usage.contextTokens)} of {formatTokens(contextWindow(usage, modelWindow))} tokens
         </span>
         {costUsd > 0 && <span>{formatCost(costUsd)} so far</span>}
       </div>
@@ -156,9 +164,12 @@ function Bar({ percent, critical }: { percent: number; critical: boolean }) {
 export function UsageStrip({
   agent,
   usage,
+  modelWindow,
 }: {
   agent: string;
   usage: SessionUsage;
+  /** The catalog's window for the running model — see `ContextBlock`. */
+  modelWindow?: number;
 }) {
   const openUsage = useMobile((s) => s.openUsage);
   const claude = useUsage((s) => s.claude);
@@ -175,7 +186,8 @@ export function UsageStrip({
   );
   if (!hasContext && !worst) return null;
 
-  const contextPercent = hasContext ? Math.max(1, Math.round(contextFraction(usage) * 100)) : null;
+  const window_ = modelWindow ?? 0;
+  const contextPercent = hasContext ? Math.max(1, Math.round(contextFraction(usage, window_) * 100)) : null;
   const fiveHour = claude?.fiveHour;
   return (
     <button
@@ -186,7 +198,7 @@ export function UsageStrip({
       {hasContext && contextPercent != null && (
         <span className="flex items-center gap-1.5 tabular-nums">
           <Ring percent={contextPercent} />
-          {formatTokens(usage.contextTokens)} / {formatTokens(contextWindow(usage))} context
+          {formatTokens(usage.contextTokens)} / {formatTokens(contextWindow(usage, window_))} context
         </span>
       )}
       {hasContext && worst && <span className="text-[var(--faint)]">·</span>}

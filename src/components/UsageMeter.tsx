@@ -33,6 +33,7 @@ export function UsageMeter({
   costUsd,
   claudeUsage,
   showPercent,
+  modelWindow,
 }: {
   usage: SessionUsage;
   costUsd: number;
@@ -41,6 +42,9 @@ export function UsageMeter({
   /** Prints the ring's figure beside it — the composer's footer, where the
    * meter sits alone and has the room to say what it's showing. */
   showPercent?: boolean;
+  /** The catalog's window for the running model — what the reading is
+   * measured against until (and unless) the backend names the real one. */
+  modelWindow?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [openUpward, setOpenUpward] = useState(true);
@@ -81,11 +85,11 @@ export function UsageMeter({
   const hasLimits = hasUsageData(claudeUsage);
   if (!hasContext && !hasLimits) return null;
 
-  const contextFractionValue = hasContext ? contextFraction(usage) : 0;
+  const contextFractionValue = hasContext ? contextFraction(usage, modelWindow ?? 0) : 0;
   const contextPercent = hasContext
     ? Math.max(1, Math.round(contextFractionValue * 100))
     : null;
-  const window_ = contextWindow(usage);
+  const window_ = contextWindow(usage, modelWindow ?? 0);
 
   const fiveHour = hasLimits ? roundPercent(claudeUsage!.fiveHour) : 0;
   const sevenDay = hasLimits ? roundPercent(claudeUsage!.sevenDay) : 0;

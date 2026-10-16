@@ -45,7 +45,9 @@ pub struct AgentModel {
     /// the picker shows and what a session gets unless something explicitly
     /// asks for less. For most agents it's the same as `context`; Claude's
     /// larger models take a million-token window through the `[1m]` suffix on
-    /// their id, so theirs is higher than the window they default to.
+    /// their id (so theirs is higher than the window they default to), and
+    /// Codex's take the CLI's own `max_context_window` through
+    /// `-c model_context_window=N`.
     pub max_context: u64,
     /// Reasoning/effort variants the model advertises: opencode's live
     /// catalog per model, and a fixed curated list for Claude
@@ -455,9 +457,10 @@ fn codex_context(id: &str) -> u64 {
 
 /// The picker-visible rows of the Codex CLI's `models_cache.json`, in the
 /// CLI's own priority order. Hidden rows (`visibility: "hide"`, e.g. internal
-/// review models) are dropped. `context_window` is what a session actually
-/// gets; `max_context_window` is the ceiling a config override could reach,
-/// which egant doesn't set, so it isn't advertised.
+/// review models) are dropped. `context_window` is what a session gets unless
+/// it asks for more; `max_context_window` is the wider window the CLI itself
+/// advertises for the model, which a session asks for by default (see
+/// [`max_context`]) and the picker shows.
 fn parse_codex_cache(body: &[u8]) -> Result<Vec<AgentModel>, String> {
     let doc: serde_json::Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
     let rows = doc["models"].as_array().ok_or("no `models` in the cache")?;
@@ -471,6 +474,7 @@ fn parse_codex_cache(body: &[u8]) -> Result<Vec<AgentModel>, String> {
         .filter_map(|row| {
             let id = row["slug"].as_str()?;
             let context = row["context_window"].as_u64().unwrap_or(0);
+            let max = row["max_context_window"].as_u64().unwrap_or(0);
             Some(AgentModel {
                 id: id.to_string(),
                 name: row["display_name"].as_str().unwrap_or(id).to_string(),
@@ -481,7 +485,7 @@ fn parse_codex_cache(body: &[u8]) -> Result<Vec<AgentModel>, String> {
                     .map(str::to_string)
                     .unwrap_or_else(|| provider_name("openai")),
                 context,
-                max_context: context,
+                max_context: max.max(context),
                 variants: row["supported_reasoning_levels"]
                     .as_array()
                     .into_iter()
@@ -743,7 +747,7 @@ fn parse_claude_catalog(body: &[u8]) -> Result<Vec<AgentModel>, String> {
             }
             let runtime = &row["runtime"];
             let window = runtime["max_input_tokens"].as_u64().unwrap_or(0);
-            let window = if window == 0 { 200_000 } else { window };
+            let window = if window == 0 { 1_000_000 } else { window };
             let description =
                 row["description"]
                     .as_str()
@@ -813,7 +817,9 @@ fn claude_fallback_models() -> Vec<AgentModel> {
     // from this account (they answer "requires usage credits" with or without
     // the suffix); they're listed at a million because every other non-Haiku
     // model here is, and a wrong guess degrades rather than fails — see
-    // `deny_wide_context`.
+    // `deny_wide_context`. Haiku 5.5, Opus 4.6 and Sonnet 4.6 shipped after
+    // that measurement; the published catalog lists each at a million input
+    // tokens, so they are listed at a million on the same reasoning.
     const MODELS: &[(&str, &str, &str, u64)] = &[
         (
             "claude-opus-5-5",
@@ -825,6 +831,12 @@ fn claude_fallback_models() -> Vec<AgentModel> {
             "claude-sonnet-5-5",
             "Sonnet 5.5",
             "Most efficient for simpler tasks",
+            1_000_000,
+        ),
+        (
+            "claude-haiku-5-5",
+            "Haiku 5.5",
+            "Fastest model for everyday tasks",
             1_000_000,
         ),
         (
@@ -858,9 +870,21 @@ fn claude_fallback_models() -> Vec<AgentModel> {
             1_000_000,
         ),
         (
+            "claude-opus-4-6",
+            "Opus 4.6",
+            "Older generation Opus",
+            1_000_000,
+        ),
+        (
             "claude-sonnet-5",
             "Sonnet 5",
             "Balanced speed and intelligence",
+            1_000_000,
+        ),
+        (
+            "claude-sonnet-4-6",
+            "Sonnet 4.6",
+            "Older generation Sonnet",
             1_000_000,
         ),
         (
@@ -922,17 +946,62 @@ fn base_model_id(model: &str) -> &str {
     model.split('[').next().unwrap_or(model).trim()
 }
 
+/// `claude-haiku-4-5-20251001` → `claude-haiku-4-5`: the published catalog
+/// mixes dated release ids and family ids for the same model, so lookups
+/// compare both sides stripped.
+fn strip_release_date(id: &str) -> &str {
+    if let Some((head, tail)) = id.rsplit_once('-')
+        && tail.len() == 8
+        && tail.bytes().all(|b| b.is_ascii_digit())
+    {
+        return head;
+    }
+    id
+}
+
 /// The widest window `model` can be asked for, when that is wider than the
 /// window it would otherwise run with — `None` when there is nothing to ask
-/// for, which is every agent but Claude and Claude's own Haiku row. Reads the
-/// curated list directly, so it never spawns anything: the caller is session
-/// startup, where a CLI probe would stall the first message.
+/// for. Reads the catalogs directly, never spawns anything: the callers are
+/// session startup and the usage meter, where a CLI probe would stall the
+/// first message. Codex reads the CLI's own cache file (no spawn); Claude
+/// reads the in-memory catalog.
+///
+/// A `claude-`-prefixed id (or bare family alias) the catalog has never heard
+/// of is a model released after this build — the failure that once hid new
+/// releases — and every current first-party model but one legacy Haiku runs
+/// at a million tokens, so it is given the wide window rather than the
+/// standard one. A refusal lands in [`deny_wide_context`] and the next turn
+/// runs standard, the same degradation the unmeasurable fallback rows
+/// already accept.
 pub fn max_context(agent: AgentId, model: &str) -> Option<u64> {
-    if agent != AgentId::Claude {
-        return None;
-    }
     let id = base_model_id(model);
-    let row = claude_models().into_iter().find(|m| m.id == id)?;
+    match agent {
+        AgentId::Claude => {
+            if wide_context_denied(id) {
+                return None;
+            }
+            if let Some(row) = claude_models()
+                .into_iter()
+                .find(|m| strip_release_date(&m.id) == strip_release_date(id))
+            {
+                return (row.max_context > row.context).then_some(row.max_context);
+            }
+            const ALIASES: &[&str] = &["fable", "opus", "sonnet", "haiku"];
+            let wide_by_default = id.starts_with("claude-") || ALIASES.contains(&id);
+            wide_by_default.then_some(1_000_000)
+        }
+        AgentId::Codex => codex_max_context(id),
+        _ => None,
+    }
+}
+
+/// The wider window the Codex CLI advertises for `id` in its own cache file,
+/// when one is wider than the window sessions otherwise get. File read only —
+/// never the `app-server` spawn — so session startup can call this freely.
+fn codex_max_context(id: &str) -> Option<u64> {
+    let body = read_codex_cache()?;
+    let rows = parse_codex_cache(&body).ok()?;
+    let row = rows.into_iter().find(|model| model.id == id)?;
     (row.max_context > row.context).then_some(row.max_context)
 }
 
@@ -1020,9 +1089,10 @@ fn parse_antigravity(out: &[u8]) -> Vec<AgentModel> {
                 description: provider_display.clone(),
                 provider_name: provider_display,
                 // `agy models` says nothing about windows and nothing local
-                // does either, so none is claimed: unknown hides the badge.
-                context: 0,
-                max_context: 0,
+                // does either, so the wide window is assumed: every model it
+                // serves is a frontier model at a million tokens.
+                context: 1_000_000,
+                max_context: 1_000_000,
                 // The effort is part of the id (`…-high`, `…-low`), so there
                 // is no second axis to offer.
                 variants: Vec::new(),
@@ -1158,16 +1228,20 @@ fn model_from(header: &str, detail: &str) -> AgentModel {
         .and_then(|l| l.get("context"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0);
+    // opencode's `limit.context` trails what providers actually serve (it
+    // still lists 200K for models that run at a million), so anything under
+    // a million is raised to it. A genuinely wider window is kept as is.
+    let window = context.max(1_000_000);
     AgentModel {
         id: header.to_string(),
         name,
         provider: provider.to_string(),
         provider_name: provider_display,
         description,
-        context,
+        context: window,
         // opencode reports one window per model and offers no way to ask for
         // a wider one, so the most it can do is the most it advertises.
-        max_context: context,
+        max_context: window,
         variants,
         default_variant: String::new(),
         cli_default: false,
@@ -1208,9 +1282,10 @@ mod tests {
         assert_eq!(models[0].name, "Gemini 3.1 Pro (High)");
         assert_eq!(models[0].provider_name, "Google");
         assert_eq!(
-            models[0].context, 0,
-            "no source for a window, so none claimed"
+            models[0].context, 1_000_000,
+            "no source for a window, so the wide one is assumed"
         );
+        assert_eq!(models[0].max_context, 1_000_000);
         assert_eq!(models[1].provider_name, "Anthropic");
         assert_eq!(models[2].provider_name, "OpenAI");
         assert!(models.iter().all(|m| m.variants.is_empty()));
@@ -1263,6 +1338,41 @@ mod tests {
         // the failure that left saved sessions off Opus 5.5.
         assert!(is_known_model(AgentId::Claude, "claude-opus-9-1"));
         assert!(is_known_model(AgentId::Claude, "claude-opus-9-1[1m]"));
+    }
+
+    #[test]
+    fn unknown_claude_models_default_to_the_wide_window() {
+        // A model released after this build is in no compiled-in list, but
+        // every current first-party model but one legacy Haiku runs at a
+        // million tokens — so sessions ask for the wide window instead of
+        // quietly taking a fifth of what the model can hold. A refusal lands
+        // in `deny_wide_context` and the next turn runs standard.
+        assert_eq!(
+            max_context(AgentId::Claude, "claude-opus-9-1"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            max_context(AgentId::Claude, "claude-opus-9-1[1m]"),
+            Some(1_000_000)
+        );
+        // Bare family aliases always track the newest of the family, which
+        // the catalog lists at a million.
+        assert_eq!(max_context(AgentId::Claude, "sonnet"), Some(1_000_000));
+        // The one legacy row held at the standard window asks for nothing —
+        // however the catalog spells its id (dated or not).
+        assert_eq!(max_context(AgentId::Claude, "claude-haiku-4-5"), None);
+        assert_eq!(
+            max_context(AgentId::Claude, "claude-haiku-4-5-20251001"),
+            None
+        );
+        // A known million-token model resolves with or without the suffix.
+        assert_eq!(
+            max_context(AgentId::Claude, "claude-sonnet-5-5[1m]"),
+            Some(1_000_000)
+        );
+        // Agents without a wider window to ask for get nothing.
+        assert_eq!(max_context(AgentId::Opencode, "openai/gpt-x"), None);
+        assert_eq!(max_context(AgentId::Antigravity, "gemini-3-pro"), None);
     }
 
     const CATALOG_FIXTURE: &str = r#"{
@@ -1332,10 +1442,11 @@ mod tests {
             ["gpt-a", "gpt-b"],
             "priority order, hidden row dropped"
         );
-        // The window a session gets, not the override ceiling.
+        // The window a session gets by default, and the wider one it asks
+        // for — the picker shows the wider, and sessions run with it.
         assert_eq!(
             (models[1].context, models[1].max_context),
-            (272_000, 272_000)
+            (272_000, 872_000)
         );
         assert_eq!(models[1].variants, ["low", "high"]);
         assert_eq!(models[1].default_variant, "medium");
@@ -1505,7 +1616,30 @@ sleep 30
         let out = b"opencode/big-pickle\n{\"id\":\"big-pickle\",\"name\":\"Big Pickle\",\"limit\":{\"context\":200000},\"variants\":{}}\n";
         let models = parse_verbose(out);
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].context, 200_000);
+        // opencode's 200K trails what the model actually serves.
+        assert_eq!(
+            (models[0].context, models[0].max_context),
+            (1_000_000, 1_000_000)
+        );
+    }
+
+    #[test]
+    fn verbose_catalog_keeps_a_genuinely_wider_window() {
+        let out = b"acme/big-model\n{\"id\":\"big-model\",\"name\":\"Big Model\",\"limit\":{\"context\":2000000},\"variants\":{}}\n";
+        let models = parse_verbose(out);
+        assert_eq!(
+            (models[0].context, models[0].max_context),
+            (2_000_000, 2_000_000)
+        );
+    }
+
+    #[test]
+    fn verbose_catalog_without_a_limit_assumes_the_wide_window() {
+        let models = parse_verbose(b"acme/super-model-2.0\nnot json\n");
+        assert_eq!(
+            (models[0].context, models[0].max_context),
+            (1_000_000, 1_000_000)
+        );
     }
 
     #[test]

@@ -602,8 +602,8 @@ export interface AgentModel {
   context: number;
   /** The widest window this model can be asked for, which is what it actually
    * runs with here — Claude's larger models take a million through the `[1m]`
-   * suffix on their id. Equal to `context` for everything that has no wider
-   * window to ask for. */
+   * suffix on their id, Codex's take the CLI's own `max_context_window`.
+   * Equal to `context` for everything that has no wider window to ask for. */
   maxContext: number;
   /** Reasoning variants the model advertises. */
   variants: string[];
@@ -613,6 +613,43 @@ export interface AgentModel {
   /** Whether this is the model the CLI itself would pick — what the picker's
    * "Default" row resolves to. Only Codex reports it. */
   cliDefault: boolean;
+}
+
+/** The window a catalog row actually runs with here: the widest the agent
+ * asks for (`maxContext` where one is wider), else `context`. `0` when the
+ * catalog claims none — the meter then falls back to its own default. */
+export function rowWindow(model: AgentModel | undefined): number {
+  if (!model) return 0;
+  return model.maxContext > model.context ? model.maxContext : model.context;
+}
+
+/** Finds the catalog row for a requested or running model id. A live session
+ * reports the fully-resolved id (`claude-opus-5[1m]`,
+ * `claude-haiku-4-5-20251001`) while the catalog lists the short one, so the
+ * bracket suffix and the release date are tried stripped before giving up.
+ * `undefined` when nothing matches — never a guess at another row. */
+export function findModelRow(
+  catalog: AgentModel[] | undefined,
+  id: string | null | undefined,
+): AgentModel | undefined {
+  if (!catalog || !id) return undefined;
+  const direct = catalog.find((m) => m.id === id);
+  if (direct) return direct;
+  const base = id.split("[")[0].trim();
+  const flat = base.replace(/-\d{8}$/, "");
+  return (
+    catalog.find((m) => m.id === base) ??
+    catalog.find((m) => m.id.replace(/-\d{8}$/, "") === flat)
+  );
+}
+
+/** The window `id` runs with according to `catalog`, for the meter to measure
+ * against while the backend hasn't named one. `0` when unknown. */
+export function modelWindowFor(
+  catalog: AgentModel[] | undefined,
+  id: string | null | undefined,
+): number {
+  return rowWindow(findModelRow(catalog, id));
 }
 
 /** One rolling or weekly window's usage (`claude_usage_limits`). */
