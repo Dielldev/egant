@@ -23,6 +23,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { play, themes } from "cuelume";
 import type { ThemeName } from "cuelume";
+import { api } from "./api";
 import { log } from "./logger";
 import { ASK_USER_QUESTION, EXIT_PLAN_MODE } from "./transcript";
 import type { HarnessEvent, TranscriptState } from "./types";
@@ -87,6 +88,26 @@ export function readSoundTheme(): ThemeName {
  * click on Preview should always be heard. */
 export function playCue(kind: NotifyKind, theme: ThemeName = readSoundTheme()): void {
   play(CUES[kind], { theme });
+}
+
+/** Sounds the cue for a notification that arrives while the user is away.
+ *
+ * Web Audio is only dependable while the webview is visible: WKWebView
+ * suspends an audio context once its window is hidden, minimized or fully
+ * covered, and won't restart it without a click — so a cue for a run that
+ * finished behind another app was dropped silently. There the OS plays its own
+ * sound instead; if that is unavailable (not macOS), the themed cue is
+ * attempted anyway. */
+async function playAwayCue(kind: NotifyKind): Promise<void> {
+  if (document.visibilityState !== "visible") {
+    try {
+      await api.playSystemSound(kind);
+      return;
+    } catch (error) {
+      log.warn("notify", `system sound failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  playCue(kind);
 }
 
 let unlockInstalled = false;
@@ -249,7 +270,7 @@ async function deliver(notice: SessionNotice, title: string): Promise<void> {
   // Someone using egant sees the run finish, stall or fail for themselves; a
   // ping on top would only be noise. It is for the person who looked away.
   if (await windowFocused()) return;
-  if (readBool(NOTIFY_KEYS.sounds, true)) playCue(notice.kind);
+  if (readBool(NOTIFY_KEYS.sounds, true)) await playAwayCue(notice.kind);
   if (readBool(NOTIFY_KEYS.desktop, true)) {
     await sendBanner(title.trim() || "egant", notice.body);
   }

@@ -606,6 +606,9 @@ export const api = {
   /** Opens the system page that decides whether egant may show banners. */
   openNotificationSettings: () =>
     traced("open_notification_settings", "", () => invoke<void>("open_notification_settings")),
+  /** Sounds a notification cue from the OS, not the webview (macOS only). */
+  playSystemSound: (kind: string) =>
+    traced("play_system_sound", kind, () => invoke<void>("play_system_sound", { kind })),
 };
 
 /** One IPC round trip, traced to the console: debug on start/success (with

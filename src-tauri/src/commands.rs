@@ -1816,6 +1816,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::github::pr_merge,
         crate::github::open_url,
         crate::notifications::open_notification_settings,
+        crate::notifications::play_system_sound,
         crate::files::read_file,
         crate::files::write_file,
         crate::pty::pty_spawn,
