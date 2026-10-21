@@ -975,6 +975,8 @@ mod tests {
         let mut config = repository.config().unwrap();
         config.set_str("user.name", "Test").unwrap();
         config.set_str("user.email", "test@example.com").unwrap();
+        // Windows git would otherwise check files out with CRLF endings.
+        config.set_str("core.autocrlf", "false").unwrap();
         drop(config);
         let repo = Repo::discover(dir.path()).unwrap();
         (dir, repo)

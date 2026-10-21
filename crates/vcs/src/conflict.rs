@@ -448,6 +448,8 @@ mod tests {
         git(&["init", "--quiet", "-b", "main"]);
         git(&["config", "user.name", "Test"]);
         git(&["config", "user.email", "test@example.com"]);
+        // Windows git would otherwise check files out with CRLF endings.
+        git(&["config", "core.autocrlf", "false"]);
 
         fs::write(root.join("a.txt"), "base\n").unwrap();
         git(&["add", "a.txt"]);
@@ -634,6 +636,7 @@ mod tests {
         git(&["init", "--quiet", "-b", "main"]);
         git(&["config", "user.name", "Test"]);
         git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "core.autocrlf", "false"]);
 
         fs::write(root.join("gone.txt"), "base\n").unwrap();
         git(&["add", "gone.txt"]);
