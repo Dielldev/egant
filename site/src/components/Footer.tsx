@@ -6,7 +6,7 @@ import { Reveal } from "./Reveal";
 export function Footer() {
   return (
     <>
-      <section className="closing">
+      <section className="closing" id="download">
         <Reveal>
           <Mark width={56} wave />
           <h2>

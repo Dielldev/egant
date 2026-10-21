@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
-import { DOWNLOADS, detectOs } from "../content";
 import { Mark } from "./Mark";
 
 export function Nav() {
@@ -25,7 +24,7 @@ export function Nav() {
         <a href="#phone">Phone</a>
         <a href="#start">Build it</a>
       </nav>
-      <a className="btn btn-primary btn-sm" href={DOWNLOADS[detectOs()].url}>
+      <a className="btn btn-primary btn-sm" href="#download">
         <Download size={14} />
         Download
       </a>

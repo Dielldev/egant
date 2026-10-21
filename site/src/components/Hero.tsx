@@ -8,9 +8,10 @@ import { Mark } from "./Mark";
 const HEADLINE = ["Every", "coding", "agent.", "One", "window."];
 
 export function Hero() {
-  const os = detectOs();
-  const download = DOWNLOADS[os];
-  const other = DOWNLOADS[os === "mac" ? "windows" : "mac"];
+  // The visitor's own OS first.
+  const downloads = [DOWNLOADS[detectOs()], ...Object.values(DOWNLOADS)].filter(
+    (download, i, all) => all.indexOf(download) === i,
+  );
   const frame = useRef<HTMLDivElement>(null);
 
   // The screenshot starts tipped back and settles flat as you scroll into it.
@@ -54,16 +55,23 @@ export function Hero() {
         git beside the chat. Local, no account, no proxy.
       </p>
       <div className="hero-cta intro" style={{ animationDelay: "800ms" }}>
-        <a className="btn btn-primary" href={download.url}>
-          <Download size={15} /> {download.label}
-        </a>
+        {downloads.map((download, i) => (
+          <a
+            className={`btn ${i === 0 ? "btn-primary" : "btn-glass"}`}
+            href={download.url}
+            key={download.os}
+          >
+            <Download size={15} /> {download.label}
+          </a>
+        ))}
         <a className="btn btn-glass" href={REPO}>
           <GithubIcon /> View source
         </a>
       </div>
 
       <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
-        {download.detail} · {download.note} · or <a href={other.url}>get it for {other.os}</a>
+        {DOWNLOADS.mac.detail} · {DOWNLOADS.windows.detail} · macOS first launch: System Settings →
+        Privacy &amp; Security → Open Anyway
       </p>
 
       <div className="hero-stage intro" style={{ animationDelay: "1000ms" }}>
