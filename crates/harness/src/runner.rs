@@ -219,7 +219,7 @@ async fn run_turn<T: TurnTranslator>(
         .kill_on_drop(true);
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
+        use async_process::windows::CommandExt;
         cmd.creation_flags(0x08000000);
     }
     let mut child = match cmd.spawn() {

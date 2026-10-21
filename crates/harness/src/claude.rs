@@ -213,7 +213,7 @@ impl ClaudeCode {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
+            use async_process::windows::CommandExt;
             cmd.creation_flags(0x08000000);
         }
         let mut child = cmd.spawn().map_err(|source| {
