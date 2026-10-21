@@ -59,6 +59,9 @@ jobs:
 
   windows:
     name: Windows (x86_64)
+    # After macOS, not beside it: both jobs create the release and merge their
+    # platform into latest.json, and run together they can overwrite each other.
+    needs: macos
     runs-on: windows-latest
     steps:
       - name: Checkout
