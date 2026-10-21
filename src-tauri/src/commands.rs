@@ -1192,7 +1192,17 @@ fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<(),
             let _ = window_vibrancy::clear_vibrancy(&window);
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        if glass {
+            let _ = window_vibrancy::apply_mica(&window, Some(dark))
+                .or_else(|_| window_vibrancy::apply_acrylic(&window, None));
+        } else {
+            let _ = window_vibrancy::clear_mica(&window);
+            let _ = window_vibrancy::clear_acrylic(&window);
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = glass;
 
     Ok(())

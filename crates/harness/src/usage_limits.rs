@@ -99,7 +99,7 @@ fn claude_config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
+    dirs::home_dir().map(|home| home.join(".claude"))
 }
 
 fn access_token_from_file() -> Option<String> {

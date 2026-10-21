@@ -314,11 +314,17 @@ fn verify_login(id: AgentId) -> Option<(bool, Option<String>)> {
 
 fn verify_claude_login() -> Option<(bool, Option<String>)> {
     let program = resolve_executable(AgentId::Claude.descriptor())?;
-    let output = std::process::Command::new(program)
+    let (prog, prefix) = prepare_program_args(&program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(prefix)
         .args(["auth", "status", "--json"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().ok()?;
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let logged_in = value.get("loggedIn").and_then(serde_json::Value::as_bool)?;
     Some((logged_in, logged_in.then(claude_email).flatten()))
@@ -331,11 +337,17 @@ fn verify_claude_login() -> Option<(bool, Option<String>)> {
 /// a safety net against that ever changing.
 fn verify_codex_login() -> Option<(bool, Option<String>)> {
     let program = resolve_executable(AgentId::Codex.descriptor())?;
-    let output = std::process::Command::new(program)
+    let (prog, prefix) = prepare_program_args(&program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(prefix)
         .args(["login", "status"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().ok()?;
     let mut text = String::from_utf8_lossy(&output.stdout).to_lowercase();
     text.push_str(&String::from_utf8_lossy(&output.stderr).to_lowercase());
     Some((output.status.success() && text.contains("logged in"), None))
@@ -372,11 +384,19 @@ pub fn connect(id: AgentId) -> Result<(), String> {
 }
 
 fn spawn_detached(program: &Path, args: &[&str]) -> Result<(), String> {
-    let mut child = std::process::Command::new(program)
+    let (prog, prefix) = prepare_program_args(program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(prefix)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|error| format!("could not start `{}`: {error}", program.display()))?;
     // Reaped off-thread so a browser-paced login never leaves a zombie
@@ -481,7 +501,41 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
     Err(copy_hint)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "windows")]
+fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
+    let mut command_args: Vec<String> = vec!["/k".to_string(), program.display().to_string()];
+    for arg in args {
+        command_args.push(arg.to_string());
+    }
+
+    if which_bin("wt.exe").is_some() || which_bin("wt").is_some() {
+        let mut wt_args = vec!["new-tab".to_string(), "cmd.exe".to_string()];
+        wt_args.extend(command_args.clone());
+        if std::process::Command::new("wt")
+            .args(&wt_args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    let mut start_args = vec!["/c".to_string(), "start".to_string(), "cmd.exe".to_string()];
+    start_args.extend(command_args);
+    std::process::Command::new("cmd")
+        .args(&start_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("could not open Windows command prompt: {error}"))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn which_bin(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -498,7 +552,7 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
     Err(format!(
         "Run `{} {}` in a terminal to sign in — egant can't open one automatically on this OS yet.",
@@ -517,7 +571,6 @@ pub fn resolve_executable(desc: &AgentDescriptor) -> Option<PathBuf> {
 /// descriptor — the install catalog, whose entries cover CLIs with no
 /// harness behind them.
 pub fn resolve_cli(cli: &str, env_override: Option<&str>, extra_paths: &[&str]) -> Option<PathBuf> {
-    let exe = exe_name(cli);
     if let Some(path) = env_override
         .and_then(std::env::var_os)
         .filter(|p| !p.is_empty())
@@ -529,24 +582,51 @@ pub fn resolve_cli(cli: &str, env_override: Option<&str>, extra_paths: &[&str]) 
             return Some(path);
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = home_dir();
     let extra: Vec<PathBuf> = extra_paths
         .iter()
         .map(|p| expand_home(p, home.as_deref()))
         .collect();
-    search_dirs(&exe, extra).into_iter().find(|p| p.exists())
+    search_dirs(cli, extra).into_iter().find(|p| p.is_file())
 }
 
-fn exe_name(cli: &str) -> String {
+/// On Windows, npm global tools are often installed as `.cmd` or `.bat` batch
+/// wrappers or `.exe` shims. Search all possible extensions when looking for a CLI.
+fn exe_candidates(cli: &str) -> Vec<String> {
     if cfg!(windows) {
-        format!("{cli}.exe")
+        if cli.ends_with(".exe") || cli.ends_with(".cmd") || cli.ends_with(".bat") {
+            vec![cli.to_string()]
+        } else {
+            vec![
+                format!("{cli}.cmd"),
+                format!("{cli}.exe"),
+                format!("{cli}.bat"),
+                cli.to_string(),
+            ]
+        }
     } else {
-        cli.to_string()
+        vec![cli.to_string()]
     }
 }
 
+/// Prepares a program and prefix arguments for execution on Windows when launching `.cmd` or `.bat` files.
+pub fn prepare_program_args(program: &Path) -> (PathBuf, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let ext = program.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat") {
+            let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+            return (
+                PathBuf::from(comspec),
+                vec!["/c".to_string(), program.display().to_string()],
+            );
+        }
+    }
+    (program.to_path_buf(), Vec::new())
+}
+
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         if let Some(home) = home {
             return home.join(rest);
         }
@@ -556,24 +636,31 @@ fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
 
 /// Join a binary onto every candidate dir: `PATH`, then the login-shell
 /// snapshot, then extras, then version-manager bins.
-fn search_dirs(exe: &str, extra: Vec<PathBuf>) -> Vec<PathBuf> {
+fn search_dirs(cli: &str, extra: Vec<PathBuf>) -> Vec<PathBuf> {
+    let exes = exe_candidates(cli);
     let mut candidates = Vec::new();
+
+    for p in extra {
+        candidates.push(p.clone());
+        for exe in &exes {
+            candidates.push(p.join(exe));
+        }
+    }
+
+    let mut dirs = Vec::new();
     if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(
-            std::env::split_paths(&path)
-                .filter(|d| !d.as_os_str().is_empty())
-                .map(|d| d.join(exe)),
-        );
+        dirs.extend(std::env::split_paths(&path).filter(|d| !d.as_os_str().is_empty()));
     }
     if let Some(shell_path) = login_shell_path() {
-        candidates.extend(
-            std::env::split_paths(shell_path)
-                .filter(|d| !d.as_os_str().is_empty())
-                .map(|d| d.join(exe)),
-        );
+        dirs.extend(std::env::split_paths(shell_path).filter(|d| !d.as_os_str().is_empty()));
     }
-    candidates.extend(extra);
-    candidates.extend(node_version_manager_bins().into_iter().map(|d| d.join(exe)));
+    dirs.extend(node_version_manager_bins());
+
+    for dir in dirs {
+        for exe in &exes {
+            candidates.push(dir.join(exe));
+        }
+    }
     candidates
 }
 
@@ -582,33 +669,71 @@ fn search_dirs(exe: &str, extra: Vec<PathBuf>) -> Vec<PathBuf> {
 /// init (fnm's per-shell multishells, nvm's shell function), which a
 /// Dock/Finder-launched app never runs.
 fn node_version_manager_bins() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = home_dir();
     let mut dirs = Vec::new();
-    let mut fnm_roots: Vec<PathBuf> = std::env::var_os("FNM_DIR")
-        .map(PathBuf::from)
-        .into_iter()
-        .collect();
-    if let Some(home) = &home {
-        fnm_roots.push(home.join(".local/share/fnm"));
-        fnm_roots.push(home.join("Library/Application Support/fnm"));
-        fnm_roots.push(home.join(".fnm"));
+
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            dirs.push(appdata.join("npm"));
+        }
+        if let Some(localappdata) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            dirs.push(localappdata.join("fnm"));
+            dirs.push(localappdata.join("fnm/aliases/default/bin"));
+            dirs.push(localappdata.join("Volta/bin"));
+            dirs.push(localappdata.join("Programs/Python/Python311/Scripts"));
+            dirs.push(localappdata.join("Programs/Python/Python312/Scripts"));
+            dirs.push(localappdata.join("Programs/Python/Python313/Scripts"));
+        }
+        if let Some(nvm) = std::env::var_os("NVM_HOME").map(PathBuf::from) {
+            dirs.push(nvm);
+        }
+        if let Some(nvm_sym) = std::env::var_os("NVM_SYMLINK").map(PathBuf::from) {
+            dirs.push(nvm_sym);
+        }
+        if let Some(choco) = std::env::var_os("ChocolateyInstall").map(PathBuf::from) {
+            dirs.push(choco.join("bin"));
+        } else {
+            dirs.push(PathBuf::from("C:\\ProgramData\\chocolatey\\bin"));
+        }
+        if let Some(home) = &home {
+            dirs.push(home.join("scoop/shims"));
+            dirs.push(home.join(".bun/bin"));
+            dirs.push(home.join(".cargo/bin"));
+            dirs.push(home.join("AppData/Roaming/npm"));
+        }
+        dirs.push(PathBuf::from("C:\\Program Files\\nodejs"));
+        dirs.push(PathBuf::from("C:\\Program Files (x86)\\nodejs"));
     }
-    for root in fnm_roots {
-        dirs.push(root.join("aliases/default/bin"));
-    }
-    if let Some(home) = &home {
-        dirs.push(home.join(".volta/bin"));
-        dirs.push(home.join(".bun/bin"));
-        dirs.push(home.join("Library/pnpm"));
-        dirs.push(home.join(".local/share/pnpm"));
-        dirs.push(home.join(".npm-global/bin"));
-        let nvm = home.join(".nvm/versions/node");
-        if let Ok(entries) = std::fs::read_dir(&nvm) {
-            let mut versions: Vec<PathBuf> =
-                entries.flatten().map(|e| e.path().join("bin")).collect();
-            versions.sort();
-            versions.reverse();
-            dirs.append(&mut versions);
+
+    #[cfg(not(windows))]
+    {
+        let mut fnm_roots: Vec<PathBuf> = std::env::var_os("FNM_DIR")
+            .map(PathBuf::from)
+            .into_iter()
+            .collect();
+        if let Some(home) = &home {
+            fnm_roots.push(home.join(".local/share/fnm"));
+            fnm_roots.push(home.join("Library/Application Support/fnm"));
+            fnm_roots.push(home.join(".fnm"));
+        }
+        for root in fnm_roots {
+            dirs.push(root.join("aliases/default/bin"));
+        }
+        if let Some(home) = &home {
+            dirs.push(home.join(".volta/bin"));
+            dirs.push(home.join(".bun/bin"));
+            dirs.push(home.join("Library/pnpm"));
+            dirs.push(home.join(".local/share/pnpm"));
+            dirs.push(home.join(".npm-global/bin"));
+            let nvm = home.join(".nvm/versions/node");
+            if let Ok(entries) = std::fs::read_dir(&nvm) {
+                let mut versions: Vec<PathBuf> =
+                    entries.flatten().map(|e| e.path().join("bin")).collect();
+                versions.sort();
+                versions.reverse();
+                dirs.append(&mut versions);
+            }
         }
     }
     dirs
@@ -749,7 +874,7 @@ fn run_in_login_shell(script: &str) -> Option<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    dirs::home_dir()
 }
 
 fn login_status(id: AgentId) -> (bool, Option<String>) {

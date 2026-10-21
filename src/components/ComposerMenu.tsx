@@ -80,7 +80,7 @@ function CommandRow({ command }: { command: CommandItem }) {
 }
 
 function FileRow({ path }: { path: string }) {
-  const slash = path.lastIndexOf("/");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const name = path.slice(slash + 1);
   const dir = slash > 0 ? path.slice(0, slash) : "";
   return (

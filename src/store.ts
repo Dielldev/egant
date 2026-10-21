@@ -8,7 +8,7 @@ import { create } from "zustand";
 import { api, pickProjectFolder, pickWallpaperImage } from "./lib/api";
 import { log, preview } from "./lib/logger";
 import { noteInterrupt, notifySession } from "./lib/notify";
-import { isLinux } from "./lib/platform";
+import { isLinux, isWindows } from "./lib/platform";
 import {
   applyEvent,
   emptyTranscript,
@@ -358,6 +358,8 @@ export function applyAppearance(appearance: AppearanceState): void {
   // fills + in-window blur without touching the macOS frosted path.
   if (isLinux()) {
     root.dataset.platform = "linux";
+  } else if (isWindows()) {
+    root.dataset.platform = "windows";
   } else {
     delete root.dataset.platform;
   }
@@ -1726,7 +1728,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       openStageTab(sessionId, { key: path, kind: "file", path, name });
     },
     openDiff: (sessionId, root, change, group, scope) => {
-      const name = change.path.split("/").pop() ?? change.path;
+      const name = change.path.split(/[/\\]/).pop() ?? change.path;
       openStageTab(sessionId, {
         key: diffTabKey(group, change.path),
         kind: "diff",
@@ -1739,7 +1741,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       });
     },
     openCommitDiff: (sessionId, root, sha, change) => {
-      const name = change.path.split("/").pop() ?? change.path;
+      const name = change.path.split(/[/\\]/).pop() ?? change.path;
       openStageTab(sessionId, {
         key: diffTabKey("commit", change.path, sha),
         kind: "diff",

@@ -304,13 +304,19 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new(program)
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut cmd = Command::new(prog);
+    cmd.args(&prefix)
         .arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(|error| error.to_string())?;
     let stdin = child.stdin.take().ok_or("codex app-server has no stdin")?;
     let stdout = child
         .stdout
@@ -1126,13 +1132,19 @@ struct CommandOutput {
 fn run_with_timeout(program: &PathBuf, args: &[&str], timeout: Duration) -> Option<CommandOutput> {
     use std::io::Read;
 
-    let mut child = std::process::Command::new(program)
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(&prefix)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
     let (tx, rx) = std::sync::mpsc::channel();

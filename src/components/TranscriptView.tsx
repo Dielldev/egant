@@ -306,7 +306,7 @@ export function TranscriptView() {
   // row — isn't redrawn for each token of the reply streaming under it.
   const openPlan = useCallback(
     (path: string) => {
-      if (activeId != null) openFile(activeId, path, path.split("/").pop() ?? path);
+      if (activeId != null) openFile(activeId, path, path.split(/[/\\]/).pop() ?? path);
     },
     [activeId, openFile],
   );

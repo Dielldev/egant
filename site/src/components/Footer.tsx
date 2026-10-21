@@ -1,5 +1,5 @@
 import { Download } from "lucide-react";
-import { DOWNLOAD, REPO } from "../content";
+import { DOWNLOADS, REPO } from "../content";
 import { Mark } from "./Mark";
 import { Reveal } from "./Reveal";
 
@@ -14,9 +14,13 @@ export function Footer() {
             <br />
             <span className="dim">Start running agents.</span>
           </h2>
-          <a className="btn btn-primary" href={DOWNLOAD.url}>
-            <Download size={15} /> {DOWNLOAD.label}
-          </a>
+          <div className="closing-cta">
+            {Object.values(DOWNLOADS).map((download) => (
+              <a className="btn btn-primary" href={download.url} key={download.os}>
+                <Download size={15} /> {download.label}
+              </a>
+            ))}
+          </div>
         </Reveal>
       </section>
       <footer className="footer">

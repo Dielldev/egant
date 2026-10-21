@@ -19,7 +19,7 @@ export function fuzzyScore(query: string, text: string): number | null {
   const needle = query.toLowerCase();
   if (needle === "") return 0;
   const hay = text.toLowerCase();
-  const nameStart = text.lastIndexOf("/") + 1;
+  const nameStart = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\")) + 1;
   let score = 0;
   let from = 0;
   let previous = -2;

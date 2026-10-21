@@ -14,6 +14,8 @@
 
 **macOS (Apple Silicon):** [download egant](https://github.com/Dielldev/egant/releases/latest/download/egant-macos-arm64.dmg), open the DMG and drag egant to Applications. egant isn't notarized by Apple yet, so the first time you open it macOS says it can't verify the app: go to **System Settings → Privacy & Security** and choose **Open Anyway**. After that it keeps itself up to date (see [Updates](#updates)). egant drives the agent CLIs you already have, so install at least one first (for example `claude`, then `claude login`).
 
+**Windows (10 & 11, 64-bit):** [download egant-setup-x64.exe](https://github.com/Dielldev/egant/releases/latest/download/egant-setup-x64.exe), run the installer. Standard user installation, auto-updates supported.
+
 Intel Macs and Linux: build from source, see the [Quickstart](#quickstart).
 
 ## What is egant?

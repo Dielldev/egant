@@ -1002,7 +1002,7 @@ export function toolSummary(input: unknown, name: string): string {
 /** The last path segment, for a tool card's title — `/a/b/c.ts` → `c.ts`.
  * Falls back to the whole string for a bare filename or an empty path. */
 export function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean);
+  const parts = path.split(/[/\\]/).filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1]! : path;
 }
 

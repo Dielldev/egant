@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag like v0.1.2 builds the macOS app and publishes a release that
+# Pushing a tag like v0.1.2 builds the macOS and Windows apps and publishes a release that
 # running copies of egant update from. The same thing scripts/release.sh does
 # by hand. Needs the repository secret TAURI_SIGNING_PRIVATE_KEY (the contents
 # of ~/.tauri/egant-updater.key) — see the README, "Releasing".
@@ -56,3 +56,50 @@ jobs:
           DMG="$(find target -name '*.dmg' | head -1)"
           cp "$DMG" egant-macos-arm64.dmg
           gh release upload "${{ github.ref_name }}" egant-macos-arm64.dmg --clobber
+
+  windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: egant ${{ github.ref_name }}
+          releaseBody: See the commit history for what changed.
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc --bundles nsis
+
+      # The website's download button links a version-less name.
+      - name: Add the version-less installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SETUP="$(find target -name '*setup*.exe' -o -name '*Setup*.exe' | head -1)"
+          if [ -n "$SETUP" ] && [ -f "$SETUP" ]; then
+            cp "$SETUP" egant-setup-x64.exe
+            gh release upload "${{ github.ref_name }}" egant-setup-x64.exe --clobber
+          fi

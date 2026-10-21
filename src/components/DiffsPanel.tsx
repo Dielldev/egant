@@ -1475,7 +1475,7 @@ function buildTree(changes: GitChange[]): TreeNode[] {
   const byPath = new Map<string, TreeNode>();
 
   for (const change of changes) {
-    const parts = change.path.split("/").filter(Boolean);
+    const parts = change.path.split(/[/\\]/).filter(Boolean);
     let prefix = "";
     let parent: TreeNode | null = null;
 

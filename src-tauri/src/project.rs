@@ -57,7 +57,7 @@ fn location_label(path: &Path) -> String {
         return String::new();
     };
     let text = parent.display().to_string();
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(home) = dirs::home_dir() else {
         return text;
     };
     let home = home.to_string_lossy().into_owned();
@@ -83,11 +83,11 @@ fn hue_for(path: &Path) -> f32 {
 /// to the path as given when it no longer exists — `verify_project_path` is
 /// what rejects that case before a session ever starts there.
 pub fn canonicalize_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Whether two project paths name the same folder. Canonicalizes both sides,
-/// and on macOS also compares case-insensitively: APFS is usually
+/// and on macOS/Windows also compares case-insensitively: APFS and NTFS are usually
 /// case-insensitive, so `…/akra` and `…/Arka` open the same directory and
 /// must not become two project rows with sessions attached to the wrong one.
 pub fn same_project(a: &Path, b: &Path) -> bool {
@@ -96,11 +96,11 @@ pub fn same_project(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         false
     }
@@ -116,7 +116,7 @@ pub fn verify_project_path(path: &Path) -> Result<PathBuf, String> {
     if !path.is_dir() {
         return Err(format!("{} is not a folder", path.display()));
     }
-    let canonical = std::fs::canonicalize(path)
+    let canonical = dunce::canonicalize(path)
         .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
     if !canonical.is_dir() {
         return Err(format!("{} is not a folder", path.display()));

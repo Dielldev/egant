@@ -35,14 +35,19 @@ impl GitOutput {
 
 /// Runs `git` in `root`, returning an error for any non-zero exit.
 pub fn run(root: &Path, args: &[&str]) -> Result<GitOutput, VcsError> {
-    let output: Output = Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .current_dir(root)
         // Never let git open an interactive prompt behind the app's back: with
         // no terminal attached it would hang forever. Failing loudly lets the
         // UI tell the user to authenticate instead.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output: Output = cmd.output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

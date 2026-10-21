@@ -133,6 +133,14 @@ pub fn run() {
                     );
                 }
             }
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window_vibrancy::apply_mica(&window, Some(true))
+                        .or_else(|_| window_vibrancy::apply_acrylic(&window, None));
+                }
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

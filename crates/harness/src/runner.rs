@@ -206,7 +206,9 @@ async fn run_turn<T: TurnTranslator>(
         request.cwd.display(),
         text.len()
     );
-    let mut child = match Command::new(&request.program)
+    let (prog, prefix) = crate::agents::prepare_program_args(&request.program);
+    let mut cmd = Command::new(&prog);
+    cmd.args(&prefix)
         .args(&request.args)
         .current_dir(&request.cwd)
         // The prompt travels on the command line; an open stdin only invites
@@ -214,9 +216,13 @@ async fn run_turn<T: TurnTranslator>(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(error) => {
             // A spawn failure is a turn that never started: one error notice

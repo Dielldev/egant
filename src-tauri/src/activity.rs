@@ -330,10 +330,28 @@ fn parse_codex(path: &Path) -> Vec<Rec> {
 fn opencode_db() -> Option<PathBuf> {
     let base = match std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
         Some(xdg) if xdg.is_absolute() => xdg,
-        _ => PathBuf::from(std::env::var_os("HOME")?).join(".local/share"),
+        _ => {
+            #[cfg(target_os = "windows")]
+            {
+                dirs::data_local_dir().or_else(dirs::home_dir)?
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                dirs::home_dir()?.join(".local/share")
+            }
+        }
     };
     let db = base.join("opencode/opencode.db");
-    db.is_file().then_some(db)
+    if db.is_file() {
+        return Some(db);
+    }
+    if let Some(home) = dirs::home_dir() {
+        let alt = home.join(".local/share/opencode/opencode.db");
+        if alt.is_file() {
+            return Some(alt);
+        }
+    }
+    None
 }
 
 /// OpenCode keeps its history in SQLite, one JSON document per message. The
@@ -353,11 +371,16 @@ fn read_opencode() -> Vec<Rec> {
         from message \
         where json_extract(data, '$.role') = 'assistant' \
           and json_extract(data, '$.tokens') is not null";
-    let output = std::process::Command::new("sqlite3")
-        .args(["-readonly", "-cmd", ".timeout 3000", "-separator", "\t"])
+    let mut cmd = std::process::Command::new("sqlite3");
+    cmd.args(["-readonly", "-cmd", ".timeout 3000", "-separator", "\t"])
         .arg(&db)
-        .arg(QUERY)
-        .output();
+        .arg(QUERY);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output();
     let Ok(output) = output else {
         log::debug!("activity: no sqlite3, skipping OpenCode");
         return Vec::new();
@@ -401,7 +424,7 @@ fn cache_path() -> Option<PathBuf> {
 fn home_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     match std::env::var_os(var).map(PathBuf::from) {
         Some(dir) if dir.is_absolute() => Some(dir),
-        _ => Some(PathBuf::from(std::env::var_os("HOME")?).join(fallback)),
+        _ => Some(dirs::home_dir()?.join(fallback)),
     }
 }
 

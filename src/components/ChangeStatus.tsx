@@ -61,7 +61,7 @@ export function DiffLineStats({
 /** A path split the way every row here shows it: the filename carries the
  * weight, the directory trails behind it in the quiet colour. */
 export function splitPath(path: string): { filename: string; directory: string } {
-  const cut = path.lastIndexOf("/");
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   if (cut < 0) return { filename: path, directory: "" };
   return { filename: path.slice(cut + 1), directory: path.slice(0, cut) };
 }

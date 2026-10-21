@@ -106,17 +106,20 @@ pub struct PrDetailDto {
 /// Runs `gh` in `root` and hands back stdout, turning both "not installed"
 /// and a non-zero exit into a message the panel can show as it is.
 fn gh(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                "GitHub CLI (gh) is not installed".to_string()
-            } else {
-                format!("could not run gh: {error}")
-            }
-        })?;
+    let mut cmd = Command::new("gh");
+    cmd.args(args).current_dir(root);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "GitHub CLI (gh) is not installed".to_string()
+        } else {
+            format!("could not run gh: {error}")
+        }
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -134,8 +137,14 @@ fn gh(root: &Path, args: &[&str]) -> Result<String, String> {
 #[tauri::command]
 pub async fn gh_status() -> Result<GhStatusDto, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let installed = Command::new("gh")
-            .arg("--version")
+        let mut cmd = Command::new("gh");
+        cmd.arg("--version");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let installed = cmd
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false);
@@ -143,14 +152,25 @@ pub async fn gh_status() -> Result<GhStatusDto, String> {
             return GhStatusDto {
                 installed: false,
                 authenticated: false,
-                hint: "Install the GitHub CLI to see pull requests (`brew install gh`)".into(),
+                hint: if cfg!(target_os = "windows") {
+                    "Install the GitHub CLI to see pull requests (`winget install --id GitHub.cli`)"
+                        .into()
+                } else {
+                    "Install the GitHub CLI to see pull requests (`brew install gh`)".into()
+                },
             };
         }
 
         // `gh auth status` exits non-zero when no host is logged in, which is
         // the whole question being asked here.
-        let authenticated = Command::new("gh")
-            .args(["auth", "status"])
+        let mut cmd = Command::new("gh");
+        cmd.args(["auth", "status"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let authenticated = cmd
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false);

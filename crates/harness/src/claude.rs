@@ -203,24 +203,30 @@ impl ClaudeCode {
             options.session_id = Some(new_session_id());
         }
 
-        let mut child = Command::new(&options.program)
+        let (prog, prefix) = crate::agents::prepare_program_args(&options.program);
+        let mut cmd = Command::new(&prog);
+        cmd.args(&prefix)
             .args(options.to_args())
             .current_dir(&options.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| {
-                log::error!(
-                    "claude spawn failed program={} cwd={}: {source}",
-                    options.program.display(),
-                    options.cwd.display(),
-                );
-                HarnessError::Spawn {
-                    program: options.program.display().to_string(),
-                    source,
-                }
-            })?;
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let mut child = cmd.spawn().map_err(|source| {
+            log::error!(
+                "claude spawn failed program={} cwd={}: {source}",
+                options.program.display(),
+                options.cwd.display(),
+            );
+            HarnessError::Spawn {
+                program: options.program.display().to_string(),
+                source,
+            }
+        })?;
         log::info!(
             "claude spawned cwd={} model={:?} resume={}",
             options.cwd.display(),

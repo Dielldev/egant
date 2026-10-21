@@ -11,7 +11,7 @@ import { Wallpapers } from "./Wallpapers";
 const POINTS = [
   { icon: Palette, title: "23 themes", body: "Catppuccin, Tokyo Night, Dracula, Nord, Rosé Pine, Gruvbox and more — light and dark." },
   { icon: Image, title: "Your wallpaper", body: "Pick any image for the launch screen and set how far it dims." },
-  { icon: Layers, title: "Glass", body: "Real macOS vibrancy, frosted, clear, or fully opaque." },
+  { icon: Layers, title: "Glass", body: "Real macOS vibrancy and Windows Mica, frosted, clear, or fully opaque." },
   { icon: SunMoon, title: "Accent & mode", body: "Any accent colour, and separate light and dark themes that follow the system." },
 ];
 

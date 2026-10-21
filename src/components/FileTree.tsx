@@ -124,7 +124,7 @@ export function FileTree({ root }: { root: string }) {
     );
   }
 
-  const rootName = root.split("/").filter(Boolean).pop() ?? root;
+  const rootName = root.split(/[/\\]/).filter(Boolean).pop() ?? root;
   const loadingRoot = loading.has(root) && !children[root];
 
   return (

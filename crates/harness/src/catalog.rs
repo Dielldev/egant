@@ -697,8 +697,17 @@ pub fn check_update(id: &str) -> Result<UpdateInfo, String> {
 /// A CLI that hangs on `--version` must not wedge the blocking task this
 /// runs on, so the probe gets the same bounded wait an install does.
 fn local_version(program: &PathBuf) -> Option<String> {
-    let mut command = std::process::Command::new(program);
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut command = std::process::Command::new(prog);
+    for arg in prefix {
+        command.arg(arg);
+    }
     command.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
     let (_, text) = run_bounded(command, Duration::from_secs(10)).ok()?;
     first_version(&text)
 }
@@ -734,6 +743,20 @@ fn first_version(text: &str) -> Option<String> {
 
 /// Run one command through the user's login shell, capturing both streams
 /// and killing it if it outlives `deadline`. Returns `(exit success, output)`.
+#[cfg(windows)]
+pub(crate) fn run_in_login_shell(
+    command: &str,
+    deadline: Duration,
+) -> Result<(bool, String), String> {
+    let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    let mut spawn = std::process::Command::new(comspec);
+    spawn.args(["/c", command]);
+    use std::os::windows::process::CommandExt;
+    spawn.creation_flags(0x08000000);
+    run_bounded(spawn, deadline)
+}
+
+#[cfg(not(windows))]
 pub(crate) fn run_in_login_shell(
     command: &str,
     deadline: Duration,

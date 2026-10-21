@@ -549,6 +549,12 @@ impl Default for AppState {
 pub(crate) fn machine_name() -> String {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
+        #[cfg(target_os = "windows")]
+        if let Ok(name) = std::env::var("COMPUTERNAME") {
+            if !name.trim().is_empty() {
+                return name.trim().to_string();
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Some(name) = run("/usr/sbin/scutil", &["--get", "ComputerName"]) {
             return name;
@@ -563,10 +569,14 @@ pub(crate) fn machine_name() -> String {
 }
 
 fn run(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().ok()?;
     let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!name.is_empty()).then_some(name)
 }

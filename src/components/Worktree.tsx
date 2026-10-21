@@ -214,7 +214,7 @@ function useBorrowedWorktree(): RepoRef | null {
  * shows (`WorktreeInfo.name`), derived from the path itself since a
  * `RepoRef` only carries the path, not the generated name. */
 function worktreeFolderName(path: string): string {
-  return path.split("/").pop() || path;
+  return path.split(/[/\\]/).pop() || path;
 }
 
 /** One chip: a label on the launch wallpaper that opens a menu under itself.

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Download } from "lucide-react";
-import { DOWNLOAD, HERO_SHOT, REPO } from "../content";
+import { DOWNLOADS, HERO_SHOT, REPO, detectOs } from "../content";
 import { prefersReducedMotion } from "../useReveal";
 import { GithubIcon } from "./GithubIcon";
 import { Mark } from "./Mark";
@@ -8,6 +8,9 @@ import { Mark } from "./Mark";
 const HEADLINE = ["Every", "coding", "agent.", "One", "window."];
 
 export function Hero() {
+  const os = detectOs();
+  const download = DOWNLOADS[os];
+  const other = DOWNLOADS[os === "mac" ? "windows" : "mac"];
   const frame = useRef<HTMLDivElement>(null);
 
   // The screenshot starts tipped back and settles flat as you scroll into it.
@@ -51,8 +54,8 @@ export function Hero() {
         git beside the chat. Local, no account, no proxy.
       </p>
       <div className="hero-cta intro" style={{ animationDelay: "800ms" }}>
-        <a className="btn btn-primary" href={DOWNLOAD.url}>
-          <Download size={15} /> {DOWNLOAD.label}
+        <a className="btn btn-primary" href={download.url}>
+          <Download size={15} /> {download.label}
         </a>
         <a className="btn btn-glass" href={REPO}>
           <GithubIcon /> View source
@@ -60,7 +63,7 @@ export function Hero() {
       </div>
 
       <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
-        {DOWNLOAD.detail} · first launch: System Settings → Privacy &amp; Security → Open Anyway
+        {download.detail} · {download.note} · or <a href={other.url}>get it for {other.os}</a>
       </p>
 
       <div className="hero-stage intro" style={{ animationDelay: "1000ms" }}>

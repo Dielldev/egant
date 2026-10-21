@@ -63,18 +63,20 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
 /// What git lists under `root`, relative to it: `None` when it isn't in a
 /// repository (or git isn't there to ask).
 fn git_files(root: &Path) -> Option<Vec<String>> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(root).args([
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -203,15 +205,19 @@ fn git_ignored(dir: &str, rows: &[FileEntryDto]) -> std::collections::HashSet<St
     if rows.is_empty() {
         return ignored;
     }
-    let Ok(mut child) = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(dir)
         .args(["check-ignore", "-z", "--stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let Ok(mut child) = cmd.spawn() else {
         return ignored;
     };
     // Written from its own thread: a directory of thousands of names would

@@ -12,12 +12,33 @@ import runShot from "./assets/shots/run-website.jpg";
 
 export const REPO = "https://github.com/Dielldev/egant";
 
-/** The release asset keeps a version-less name so this link never goes stale. */
-export const DOWNLOAD = {
-  url: `${REPO}/releases/latest/download/egant-macos-arm64.dmg`,
-  label: "Download for macOS",
-  detail: "Apple Silicon · 10 MB",
-};
+/** The release assets keep version-less names so these links never go stale. */
+export const DOWNLOADS = {
+  mac: {
+    os: "macOS",
+    url: `${REPO}/releases/latest/download/egant-macos-arm64.dmg`,
+    label: "Download for macOS",
+    detail: "Apple Silicon · 10 MB",
+    note: "first launch: System Settings → Privacy & Security → Open Anyway",
+  },
+  windows: {
+    os: "Windows",
+    url: `${REPO}/releases/latest/download/egant-setup-x64.exe`,
+    label: "Download for Windows",
+    detail: "Windows 10 & 11 · 64-bit",
+    note: "installs for your user, no admin rights needed",
+  },
+} as const;
+
+export type DownloadOs = keyof typeof DOWNLOADS;
+
+/** The visitor's desktop OS; macOS stays the default for everything else. */
+export function detectOs(): DownloadOs {
+  if (typeof navigator === "undefined") return "mac";
+  return /Win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "")
+    ? "windows"
+    : "mac";
+}
 
 export type Agent = { name: string; provider: string; kind: "chat" | "cli" };
 

@@ -16,7 +16,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -56,6 +56,8 @@ async-process = "2"
 async-trait = "0.1"
 futures-lite = "2"
 log = "0.4"
+dirs = "6"
+dunce = "1"
 env_logger = "0.11"
 notify = "8"
 # Blocking client only: the one place we need it (Claude's usage endpoint)

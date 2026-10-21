@@ -460,9 +460,7 @@ pub fn branch_slug(title: &str) -> Option<String> {
 
 /// `~/.egant/worktrees`, matching where the app keeps the rest of its state.
 pub fn default_base_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".egant").join("worktrees")
 }
 
@@ -470,9 +468,16 @@ pub fn default_base_dir() -> PathBuf {
 /// `canonicalize` where possible, since git prints the resolved path
 /// (`/private/tmp/...`) for a directory the app recorded as `/tmp/...`.
 fn same_path(a: &Path, b: &Path) -> bool {
-    let left = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
-    let right = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
-    left == right
+    let left = dunce::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let right = dunce::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        left == right
+    }
 }
 
 /// Deliberately bland and short: these end up in a path, a branch name and the

@@ -73,7 +73,9 @@ pub fn generate(agent: AgentId, model: Option<&str>, prompt: &str) -> Option<Str
 }
 
 fn title_with_claude(program: &Path, scratch: &Path, request: &str) -> Option<String> {
-    let mut command = Command::new(program);
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut command = Command::new(prog);
+    command.args(prefix);
     command.args([
         "-p",
         "--model",
@@ -110,7 +112,9 @@ fn title_with_codex(
     request: &str,
 ) -> Option<String> {
     let last_message = scratch.join("title.txt");
-    let mut command = Command::new(program);
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut command = Command::new(prog);
+    command.args(prefix);
     command.args([
         "exec",
         "--skip-git-repo-check",
@@ -141,6 +145,11 @@ fn title_with_codex(
 /// [`MAX_PROMPT_CHARS`] keeps the request well under the smallest pipe buffer,
 /// so the write completes whether or not the child has started reading.
 fn run(mut command: Command, cwd: &Path, input: &str) -> Option<(ExitStatus, String)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
     let mut child = command
         .current_dir(cwd)
         .stdin(Stdio::piped())

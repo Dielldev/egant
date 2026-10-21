@@ -226,7 +226,10 @@ impl Settings {
 }
 
 pub(crate) fn config_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "windows") {
+        return dirs::config_dir().map(|p| p.join("egant"));
+    }
+    let home = dirs::home_dir();
 
     if cfg!(target_os = "macos") {
         return Some(home?.join("Library/Application Support/egant"));

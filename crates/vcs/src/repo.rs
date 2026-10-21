@@ -69,12 +69,17 @@ pub struct TreeChange {
 
 /// Runs git against a scratch index instead of the repository's own.
 fn git_with_index(root: &Path, index: &Path, args: &[&str]) -> Result<String, VcsError> {
-    let output = std::process::Command::new("git")
-        .args(args)
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args)
         .current_dir(root)
         .env("GIT_INDEX_FILE", index)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output()?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {

@@ -461,13 +461,17 @@ fn run_until(
     timeout: Duration,
     settled: Option<&dyn Fn(&str) -> bool>,
 ) -> Result<Output, RunError> {
-    let mut child = Command::new(cli)
-        .args(args)
+    let mut cmd = Command::new(cli);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(RunError::Spawn)?;
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         let sink = Arc::new(Mutex::new(Vec::new()));
         let filled = sink.clone();

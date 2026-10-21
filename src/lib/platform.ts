@@ -20,6 +20,13 @@ export function isLinux(): boolean {
   return /Linux/i.test(ua) && !/Android/i.test(ua);
 }
 
+export function isWindows(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const platform = navigator.platform || "";
+  if (/Win/i.test(platform)) return true;
+  return /Windows/i.test(navigator.userAgent || "");
+}
+
 /** Left padding for the window-bar row: clears overlay traffic lights on
  * macOS; a small inset elsewhere (normal decorations own the chrome). */
 export function windowBarPadClass(): string {

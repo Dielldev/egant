@@ -110,7 +110,11 @@ pub async fn pty_spawn_agent(
     .await
     .map_err(|error| error.to_string())??;
 
-    let mut command = CommandBuilder::new(launch.program);
+    let (prog, prefix) = egant_harness::agents::prepare_program_args(&launch.program);
+    let mut command = CommandBuilder::new(prog);
+    for arg in prefix {
+        command.arg(arg);
+    }
     for arg in &launch.args {
         command.arg(arg);
     }
@@ -309,15 +313,31 @@ fn start_dir(cwd: &str) -> std::path::PathBuf {
     if !cwd.is_empty() && path.is_dir() {
         return path.to_path_buf();
     }
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/"))
+    dirs::home_dir().unwrap_or_else(|| {
+        if cfg!(windows) {
+            std::path::PathBuf::from("C:\\")
+        } else {
+            std::path::PathBuf::from("/")
+        }
+    })
 }
 
 /// The user's own shell, falling back to a sensible default per platform.
 fn shell() -> String {
     #[cfg(windows)]
     {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let pwsh = dir.join("pwsh.exe");
+                if pwsh.is_file() {
+                    return pwsh.display().to_string();
+                }
+                let powershell = dir.join("powershell.exe");
+                if powershell.is_file() {
+                    return powershell.display().to_string();
+                }
+            }
+        }
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     }
     #[cfg(not(windows))]
@@ -335,7 +355,7 @@ mod tests {
         let temp = std::env::temp_dir();
         assert_eq!(start_dir(&temp.display().to_string()), temp);
 
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = dirs::home_dir();
         if let Some(home) = home {
             assert_eq!(start_dir(""), home);
             assert_eq!(start_dir("/nope/not/a/directory"), home);

@@ -23,10 +23,9 @@ pub mod skills;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn home_dir() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
+    dirs::home_dir()
         .filter(|p| p.is_absolute())
-        .ok_or_else(|| "HOME isn't set".to_string())
+        .ok_or_else(|| "could not determine user home directory".to_string())
 }
 
 /// Replace `path` with `contents` in one step: write a sibling temp file and
