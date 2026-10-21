@@ -1257,6 +1257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_session_is_resumable_before_the_agent_says_anything() {
         // `cat` stands in for a CLI that has not written a frame yet. The id
         // has to exist from the moment the process does — otherwise a session

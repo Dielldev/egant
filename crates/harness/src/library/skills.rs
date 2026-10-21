@@ -634,7 +634,15 @@ fn is_symlink(path: &Path) -> bool {
 
 fn remove_entry(path: &Path) -> Result<(), String> {
     let result = if is_symlink(path) || path.is_file() {
-        std::fs::remove_file(path)
+        // A directory symlink on Windows is removed like a directory, and
+        // `remove_file` on it is "Access is denied".
+        std::fs::remove_file(path).or_else(|error| {
+            if cfg!(windows) && is_symlink(path) {
+                std::fs::remove_dir(path)
+            } else {
+                Err(error)
+            }
+        })
     } else {
         std::fs::remove_dir_all(path)
     };

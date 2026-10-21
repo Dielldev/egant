@@ -448,6 +448,7 @@ mod tests {
     /// What `codex exec … resume <id>` writes when the thread is gone —
     /// captured from codex-cli 0.155.0, which printed nothing on stdout and
     /// exited 1.
+    #[cfg(unix)]
     const CODEX_RESUME_GONE: &str = "Error: thread/resume: thread/resume failed: no rollout found for thread id 00000000-0000-4000-8000-000000000000 (code -32600)";
 
     /// What `opencode run -s <id>` writes when the session is gone —
@@ -456,8 +457,10 @@ mod tests {
 
     /// A CLI stand-in: runs `script` under `sh`, and settles the turn with
     /// whatever the runner hands `end_turn`.
+    #[cfg(unix)]
     struct Script(String);
 
+    #[cfg(unix)]
     impl TurnTranslator for Script {
         fn build(&mut self, _text: &str, _images: &[PathBuf]) -> TurnRequest {
             TurnRequest {
@@ -491,6 +494,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn turn_result(script: &str) -> String {
         let runner = Runner::spawn(Script(script.to_string()));
         runner.send("hi".into(), Vec::new());
@@ -504,6 +508,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_failed_turn_says_what_the_cli_wrote_to_stderr() {
         let result = turn_result(&format!("echo '{CODEX_RESUME_GONE}' >&2; exit 1"));
         assert_eq!(
@@ -513,6 +518,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn its_colours_are_left_behind() {
         let result = turn_result(&format!("printf '{OPENCODE_SESSION_GONE}\\n' >&2; exit 1"));
         assert_eq!(
@@ -522,6 +528,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn only_the_end_of_a_long_stderr_is_kept() {
         let result = turn_result("for i in $(seq 1 40); do echo \"line $i\" >&2; done; exit 2");
         let tail = result.strip_prefix("cli exited with status 2:\n").unwrap();
@@ -531,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_silent_failure_still_reads_as_one() {
         assert_eq!(turn_result("exit 3"), "cli exited with status 3.");
     }
