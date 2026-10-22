@@ -21,23 +21,13 @@ export const DOWNLOADS = {
     detail: "Apple Silicon · 10 MB",
     note: "first launch: System Settings → Privacy & Security → Open Anyway",
   },
-  windows: {
-    os: "Windows",
-    url: `${REPO}/releases/latest/download/egant-setup-x64.exe`,
-    label: "Download for Windows",
-    detail: "Windows 10 & 11 · 64-bit",
-    note: "installs for your user, no admin rights needed",
-  },
 } as const;
 
 export type DownloadOs = keyof typeof DOWNLOADS;
 
-/** The visitor's desktop OS; macOS stays the default for everything else. */
+/** The visitor's desktop OS; macOS is the primary supported release. */
 export function detectOs(): DownloadOs {
-  if (typeof navigator === "undefined") return "mac";
-  return /Win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "")
-    ? "windows"
-    : "mac";
+  return "mac";
 }
 
 export type Agent = { name: string; provider: string; kind: "chat" | "cli" };

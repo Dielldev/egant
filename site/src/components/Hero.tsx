@@ -70,7 +70,7 @@ export function Hero() {
       </div>
 
       <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
-        {DOWNLOADS.mac.detail} · {DOWNLOADS.windows.detail} · macOS first launch: System Settings →
+        {DOWNLOADS.mac.detail} · macOS first launch: System Settings →
         Privacy &amp; Security → Open Anyway
       </p>
 

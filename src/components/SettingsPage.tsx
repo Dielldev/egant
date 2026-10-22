@@ -44,6 +44,7 @@ import { shouldOpenUpward } from "../lib/popover";
 import { ACCENTS, DARK_THEMES, LIGHT_THEMES } from "../lib/themes";
 import { ageLabel } from "../lib/transcript";
 import type { AgentStatus, ArchivedSession } from "../lib/types";
+import { roundPercent } from "../lib/usageLimits";
 import type { ThemeName } from "cuelume";
 import { useEgant } from "../store";
 import type { BgEffect, GlassMode, SettingsSection } from "../store";
@@ -370,10 +371,13 @@ function AccountsSection() {
   const fetchAgents = useEgant((s) => s.fetchAgents);
   const verifyAgents = useEgant((s) => s.verifyAgents);
   const refresh = useEgant((s) => s.refresh);
+  const claudeUsage = useEgant((s) => s.claudeUsage);
+  const fetchClaudeUsage = useEgant((s) => s.fetchClaudeUsage);
   const [spinning, setSpinning] = useState(false);
   useEffect(() => {
     void verifyAgents();
-  }, [verifyAgents]);
+    void fetchClaudeUsage();
+  }, [verifyAgents, fetchClaudeUsage]);
 
   const statusOf = (id: string) => agents.find((a) => a.id === id);
   const known = agents.length > 0;
@@ -387,12 +391,17 @@ function AccountsSection() {
     void Promise.all([
       refresh(),
       fetchAgents(),
+      fetchClaudeUsage(),
       ...ids.map((id) => api.checkAgentLogin(id).catch(() => null)),
     ]).finally(() => {
       void fetchAgents();
       setSpinning(false);
     });
   };
+
+  const claudeUsageText = claudeUsage?.fiveHour
+    ? `${roundPercent(claudeUsage.fiveHour)}% used (5-hour limit)`
+    : "Usage unavailable";
 
   return (
     <div>
@@ -424,6 +433,7 @@ function AccountsSection() {
           <AccountBody
             status={statusOf("claude")}
             empty="Claude Code isn't connected on this device — Add account to sign in."
+            subtitle={claudeUsageText}
           />
         }
       />
@@ -463,8 +473,11 @@ function AccountsSection() {
         body={
           <AccountBody
             status={statusOf("antigravity")}
-            empty="Antigravity isn't installed on this device — install the agy CLI, then Add account to sign in with Google."
-            readySubtitle="agy installed — Add account to sign in with a different Google account"
+            empty={
+              statusOf("antigravity")?.installed
+                ? "Antigravity isn't connected on this device — Add account to sign in with Google."
+                : "Antigravity isn't installed on this device — install the agy CLI, then Add account to sign in with Google."
+            }
           />
         }
       />
@@ -499,6 +512,7 @@ function AccountBody({
   status,
   empty,
   readySubtitle,
+  subtitle,
 }: {
   status?: AgentStatus;
   empty: string;
@@ -507,6 +521,7 @@ function AccountBody({
    * no provider auth), so "Logged in" would claim a step that never
    * happened. */
   readySubtitle?: string;
+  subtitle?: string;
 }) {
   if (!status?.connected) {
     return (
@@ -514,6 +529,11 @@ function AccountBody({
     );
   }
   const letter = (status.email?.[0] ?? status.name[0]).toUpperCase();
+  const sub =
+    subtitle ??
+    (status.id === "antigravity"
+      ? (status.email ? "Google account" : "Logged in")
+      : (status.email ? "Logged in" : (readySubtitle ?? "Logged in")));
   return (
     <div className="flex items-center gap-3 px-4 py-3.5">
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--selected)] text-[12px] font-medium text-[var(--ink)]">
@@ -524,7 +544,7 @@ function AccountBody({
           {status.email ?? `${status.name} connected`}
         </div>
         <div className="mt-0.5 text-[12px] text-[var(--faint)]">
-          {status.email ? "Usage unavailable" : (readySubtitle ?? "Logged in")}
+          {sub}
         </div>
       </div>
       <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
@@ -548,6 +568,7 @@ const CONNECT_HINTS: Record<string, string> = {
   claude: "Check your browser — a Claude Code sign-in tab should have opened.",
   codex: "Check your browser — a Codex sign-in tab should have opened.",
   opencode: "Check the Terminal window that just opened and follow its provider picker.",
+  antigravity: "Check the Terminal window that just opened — follow its prompts to sign in with Google.",
 };
 
 function AccountGroup({

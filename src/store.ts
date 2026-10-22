@@ -1842,7 +1842,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         return;
       }
       const live = await Promise.all(
-        ["claude", "codex"].map((id) => api.checkAgentLogin(id).catch(() => null)),
+        ["claude", "codex", "antigravity"].map((id) => api.checkAgentLogin(id).catch(() => null)),
       );
       const agents = get().agents.map((agent) => {
         const fresh = live.find((status) => status?.id === agent.id);

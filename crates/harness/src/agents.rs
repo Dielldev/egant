@@ -255,13 +255,10 @@ fn build_status(id: AgentId) -> AgentStatus {
     // provider login (`opencode auth login`) writes — but its absence no
     // longer means "can't be used."
     //
-    // Antigravity is the same case from the other side: `agy` keeps its
-    // sign-in in the OS keyring under a name this probe has no business
-    // guessing at, and prints no status. Installed is the most that can be
-    // known without a spawn; a lapsed login surfaces on the first turn, as
-    // the CLI's own error.
-    let (connected, email) = if matches!(id, AgentId::Opencode | AgentId::Antigravity) {
-        (installed, None)
+    let (connected, email) = if !installed {
+        (false, None)
+    } else if matches!(id, AgentId::Opencode) {
+        (true, None)
     } else {
         login_status(id)
     };
@@ -308,8 +305,15 @@ fn verify_login(id: AgentId) -> Option<(bool, Option<String>)> {
     match id {
         AgentId::Claude => verify_claude_login(),
         AgentId::Codex => verify_codex_login(),
+        AgentId::Antigravity => verify_antigravity_login(),
         _ => None,
     }
+}
+
+fn verify_antigravity_login() -> Option<(bool, Option<String>)> {
+    let _program = resolve_executable(AgentId::Antigravity.descriptor())?;
+    let (connected, email) = antigravity_login();
+    Some((connected, email))
 }
 
 fn verify_claude_login() -> Option<(bool, Option<String>)> {
@@ -883,9 +887,8 @@ fn login_status(id: AgentId) -> (bool, Option<String>) {
         AgentId::Codex => (codex_auth_file().is_some(), None),
         AgentId::Opencode => (opencode_auth_file().is_some(), None),
         AgentId::Cursor => (cursor_auth_file().is_some(), None),
-        // Never reached for Antigravity (see `build_status`), but the match
-        // stays exhaustive so a new agent can't forget to decide.
-        AgentId::Antigravity | AgentId::Devin | AgentId::Grok | AgentId::Hermes | AgentId::Pi => {
+        AgentId::Antigravity => antigravity_login(),
+        AgentId::Devin | AgentId::Grok | AgentId::Hermes | AgentId::Pi => {
             (false, None)
         }
     }
@@ -960,6 +963,130 @@ fn opencode_auth_file() -> Option<PathBuf> {
 fn cursor_auth_file() -> Option<PathBuf> {
     let file = home_dir()?.join(".cursor/sdk/auth.json");
     file.is_file().then_some(file)
+}
+
+fn antigravity_login() -> (bool, Option<String>) {
+    let email = antigravity_email();
+    if email.is_some() {
+        return (true, email);
+    }
+    if antigravity_has_keyring() {
+        return (true, None);
+    }
+    (false, None)
+}
+
+fn antigravity_email() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        antigravity_email_macos()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        antigravity_email_linux()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn antigravity_has_keyring() -> bool {
+    keychain_has_service_account("gemini", "antigravity")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn antigravity_has_keyring() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn antigravity_email_macos() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "gemini",
+            "-a",
+            "antigravity",
+            "-w",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let secret = String::from_utf8(output.stdout).ok()?;
+    antigravity_email_from_secret(secret.trim())
+}
+
+#[cfg(target_os = "linux")]
+fn antigravity_email_linux() -> Option<String> {
+    let output = std::process::Command::new("secret-tool")
+        .args(["lookup", "service", "gemini", "username", "antigravity"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let secret = String::from_utf8(output.stdout).ok()?;
+    antigravity_email_from_secret(secret.trim())
+}
+
+fn antigravity_email_from_secret(secret: &str) -> Option<String> {
+    use base64::Engine;
+    let json_str = if let Some(b64) = secret.strip_prefix("go-keyring-base64:") {
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?;
+        String::from_utf8(bytes).ok()?
+    } else {
+        secret.to_string()
+    };
+
+    let value: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+    if let Some(email) = value.get("email").and_then(serde_json::Value::as_str) {
+        if !email.is_empty() {
+            return Some(email.to_string());
+        }
+    }
+
+    let id_token = value.get("id_token")?.as_str()?;
+    let payload_b64 = id_token.split('.').nth(1)?;
+
+    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload_b64))
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(payload_b64))
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(payload_b64))
+        .ok()?;
+
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    payload
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// Whether the macOS Keychain holds an entry under `service` and `account`.
+#[cfg(target_os = "macos")]
+fn keychain_has_service_account(service: &str, account: &str) -> bool {
+    std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", service, "-a", account])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_has_service_account(_service: &str, _account: &str) -> bool {
+    false
 }
 
 /// Whether the macOS Keychain holds an entry under `service`. Exit status
@@ -1046,5 +1173,32 @@ mod tests {
         std::fs::write(&file, r#"{"numStartups":3}"#).unwrap();
         assert_eq!(claude_email_at(&file), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn antigravity_email_parses_from_id_token() {
+        // payload: {"email": "diellgovori9@gmail.com"} -> eyJlbWFpbCI6ImRpZWxsZ292b3JpOUBnbWFpbC5jb20ifQ
+        let raw_json = r#"{"auth_method":"consumer","id_token":"mockHeader.eyJlbWFpbCI6ImRpZWxsZ292b3JpOUBnbWFpbC5jb20ifQ.mockSig"}"#;
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw_json.as_bytes());
+        let secret = format!("go-keyring-base64:{b64}");
+        assert_eq!(
+            antigravity_email_from_secret(&secret).as_deref(),
+            Some("diellgovori9@gmail.com")
+        );
+        assert_eq!(
+            antigravity_email_from_secret(raw_json).as_deref(),
+            Some("diellgovori9@gmail.com")
+        );
+        assert_eq!(antigravity_email_from_secret("bad secret"), None);
+    }
+
+    #[test]
+    fn antigravity_status_detects_login() {
+        let status = build_status(AgentId::Antigravity);
+        assert!(status.installed);
+        if status.connected {
+            assert!(status.email.is_some());
+        }
     }
 }
