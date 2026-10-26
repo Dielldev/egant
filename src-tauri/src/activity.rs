@@ -1076,7 +1076,10 @@ mod tests {
         println!("{} active days", dto.days.len());
     }
 
+    // Reads the opencode data on this machine, so it only means something
+    // where opencode has been used: run it with `--ignored`.
     #[test]
+    #[ignore]
     fn real_opencode_usage() {
         let stats = fetch_opencode_usage().expect("fetch_opencode_usage succeeds");
         println!("OpenCode usage stats: {stats:?}");
