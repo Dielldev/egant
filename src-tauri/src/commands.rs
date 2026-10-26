@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
     ArchivedSessionDto, ChangeDto, ClaudeUsageDto, CloseResultDto, CommitDto, CommitRefDto,
-    ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, RepoRefDto,
+    ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, OpencodeUsageDto, RepoRefDto,
     RepoStatusDto, SendResultDto, StateDto, TranscriptDto, UnmergedFileDto, WorktreeDto,
 };
 use crate::service::{self, DecisionOutcome};
@@ -1113,6 +1113,15 @@ async fn claude_usage_limits() -> Result<Option<ClaudeUsageDto>, String> {
     })
 }
 
+/// OpenCode lifetime and recent stats from local sqlite database and rate limit state.
+#[tauri::command]
+async fn opencode_usage_stats() -> Result<OpencodeUsageDto, String> {
+    log::debug!("opencode_usage_stats");
+    tauri::async_runtime::spawn_blocking(crate::activity::fetch_opencode_usage)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// The wallpaper as a data URL for an `<img>` tag. Reading it here (rather
 /// than exposing the filesystem to the webview) keeps the security surface to
 /// the one image the user picked.
@@ -1161,12 +1170,17 @@ pub(crate) fn mime_for(path: &Path) -> &'static str {
 
 /// Keeps the native window in step with the Appearance settings: which
 /// palette (light/dark) the titlebar and window chrome should render in, and
-/// whether the transparent stage is a real macOS frosted-glass blur (Glass:
+/// whether the transparent stage is a real native blur (Glass:
 /// Default/Frosted) or a flat fill (Glass: Opaque). Called once on load and
 /// again on every appearance change, so both effects always agree with what
 /// the CSS is currently painting.
+///
+/// Returns which native effect took. Windows needs this: the webview is
+/// transparent and CSS cannot blur the desktop, so when neither Acrylic nor
+/// Mica is available the frontend has to paint a solid ground instead
+/// (`data-window-glass` in `index.css`).
 #[tauri::command]
-fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<(), String> {
+fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<String, String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "no main window".to_string())?;
@@ -1177,35 +1191,73 @@ fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<(),
             tauri::Theme::Light
         }))
         .map_err(|error| error.to_string())?;
+    Ok(apply_window_glass(&window, dark, glass))
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        if glass {
-            window_vibrancy::apply_vibrancy(
-                &window,
-                window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
-                None,
-                None,
-            )
-            .map_err(|error| error.to_string())?;
-        } else {
-            let _ = window_vibrancy::clear_vibrancy(&window);
+/// The platform's window backdrop, returning the name of what was applied
+/// (`none` when glass is off or the platform has nothing to apply).
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, _dark: bool, glass: bool) -> String {
+    if glass {
+        match window_vibrancy::apply_vibrancy(
+            window,
+            window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
+            None,
+            None,
+        ) {
+            Ok(()) => "vibrancy".to_string(),
+            Err(error) => {
+                log::warn!("apply_vibrancy failed: {error}");
+                "none".to_string()
+            }
         }
+    } else {
+        let _ = window_vibrancy::clear_vibrancy(window);
+        "none".to_string()
     }
-    #[cfg(target_os = "windows")]
-    {
-        if glass {
-            let _ = window_vibrancy::apply_mica(&window, Some(dark))
-                .or_else(|_| window_vibrancy::apply_acrylic(&window, None));
-        } else {
-            let _ = window_vibrancy::clear_mica(&window);
-            let _ = window_vibrancy::clear_acrylic(&window);
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let _ = glass;
+}
 
-    Ok(())
+/// Windows' system backdrops. On Windows 11, Mica Alt (Tabbed) and standard Mica
+/// provide the native hardware-accelerated materials without drag/resize lag.
+/// Acrylic and DWM blur serve as fallbacks on Windows 10.
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, dark: bool, glass: bool) -> String {
+    let _ = window_vibrancy::clear_tabbed(window);
+    let _ = window_vibrancy::clear_mica(window);
+    let _ = window_vibrancy::clear_acrylic(window);
+    let _ = window_vibrancy::clear_blur(window);
+
+    if !glass {
+        return "none".to_string();
+    }
+
+    // On Windows 11 (build 22523+), apply_tabbed (Mica Alt) gives a deeper,
+    // richer backdrop suited for full-window workspaces.
+    if window_vibrancy::apply_tabbed(window, Some(dark)).is_ok() {
+        return "tabbed".to_string();
+    }
+    if window_vibrancy::apply_mica(window, Some(dark)).is_ok() {
+        return "mica".to_string();
+    }
+
+    // Win10 Acrylic & Blur fallbacks:
+    let tint: window_vibrancy::Color = if dark {
+        (18, 18, 22, 180)
+    } else {
+        (242, 242, 246, 185)
+    };
+    if window_vibrancy::apply_acrylic(window, Some(tint)).is_ok() {
+        return "acrylic".to_string();
+    }
+    if window_vibrancy::apply_blur(window, Some(tint)).is_ok() {
+        return "blur".to_string();
+    }
+    "none".to_string()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(crate) fn apply_window_glass(_window: &tauri::WebviewWindow, _dark: bool, _glass: bool) -> String {
+    "none".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1811,6 +1863,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         connect_agent,
         list_models,
         claude_usage_limits,
+        opencode_usage_stats,
         crate::activity::token_activity,
         wallpaper_data_url,
         sync_window_appearance,

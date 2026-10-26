@@ -181,7 +181,7 @@ impl WorktreeStore {
         if worktree.path.exists() && self.remove(worktree, true).is_err() {
             // git refused (or the directory is half-gone) — take the folder
             // directly and let `prune` clean up after it.
-            let _ = std::fs::remove_dir_all(&worktree.path);
+            let _ = resilient_remove_dir_all(&worktree.path);
         }
         let _ = run(&self.repo_root, &["worktree", "prune"]);
 
@@ -477,6 +477,40 @@ fn same_path(a: &Path, b: &Path) -> bool {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         left == right
+    }
+}
+
+fn resilient_remove_dir_all(path: &Path) -> std::io::Result<()> {
+    if std::fs::remove_dir_all(path).is_ok() {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, git object files and packs often have the readonly attribute set,
+        // which prevents remove_dir_all from succeeding with Access Denied. Clear readonly.
+        fn clear_readonly(p: &Path) {
+            if let Ok(entries) = std::fs::read_dir(p) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Ok(m) = entry.metadata() {
+                        let mut perms = m.permissions();
+                        if perms.readonly() {
+                            perms.set_readonly(false);
+                            let _ = std::fs::set_permissions(&path, perms);
+                        }
+                        if m.is_dir() {
+                            clear_readonly(&path);
+                        }
+                    }
+                }
+            }
+        }
+        clear_readonly(path);
+        std::fs::remove_dir_all(path)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::remove_dir_all(path)
     }
 }
 

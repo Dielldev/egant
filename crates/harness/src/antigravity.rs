@@ -517,12 +517,16 @@ impl AntigravityTranslator {
         }
         let message = if failed && !self.turn.failed {
             // A failed turn that raised no error step of its own: say what
-            // the CLI said about it.
-            Some(if response.is_empty() {
-                format!("Antigravity ended the turn with status `{status}`.")
+            // the CLI said about it. When the assistant already spoke during
+            // the turn, its reply is already in the transcript — never duplicate
+            // that response text as an error notice.
+            if self.turn.spoke {
+                None
+            } else if response.is_empty() {
+                Some(format!("Antigravity ended the turn with status `{status}`."))
             } else {
-                response.to_string()
-            })
+                Some(response.to_string())
+            }
         } else {
             None
         };
@@ -552,37 +556,147 @@ enum StepState {
     Error,
 }
 
+fn clean_str(s: &str) -> String {
+    let trimmed = s.trim();
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        if trimmed.len() >= 2 {
+            return trimmed[1..trimmed.len() - 1].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn pick_field(input: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| input.get(*key).and_then(Value::as_str))
+        .map(clean_str)
+        .filter(|text| !text.is_empty())
+}
+
 /// The CLI's tools are snake_case with PascalCase parameters
-/// (`view_file { AbsolutePath }`); converge the ones whose shape was captured
-/// onto the vocabulary the tool cards already speak, rather than teaching the
-/// frontend another dialect. The wire omits file contents (a write reports
-/// only its `TargetFile`), so edits show a path and no diff. Anything not
-/// listed keeps its own name and arguments.
+/// (`view_file { AbsolutePath }` or Gemini's `read_file { Path }`); converge
+/// the ones whose shape was captured onto the vocabulary the tool cards
+/// already speak, rather than teaching the frontend another dialect.
 fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
-    let text = |key: &str| {
-        input
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
-    match name {
-        "view_file" => (
-            "Read".to_string(),
-            serde_json::json!({ "file_path": text("AbsolutePath") }),
-        ),
-        "write_to_file" => (
-            "Write".to_string(),
-            serde_json::json!({ "file_path": text("TargetFile") }),
-        ),
-        "replace_file_content" | "multi_replace_file_content" => (
-            "Edit".to_string(),
-            serde_json::json!({ "file_path": text("TargetFile") }),
-        ),
-        "run_command" => (
-            "Bash".to_string(),
-            serde_json::json!({ "command": text("CommandLine") }),
-        ),
+    let clean_name = name
+        .rsplit(':')
+        .next()
+        .unwrap_or(name)
+        .rsplit('.')
+        .next()
+        .unwrap_or(name);
+    match clean_name.to_ascii_lowercase().as_str() {
+        "view_file" | "read_file" | "read" | "view" => {
+            let file_path = pick_field(
+                &input,
+                &[
+                    "Path",
+                    "path",
+                    "file_path",
+                    "filePath",
+                    "AbsolutePath",
+                    "absolute_path",
+                    "TargetFile",
+                    "target_file",
+                    "file",
+                ],
+            )
+            .unwrap_or_default();
+            (
+                "Read".to_string(),
+                serde_json::json!({ "file_path": file_path }),
+            )
+        }
+        "write_to_file" | "write_file" | "write" | "create_file" | "create" => {
+            let file_path = pick_field(
+                &input,
+                &[
+                    "Path",
+                    "path",
+                    "TargetFile",
+                    "target_file",
+                    "file_path",
+                    "filePath",
+                    "AbsolutePath",
+                    "absolute_path",
+                    "file",
+                ],
+            )
+            .unwrap_or_default();
+            let mut val = serde_json::json!({ "file_path": file_path });
+            if let Some(content) = pick_field(
+                &input,
+                &["Content", "content", "text", "body", "code"],
+            ) {
+                val["content"] = Value::String(content);
+            }
+            ("Write".to_string(), val)
+        }
+        "replace_file_content" | "multi_replace_file_content" | "edit_file" | "edit"
+        | "multiedit" | "apply_patch" | "patch" => {
+            let file_path = pick_field(
+                &input,
+                &[
+                    "Path",
+                    "path",
+                    "TargetFile",
+                    "target_file",
+                    "file_path",
+                    "filePath",
+                    "AbsolutePath",
+                    "absolute_path",
+                    "file",
+                ],
+            )
+            .unwrap_or_default();
+            let mut val = serde_json::json!({ "file_path": file_path });
+            if let Some(old_string) = pick_field(
+                &input,
+                &[
+                    "Target",
+                    "target",
+                    "TargetContent",
+                    "target_content",
+                    "old_string",
+                    "oldString",
+                    "old_text",
+                    "oldText",
+                ],
+            ) {
+                val["old_string"] = Value::String(old_string);
+            }
+            if let Some(new_string) = pick_field(
+                &input,
+                &[
+                    "Replacement",
+                    "replacement",
+                    "ReplacementContent",
+                    "replacement_content",
+                    "new_string",
+                    "newString",
+                    "new_text",
+                    "newText",
+                    "diff",
+                    "patch",
+                ],
+            ) {
+                val["new_string"] = Value::String(new_string);
+            }
+            ("Edit".to_string(), val)
+        }
+        "run_command" | "bash" | "exec" | "shell" | "command" | "terminal" => {
+            let command = pick_field(
+                &input,
+                &["CommandLine", "command_line", "command", "cmd"],
+            )
+            .unwrap_or_default();
+            (
+                "Bash".to_string(),
+                serde_json::json!({ "command": command }),
+            )
+        }
         _ => (name.to_string(), input),
     }
 }
@@ -1005,6 +1119,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_failed_status_after_assistant_spoke_does_not_duplicate_reply_as_error_notice() {
+        let mut t = translator();
+        t.build("hi", &[]);
+        // The assistant streams or settles a response during the turn:
+        t.push_line(
+            r#"{"event":"step_update","step_update":{"conversation_id":"c","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"I finished the task.\n"}}"#,
+        );
+        // Then result arrives with status "error" and the duplicate full response:
+        let events = t.push_line(
+            r#"{"event":"result","result":{"status":"error","response":"I finished the task.\n"}}"#,
+        );
+        match events.last() {
+            Some(HarnessEvent::TurnEnded {
+                is_error, result, ..
+            }) => {
+                assert!(is_error);
+                // Must NOT duplicate "I finished the task" as an error message!
+                assert_eq!(result.as_deref(), None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
     /// Lines captured from `agy 1.x` (see the module doc): a file read.
     const VIEW_ACTIVE: &str = r#"{"event":"step_update","step_update":{"conversation_id":"c","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"view_file","tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/tmp/p/note.txt"}}}}"#;
     const VIEW_DONE: &str = r#"{"event":"step_update","step_update":{"conversation_id":"c","step_index":2,"state":"DONE","step_type":"tool","tool_name":"view_file","duration_seconds":0.007,"tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/tmp/p/note.txt"},"output":"2 lines, 27 bytes"}}}"#;
@@ -1064,6 +1202,53 @@ mod tests {
             serde_json::json!({ "TargetFile": "/tmp/out.txt" }),
         );
         assert_eq!(name, "Edit");
+        // Gemini models in Antigravity speak read_file, write_file, edit_file:
+        let (name, input) = normalize_tool_call(
+            "read_file",
+            serde_json::json!({ "Path": "/tmp/gemini.txt" }),
+        );
+        assert_eq!(
+            (name.as_str(), input["file_path"].as_str()),
+            ("Read", Some("/tmp/gemini.txt"))
+        );
+        let (name, input) = normalize_tool_call(
+            "default_api:read_file",
+            serde_json::json!({ "Path": "/tmp/gemini.txt" }),
+        );
+        assert_eq!(
+            (name.as_str(), input["file_path"].as_str()),
+            ("Read", Some("/tmp/gemini.txt"))
+        );
+        let (name, input) = normalize_tool_call(
+            "write_file",
+            serde_json::json!({ "Path": "/tmp/new.ts", "Content": "console.log('hi');" }),
+        );
+        assert_eq!(
+            (name.as_str(), input["file_path"].as_str(), input["content"].as_str()),
+            ("Write", Some("/tmp/new.ts"), Some("console.log('hi');"))
+        );
+        let (name, input) = normalize_tool_call(
+            "edit_file",
+            serde_json::json!({
+                "Path": "/tmp/existing.ts",
+                "Target": "const a = 1;",
+                "Replacement": "const a = 2;"
+            }),
+        );
+        assert_eq!(
+            (
+                name.as_str(),
+                input["file_path"].as_str(),
+                input["old_string"].as_str(),
+                input["new_string"].as_str()
+            ),
+            (
+                "Edit",
+                Some("/tmp/existing.ts"),
+                Some("const a = 1;"),
+                Some("const a = 2;")
+            )
+        );
         // One nobody captured keeps its own name and arguments.
         let (name, input) =
             normalize_tool_call("search_web", serde_json::json!({ "query": "rust" }));

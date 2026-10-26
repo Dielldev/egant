@@ -163,6 +163,7 @@ fn open(
     // and anything that prints `$PWD` would name the wrong folder.
     command.env("PWD", &dir);
     command.cwd(dir);
+    command.env("PATH", egant_harness::agents::execution_path());
     // xterm.js speaks full 256-colour/truecolor; say so, or the shell and
     // everything it runs will assume a dumb terminal and drop the colour.
     command.env("TERM", "xterm-256color");

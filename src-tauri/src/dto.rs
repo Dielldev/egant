@@ -793,6 +793,34 @@ impl From<egant_harness::usage_limits::ClaudeUsage> for ClaudeUsageDto {
     }
 }
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeToolUsageDto {
+    pub name: String,
+    pub count: u64,
+    pub percentage: f64,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeUsageDto {
+    pub installed: bool,
+    pub has_auth: bool,
+    pub is_free_tier: bool,
+    pub free_limit_reached: bool,
+    pub total_sessions: u64,
+    pub total_messages: u64,
+    pub days_span: u64,
+    pub total_cost: f64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub tokens_cache_read: u64,
+    pub tokens_cache_write: u64,
+    pub total_tokens: u64,
+    pub top_tools: Vec<OpencodeToolUsageDto>,
+    pub last_active_epoch: Option<i64>,
+}
+
 // ---------------------------------------------------------------------------
 // Files / git
 // ---------------------------------------------------------------------------

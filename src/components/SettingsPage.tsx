@@ -39,7 +39,7 @@ import {
   sendBanner,
 } from "../lib/notify";
 import type { NotifyKind } from "../lib/notify";
-import { isMac, modShortcut, windowBarPadClass } from "../lib/platform";
+import { hostDeviceCapitalized, isMac, modShortcut, windowBarPadClass } from "../lib/platform";
 import { shouldOpenUpward } from "../lib/popover";
 import { ACCENTS, DARK_THEMES, LIGHT_THEMES } from "../lib/themes";
 import { ageLabel } from "../lib/transcript";
@@ -49,6 +49,7 @@ import type { ThemeName } from "cuelume";
 import { useEgant } from "../store";
 import type { BgEffect, GlassMode, SettingsSection } from "../store";
 import { AgentsSection } from "./AgentsSettings";
+import { UsageSection } from "./UsageSettings";
 import {
   Card,
   DevicePill,
@@ -71,7 +72,7 @@ import {
 import { AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ProviderGlyph } from "./ProviderLogo";
 
-/** Settings: the window behind the "Local only" profile. A left rail of
+/** Settings: the window behind the Settings button in the sidebar footer. A left rail of
  * sections beside a scrolling pane, closed with the Back button (or `Esc`).
  * Appearance is fully wired to the window; the other sections are local
  * state until their backends land. */
@@ -79,6 +80,7 @@ import { ProviderGlyph } from "./ProviderLogo";
 const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "devices", label: "Devices", icon: Monitor },
   { id: "agents", label: "Agents", icon: LayoutGrid },
+  { id: "usage", label: "Usage", icon: ChartColumn },
   { id: "accounts", label: "Accounts", icon: KeyRound },
   { id: "appearance", label: "Appearance", icon: SlidersHorizontal },
   { id: "files", label: "Files", icon: Folder },
@@ -119,7 +121,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="stage-glass flex h-screen w-screen overflow-hidden text-[var(--ink)]">
+    <div className="stage-glass flex h-full w-full overflow-hidden text-[var(--ink)]">
       <aside className="sidebar-glass flex h-full w-[220px] shrink-0 flex-col border-r border-[var(--border)]">
         <div
           data-tauri-drag-region
@@ -172,6 +174,7 @@ export function SettingsPage() {
         <div className="mx-auto w-full max-w-[880px] px-10 pt-9 pb-16">
           {hist[index] === "devices" && <DevicesSection />}
           {hist[index] === "agents" && <AgentsSection />}
+          {hist[index] === "usage" && <UsageSection />}
           {hist[index] === "accounts" && <AccountsSection />}
           {hist[index] === "appearance" && <AppearanceSection />}
           {hist[index] === "files" && <FilesSection />}
@@ -295,7 +298,7 @@ function DevicesSection() {
       <SectionHead
         title="Devices"
         count={1 + (phone.status?.devices.length ?? 0)}
-        sub="This Mac, and the phones you've connected to it."
+        sub={`${hostDeviceCapitalized()}, and the phones you've connected to it.`}
       />
       <Card>
         <div className="flex items-center gap-3.5 px-4 py-3.5">
@@ -339,7 +342,7 @@ function DevicesSection() {
               {deviceId}
             </div>
           </div>
-          <span className="shrink-0 text-[12px] text-[var(--muted)]">This Mac</span>
+          <span className="shrink-0 text-[12px] text-[var(--muted)]">{hostDeviceCapitalized()}</span>
           <button
             type="button"
             onClick={() => {
@@ -373,11 +376,14 @@ function AccountsSection() {
   const refresh = useEgant((s) => s.refresh);
   const claudeUsage = useEgant((s) => s.claudeUsage);
   const fetchClaudeUsage = useEgant((s) => s.fetchClaudeUsage);
+  const opencodeUsage = useEgant((s) => s.opencodeUsage);
+  const fetchOpencodeUsage = useEgant((s) => s.fetchOpencodeUsage);
   const [spinning, setSpinning] = useState(false);
   useEffect(() => {
     void verifyAgents();
     void fetchClaudeUsage();
-  }, [verifyAgents, fetchClaudeUsage]);
+    void fetchOpencodeUsage();
+  }, [verifyAgents, fetchClaudeUsage, fetchOpencodeUsage]);
 
   const statusOf = (id: string) => agents.find((a) => a.id === id);
   const known = agents.length > 0;
@@ -392,6 +398,7 @@ function AccountsSection() {
       refresh(),
       fetchAgents(),
       fetchClaudeUsage(),
+      fetchOpencodeUsage(),
       ...ids.map((id) => api.checkAgentLogin(id).catch(() => null)),
     ]).finally(() => {
       void fetchAgents();
@@ -460,7 +467,13 @@ function AccountsSection() {
           <AccountBody
             status={statusOf("opencode")}
             empty="OpenCode isn't installed on this device — install it to use its free models, or add a provider account."
-            readySubtitle="Free models ready — Add account to sign in to a specific provider"
+            readySubtitle={
+              opencodeUsage?.freeLimitReached
+                ? "Free tier limit reached — Community models rate-limited"
+                : opencodeUsage
+                ? `${opencodeUsage.totalSessions} sessions • ${opencodeUsage.totalMessages.toLocaleString()} messages • Free tier`
+                : "Free models ready — Add account to sign in to a specific provider"
+            }
           />
         }
       />

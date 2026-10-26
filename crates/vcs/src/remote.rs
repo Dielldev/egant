@@ -33,9 +33,39 @@ impl GitOutput {
     }
 }
 
+pub(crate) fn git_command() -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    {
+        if let Some(path) = std::env::var_os("PATH") {
+            let mut paths = std::env::split_paths(&path).collect::<Vec<_>>();
+            let mut added = false;
+            for candidate in [
+                std::path::PathBuf::from("C:\\Program Files\\Git\\cmd"),
+                std::path::PathBuf::from("C:\\Program Files (x86)\\Git\\cmd"),
+                dirs::data_local_dir()
+                    .map(|d| d.join("Programs\\Git\\cmd"))
+                    .unwrap_or_default(),
+            ] {
+                if candidate.is_dir() && !paths.contains(&candidate) {
+                    paths.push(candidate);
+                    added = true;
+                }
+            }
+            if added {
+                if let Ok(new_path) = std::env::join_paths(paths) {
+                    cmd.env("PATH", new_path);
+                }
+            }
+        }
+    }
+    cmd
+}
+
 /// Runs `git` in `root`, returning an error for any non-zero exit.
 pub fn run(root: &Path, args: &[&str]) -> Result<GitOutput, VcsError> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command();
     cmd.args(args)
         .current_dir(root)
         // Never let git open an interactive prompt behind the app's back: with

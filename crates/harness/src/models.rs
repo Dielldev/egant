@@ -308,6 +308,7 @@ fn discover_codex_models(program: &PathBuf) -> Result<Vec<AgentModel>, String> {
     let mut cmd = Command::new(prog);
     cmd.args(&prefix)
         .arg("app-server")
+        .env("PATH", crate::agents::execution_path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -1136,6 +1137,7 @@ fn run_with_timeout(program: &PathBuf, args: &[&str], timeout: Duration) -> Opti
     let mut cmd = std::process::Command::new(prog);
     cmd.args(&prefix)
         .args(args)
+        .env("PATH", crate::agents::execution_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

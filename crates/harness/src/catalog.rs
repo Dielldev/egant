@@ -37,6 +37,8 @@ pub enum InstallMethod {
     Brew,
     Pip,
     Uv,
+    Powershell,
+    Winget,
 }
 
 impl InstallMethod {
@@ -47,6 +49,8 @@ impl InstallMethod {
             InstallMethod::Brew => "brew",
             InstallMethod::Pip => "pip",
             InstallMethod::Uv => "uv",
+            InstallMethod::Powershell => "powershell",
+            InstallMethod::Winget => "winget",
         }
     }
 
@@ -57,6 +61,8 @@ impl InstallMethod {
             "brew" => Some(InstallMethod::Brew),
             "pip" => Some(InstallMethod::Pip),
             "uv" => Some(InstallMethod::Uv),
+            "powershell" => Some(InstallMethod::Powershell),
+            "winget" => Some(InstallMethod::Winget),
             _ => None,
         }
     }
@@ -128,6 +134,26 @@ const fn curl(command: &'static str, recommended: bool) -> InstallOption {
     }
 }
 
+#[allow(dead_code)]
+const fn powershell(command: &'static str, recommended: bool) -> InstallOption {
+    InstallOption {
+        method: InstallMethod::Powershell,
+        command,
+        update_command: None,
+        recommended,
+    }
+}
+
+#[allow(dead_code)]
+const fn winget(command: &'static str, recommended: bool) -> InstallOption {
+    InstallOption {
+        method: InstallMethod::Winget,
+        command,
+        update_command: None,
+        recommended,
+    }
+}
+
 pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "claude",
@@ -140,6 +166,12 @@ pub const CATALOG: &[CatalogEntry] = &[
         supports: FULL,
         chat_ui: true,
         recommended: true,
+        #[cfg(windows)]
+        install_options: &[
+            npm("npm install -g @anthropic-ai/claude-code", true),
+            powershell("powershell -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\"", false),
+        ],
+        #[cfg(not(windows))]
         install_options: &[
             curl("curl -fsSL https://claude.ai/install.sh | bash", true),
             npm("npm install -g @anthropic-ai/claude-code", false),
@@ -157,6 +189,11 @@ pub const CATALOG: &[CatalogEntry] = &[
         supports: FULL,
         chat_ui: true,
         recommended: true,
+        #[cfg(windows)]
+        install_options: &[
+            npm("npm install -g @openai/codex", true),
+        ],
+        #[cfg(not(windows))]
         install_options: &[
             npm("npm install -g @openai/codex", true),
             InstallOption {
@@ -179,6 +216,12 @@ pub const CATALOG: &[CatalogEntry] = &[
         supports: FULL,
         chat_ui: true,
         recommended: true,
+        #[cfg(windows)]
+        install_options: &[
+            npm("npm install -g opencode-ai", true),
+            powershell("powershell -ExecutionPolicy Bypass -Command \"irm https://opencode.ai/install.ps1 | iex\"", false),
+        ],
+        #[cfg(not(windows))]
         install_options: &[
             curl("curl -fsSL https://opencode.ai/install | bash", true),
             npm("npm install -g opencode-ai", false),
@@ -214,6 +257,12 @@ pub const CATALOG: &[CatalogEntry] = &[
         supports: FULL,
         chat_ui: true,
         recommended: false,
+        #[cfg(windows)]
+        install_options: &[
+            powershell("powershell -ExecutionPolicy Bypass -Command \"irm https://antigravity.google/cli/install.ps1 | iex\"", true),
+            npm("npm install -g @google/antigravity", false),
+        ],
+        #[cfg(not(windows))]
         install_options: &[InstallOption {
             method: InstallMethod::Curl,
             command: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
@@ -265,6 +314,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         supports: PROMPTS_SESSIONS,
         chat_ui: false,
         recommended: false,
+        #[cfg(windows)]
+        install_options: &[winget("winget install Cursor.Cursor", true)],
+        #[cfg(not(windows))]
         install_options: &[curl("curl https://cursor.com/install -fsS | bash", true)],
         npm_package: None,
     },
@@ -293,6 +345,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         supports: PROMPTS_SESSIONS,
         chat_ui: false,
         recommended: false,
+        #[cfg(windows)]
+        install_options: &[winget("winget install block.goose", true)],
+        #[cfg(not(windows))]
         install_options: &[curl(
             "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash",
             true,
@@ -748,9 +803,20 @@ pub(crate) fn run_in_login_shell(
     command: &str,
     deadline: Duration,
 ) -> Result<(bool, String), String> {
-    let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-    let mut spawn = std::process::Command::new(comspec);
-    spawn.args(["/c", command]);
+    let mut spawn = if command.trim_start().starts_with("powershell") {
+        let mut cmd = std::process::Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]);
+        cmd
+    } else {
+        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        let mut cmd = std::process::Command::new(comspec);
+        cmd.args(["/d", "/s", "/c", command]);
+        cmd
+    };
+    spawn.env("PATH", crate::agents::execution_path());
+    for (k, v) in crate::agents::login_shell_env() {
+        spawn.env(k, v);
+    }
     use std::os::windows::process::CommandExt;
     spawn.creation_flags(0x08000000);
     run_bounded(spawn, deadline)

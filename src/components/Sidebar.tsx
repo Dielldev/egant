@@ -18,6 +18,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Settings,
   Smartphone,
   TerminalSquare,
   X,
@@ -77,6 +78,8 @@ export function Sidebar() {
   const unread = useEgant((s) => s.unread);
   const createSession = useEgant((s) => s.createSession);
   const openSettings = useEgant((s) => s.openSettings);
+  const closeSettings = useEgant((s) => s.closeSettings);
+  const settingsOpen = useEgant((s) => s.settingsOpen);
   const openLibrary = useEgant((s) => s.openLibrary);
   const closeLibrary = useEgant((s) => s.closeLibrary);
   const libraryOpen = useEgant((s) => s.libraryOpen);
@@ -448,6 +451,15 @@ export function Sidebar() {
             // A search in progress overrides collapse: hiding the very match
             // the user is looking for would defeat the search.
             const collapsed = needle === "" && !!collapsedGroups[group.key];
+            const displayedSessions = collapsed
+              ? group.sessions.filter(
+                  (s) =>
+                    s.busy ||
+                    s.state === "awaiting_permission" ||
+                    (s.pendingCount ?? 0) > 0 ||
+                    s.id === activeSessionId,
+                )
+              : group.sessions;
             return (
               <div key={group.key} className="flex flex-col pt-3 first:pt-1">
                 <div className="group/header flex h-7 w-full items-center gap-2 rounded-md pr-1 pl-2">
@@ -458,14 +470,21 @@ export function Sidebar() {
                     onClick={() => toggleGroupCollapsed(group.key)}
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
                   >
-                    {group.phone && (
+                    {group.phone ? (
                       <Smartphone
                         size={12}
                         strokeWidth={2}
                         aria-label="Phone"
                         className="-mr-1 shrink-0 text-[var(--faint)]"
                       />
-                    )}
+                    ) : group.projectId != null ? (
+                      <Folder
+                        size={12}
+                        strokeWidth={2}
+                        aria-label="Folder"
+                        className="-mr-1 shrink-0 text-[var(--faint)]"
+                      />
+                    ) : null}
                     <span className="min-w-0 truncate text-[12px] font-medium text-[var(--muted)]">
                       {collapsed ? `${group.label} (${group.sessions.length})` : group.label}
                     </span>
@@ -494,9 +513,9 @@ export function Sidebar() {
                     {group.note ?? "No chats yet"}
                   </div>
                 )}
-                {!collapsed && group.sessions.length > 0 && (
+                {displayedSessions.length > 0 && (
                   <div className="flex flex-col gap-0.5 pt-1">
-                    {group.sessions.map((session) => (
+                    {displayedSessions.map((session) => (
                       <SessionRow key={session.id} {...rowProps(session)} />
                     ))}
                   </div>
@@ -548,13 +567,17 @@ export function Sidebar() {
           <button
             type="button"
             title={`Open settings · ${modShortcut(",")}`}
-            onClick={() => openSettings()}
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-[var(--hover)]"
+            onClick={() => (settingsOpen ? closeSettings() : openSettings())}
+            className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 ${
+              settingsOpen
+                ? "bg-[var(--selected)] font-medium text-[var(--ink)]"
+                : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            }`}
           >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--bubble)] text-[11px] font-medium text-[var(--ink)]">
-              L
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--bubble)] text-[var(--ink)]">
+              <Settings size={15} strokeWidth={2} />
             </span>
-            <span className="truncate text-[13px] text-[var(--muted)]">Local only</span>
+            <span className="truncate text-[13px]">Settings</span>
           </button>
           <UpdateButton />
         </div>

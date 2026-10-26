@@ -15,7 +15,7 @@ function capForDiff(text: string): string {
 /** Splits a diff chunk's value into its lines, dropping the trailing empty
  * string `split("\n")` leaves behind when the chunk ends in a newline. */
 function chunkLines(value: string): string[] {
-  const lines = value.split("\n");
+  const lines = value.split(/\r?\n/);
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   return lines;
 }

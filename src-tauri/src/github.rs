@@ -343,8 +343,8 @@ pub fn open_url(url: String) -> Result<(), String> {
     let mut command = Command::new("xdg-open");
     #[cfg(target_os = "windows")]
     let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", ""]);
+        let mut command = Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
         command
     };
     command

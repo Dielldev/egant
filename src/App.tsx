@@ -10,6 +10,8 @@ import { NoticeToast } from "./components/NoticeToast";
 import { LogoLoader } from "./components/Logo";
 import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
+import { setMenuActionHandler } from "./lib/menuActions";
+import { isMac, isWindows } from "./lib/platform";
 import { useColumnLayout } from "./lib/layout";
 import { log } from "./lib/logger";
 import { checkForUpdates } from "./lib/updater";
@@ -21,6 +23,7 @@ import { StageTabs } from "./components/StageTabs";
 import { disposeCliTerminals } from "./components/TerminalPane";
 import { TranscriptView } from "./components/TranscriptView";
 import { Wallpaper } from "./components/Wallpaper";
+import { WindowsChrome } from "./components/WindowsChrome";
 import { WorkspacePanel } from "./components/WorkspacePanel";
 import type { StageTab } from "./store";
 import {
@@ -52,6 +55,17 @@ const SPLASH_MS = 1400;
 type Stage = "launch" | "docking" | "thread";
 
 export default function App() {
+  return (
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--ink)]">
+      {isWindows() && <WindowsChrome />}
+      <div className="min-h-0 flex-1">
+        <EgantWindow />
+      </div>
+    </div>
+  );
+}
+
+function EgantWindow() {
   const snapshot = useEgant((s) => s.snapshot);
   const transcripts = useEgant((s) => s.transcripts);
   const settingsOpen = useEgant((s) => s.settingsOpen);
@@ -121,7 +135,9 @@ export default function App() {
   }, []);
 
   // Plain `Esc` backs out of settings (or the Library) without touching the
-  // session.
+  // session. On non-macOS (where modShortcut("⎋") is displayed as `Esc` because
+  // Ctrl+Esc triggers the Windows Start Menu), pressing Esc cancels an active
+  // busy turn when neither overlay is open.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -132,6 +148,13 @@ export default function App() {
       } else if (store.libraryOpen) {
         e.preventDefault();
         store.closeLibrary();
+      } else if (!isMac()) {
+        const active = store.snapshot?.activeSession;
+        const session = store.snapshot?.sessions.find((s) => s.id === active);
+        if (active != null && session?.busy) {
+          e.preventDefault();
+          void store.interrupt(active);
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -231,6 +254,11 @@ export default function App() {
   performRef.current = perform;
 
   useEffect(() => {
+    setMenuActionHandler((action) => performRef.current(action));
+    return () => setMenuActionHandler(null);
+  }, []);
+
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void listen<string>("menu-action", (event) => performRef.current(event.payload)).then((u) => {
@@ -262,6 +290,10 @@ export default function App() {
         case "n":
           e.preventDefault();
           performRef.current("new-conversation");
+          break;
+        case "o":
+          e.preventDefault();
+          performRef.current("open-folder");
           break;
         case "k":
           e.preventDefault();
@@ -376,7 +408,7 @@ export default function App() {
   // see `SPLASH_MS`.
   if (snapshot === null || !splashHeld) {
     return (
-      <div className="stage-glass loader-fade flex h-screen w-screen items-center justify-center">
+      <div className="stage-glass loader-fade flex h-full w-full items-center justify-center">
         <LogoLoader width={120} label="Starting egant" />
       </div>
     );
@@ -391,7 +423,7 @@ export default function App() {
   const threadVisible = stage !== "launch" && openTab === null && cli === null;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-transparent text-[var(--ink)]">
+    <div className="flex h-full w-full overflow-hidden bg-transparent text-[var(--ink)]">
       {settingsOpen ? (
         <SettingsPage />
       ) : (

@@ -991,7 +991,21 @@ export function stateLabel(state: TurnState, ended: boolean): string {
 export function toolSummary(input: unknown, name: string): string {
   if (input !== null && typeof input === "object") {
     const record = input as Record<string, unknown>;
-    for (const key of ["command", "file_path", "filePath", "path", "pattern", "url", "prompt"]) {
+    for (const key of [
+      "command",
+      "CommandLine",
+      "command_line",
+      "file_path",
+      "filePath",
+      "path",
+      "Path",
+      "AbsolutePath",
+      "TargetFile",
+      "target_file",
+      "pattern",
+      "url",
+      "prompt",
+    ]) {
       const value = record[key];
       if (typeof value === "string") return value.split("\n")[0] ?? value;
     }
@@ -1002,8 +1016,9 @@ export function toolSummary(input: unknown, name: string): string {
 /** The last path segment, for a tool card's title — `/a/b/c.ts` → `c.ts`.
  * Falls back to the whole string for a bare filename or an empty path. */
 export function basename(path: string): string {
-  const parts = path.split(/[/\\]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1]! : path;
+  const clean = path.replace(/^['"]|['"]$/g, "").trim();
+  const parts = clean.split(/[/\\]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1]! : clean;
 }
 
 /** Tool family, resolved case-insensitively so Claude (`Edit`), opencode
@@ -1013,19 +1028,29 @@ export function basename(path: string): string {
 export type ToolCategory = "edit" | "write" | "read" | "command" | "other";
 
 export function toolCategory(name: string): ToolCategory {
-  switch (name.toLowerCase()) {
+  const clean = name.includes(":") ? name.split(":").pop()! : name;
+  switch (clean.toLowerCase()) {
     case "edit":
+    case "edit_file":
     case "multiedit":
     case "apply_patch":
     case "patch":
+    case "replace_file_content":
+    case "multi_replace_file_content":
       return "edit";
     case "write":
+    case "write_file":
+    case "write_to_file":
     case "create":
+    case "create_file":
       return "write";
     case "read":
+    case "read_file":
     case "view":
+    case "view_file":
       return "read";
     case "bash":
+    case "run_command":
     case "exec":
     case "shell":
     case "command":
@@ -1050,14 +1075,31 @@ function strField(record: Record<string, unknown>, keys: string[]): string {
 export function toolFilePath(input: unknown): string {
   if (input === null || typeof input !== "object") return "";
   const record = input as Record<string, unknown>;
-  return strField(record, ["file_path", "filePath", "path", "file", "filename", "file_name"]);
+  const raw = strField(record, [
+    "file_path",
+    "filePath",
+    "path",
+    "Path",
+    "AbsolutePath",
+    "TargetFile",
+    "target_file",
+    "absolute_path",
+    "file",
+    "filename",
+    "file_name",
+  ]);
+  return raw.replace(/^['"]|['"]$/g, "").trim();
 }
 
 /** The shell command a command tool runs (`command` everywhere). */
 export function toolCommand(input: unknown): string {
   if (input === null || typeof input !== "object") return "";
   const record = input as Record<string, unknown>;
-  const value = record["command"];
+  const value =
+    record["command"] ??
+    record["CommandLine"] ??
+    record["command_line"] ??
+    record["cmd"];
   return typeof value === "string" ? value : "";
 }
 
@@ -1066,7 +1108,16 @@ export function toolCommand(input: unknown): string {
 export function toolWriteContent(input: unknown): string {
   if (input === null || typeof input !== "object") return "";
   const record = input as Record<string, unknown>;
-  return strField(record, ["content", "text", "body", "code", "newString", "new_string"]);
+  return strField(record, [
+    "content",
+    "Content",
+    "text",
+    "Text",
+    "body",
+    "code",
+    "newString",
+    "new_string",
+  ]);
 }
 
 export interface EditOp {
@@ -1086,9 +1137,31 @@ export function normalizeEdit(
   const filePath = toolFilePath(record);
 
   const getOld = (o: Record<string, unknown>): string =>
-    strField(o, ["old_string", "oldString", "old_text", "oldText"]);
+    strField(o, [
+      "old_string",
+      "oldString",
+      "old_text",
+      "oldText",
+      "Target",
+      "target",
+      "TargetContent",
+      "target_content",
+    ]);
   const getNew = (o: Record<string, unknown>): string =>
-    strField(o, ["new_string", "newString", "new_text", "newText", "diff", "content"]);
+    strField(o, [
+      "new_string",
+      "newString",
+      "new_text",
+      "newText",
+      "Replacement",
+      "replacement",
+      "ReplacementContent",
+      "replacement_content",
+      "diff",
+      "patch",
+      "content",
+      "Content",
+    ]);
 
   if (name.toLowerCase() === "multiedit" && Array.isArray(record.edits)) {
     const edits = record.edits
@@ -1136,11 +1209,10 @@ export function stripLineNumbers(text: string): string {
 export function permissionSummary(input: unknown): string {
   if (input !== null && typeof input === "object") {
     const record = input as Record<string, unknown>;
-    const command = record["command"];
+    const command = record["command"] ?? record["CommandLine"] ?? record["command_line"] ?? record["cmd"];
     if (typeof command === "string") return command;
-    const filePath =
-      record["file_path"] ?? record["filePath"] ?? record["path"] ?? record["file"];
-    if (typeof filePath === "string") return filePath;
+    const filePath = toolFilePath(input);
+    if (typeof filePath === "string" && filePath.length > 0) return filePath;
   }
   try {
     return JSON.stringify(input);

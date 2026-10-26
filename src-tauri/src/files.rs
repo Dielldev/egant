@@ -342,7 +342,7 @@ pub fn write_file(
     text: String,
     expected_modified_ms: Option<u64>,
 ) -> Result<u64, String> {
-    let target = std::fs::canonicalize(&path).map_err(|error| {
+    let target = dunce::canonicalize(&path).map_err(|error| {
         log::warn!("write_file {path} failed: {error}");
         error.to_string()
     })?;
@@ -363,7 +363,24 @@ pub fn write_file(
     let staging = target.with_file_name(format!(".{name}.egant-save"));
     let written = std::fs::write(&staging, text.as_bytes())
         .and_then(|()| std::fs::set_permissions(&staging, metadata.permissions()))
-        .and_then(|()| std::fs::rename(&staging, &target));
+        .and_then(|()| {
+            if std::fs::rename(&staging, &target).is_ok() {
+                Ok(())
+            } else {
+                #[cfg(windows)]
+                {
+                    // On Windows, if target has readonly or rename fails, clear permissions and retry
+                    let _ = std::fs::set_permissions(&target, metadata.permissions());
+                    if std::fs::rename(&staging, &target).is_ok() {
+                        return Ok(());
+                    }
+                    // Fallback to direct write if rename was blocked
+                    std::fs::write(&target, text.as_bytes())
+                }
+                #[cfg(not(windows))]
+                std::fs::rename(&staging, &target)
+            }
+        });
     if let Err(error) = written {
         let _ = std::fs::remove_file(&staging);
         log::warn!("write_file {path} failed: {error}");

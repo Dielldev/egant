@@ -91,11 +91,37 @@ pub struct DayActivity {
     pub models: Vec<ModelDay>,
 }
 
+/// Rolling 5-hour, weekly (7-day), and all-time token usage for one model.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageStat {
+    pub agent: String,
+    pub model: String,
+    pub five_hour_tokens: u64,
+    pub five_hour_input: u64,
+    pub five_hour_output: u64,
+    pub five_hour_cache: u64,
+    pub five_hour_turns: u64,
+    pub weekly_tokens: u64,
+    pub weekly_input: u64,
+    pub weekly_output: u64,
+    pub weekly_cache: u64,
+    pub weekly_turns: u64,
+    pub all_time_tokens: u64,
+    pub all_time_input: u64,
+    pub all_time_output: u64,
+    pub all_time_cache: u64,
+    pub all_time_turns: u64,
+    pub last_used_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityDto {
     /// Oldest first; days with nothing in them are left out.
     pub days: Vec<DayActivity>,
+    /// Usage totals per model across rolling 5-hour and 7-day windows.
+    pub model_stats: Vec<ModelUsageStat>,
 }
 
 // ---------------------------------------------------------------------------
@@ -380,20 +406,37 @@ fn read_opencode() -> Vec<Rec> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    let output = cmd.output();
-    let Ok(output) = output else {
-        log::debug!("activity: no sqlite3, skipping OpenCode");
-        return Vec::new();
+    let output = cmd.output().ok().filter(|o| o.status.success());
+    let stdout = match output {
+        Some(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        None => {
+            #[cfg(windows)]
+            {
+                // Windows doesn't bundle sqlite3.exe. Fallback to Python's built-in sqlite3 if available.
+                let py_script = "import sqlite3, sys\nconn = sqlite3.connect(sys.argv[1])\nfor row in conn.execute(sys.argv[2]):\n    print('\\t'.join('' if v is None else str(v) for v in row))\n";
+                let mut py = std::process::Command::new("python");
+                py.args(["-c", py_script]).arg(&db).arg(QUERY);
+                use std::os::windows::process::CommandExt;
+                py.creation_flags(0x08000000);
+                if let Ok(py_out) = py.output() {
+                    if py_out.status.success() {
+                        String::from_utf8_lossy(&py_out.stdout).into_owned()
+                    } else {
+                        return Vec::new();
+                    }
+                } else {
+                    log::debug!("activity: neither sqlite3 nor python found, skipping OpenCode");
+                    return Vec::new();
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                log::debug!("activity: no sqlite3, skipping OpenCode");
+                return Vec::new();
+            }
+        }
     };
-    if !output.status.success() {
-        log::warn!(
-            "activity: reading {} failed: {}",
-            db.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
+    stdout
         .lines()
         .filter_map(|row| {
             let mut cells = row.split('\t');
@@ -411,6 +454,256 @@ fn read_opencode() -> Vec<Rec> {
             (rec.total() > 0 && rec.t > 0).then_some(rec)
         })
         .collect()
+}
+
+pub fn fetch_opencode_usage() -> Result<crate::dto::OpencodeUsageDto, String> {
+    let installed = egant_harness::agents::resolve_executable(
+        egant_harness::agents::AgentId::Opencode.descriptor(),
+    )
+    .is_some();
+
+    let auth_file = dirs::home_dir().map(|h| h.join(".local/share/opencode/auth.json"));
+    let has_auth = auth_file.as_ref().map(|f| f.is_file()).unwrap_or(false) && {
+        if let Some(f) = &auth_file {
+            std::fs::read_to_string(f)
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .map(|val| {
+                    if let Some(obj) = val.as_object() {
+                        !obj.is_empty()
+                    } else if let Some(arr) = val.as_array() {
+                        !arr.is_empty()
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+    let is_free_tier = !has_auth;
+
+    // Check if free limit was reached in log recently
+    let mut free_limit_reached = false;
+    if let Some(home) = dirs::home_dir() {
+        let log_file = home.join(".local/share/opencode/log/opencode.log");
+        if let Ok(metadata) = std::fs::metadata(&log_file) {
+            let mtime_recent = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs() < 86_400)
+                .unwrap_or(false);
+            if mtime_recent {
+                if let Ok(mut file) = std::fs::File::open(&log_file) {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let file_size = metadata.len();
+                    let read_len = file_size.min(65536);
+                    if file.seek(SeekFrom::End(-(read_len as i64))).is_ok() {
+                        let mut buf = vec![0u8; read_len as usize];
+                        if file.read_exact(&mut buf).is_ok() {
+                            let text = String::from_utf8_lossy(&buf);
+                            if text.contains("Free usage limit reached") {
+                                free_limit_reached = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(db) = opencode_db() else {
+        return Ok(crate::dto::OpencodeUsageDto {
+            installed,
+            has_auth,
+            is_free_tier,
+            free_limit_reached,
+            ..Default::default()
+        });
+    };
+
+    const QUERY: &str = "select \
+      (select count(*) from session), \
+      (select count(*) from message), \
+      coalesce(sum(tokens_input), 0), \
+      coalesce(sum(tokens_output), 0) + coalesce(sum(tokens_reasoning), 0), \
+      coalesce(sum(tokens_cache_read), 0), \
+      coalesce(sum(tokens_cache_write), 0), \
+      coalesce(sum(cost), 0.0), \
+      coalesce(cast((max(time_created) - min(time_created)) / 86400000 + 1 as integer), 0), \
+      max(time_updated) / 1000 \
+    from session; \
+    select json_extract(data, '$.tool'), count(*) as c \
+    from part \
+    where json_extract(data, '$.type') = 'tool' \
+    group by json_extract(data, '$.tool') \
+    order by c desc \
+    limit 10;";
+
+    let mut cmd = std::process::Command::new("sqlite3");
+    cmd.args(["-readonly", "-cmd", ".timeout 3000", "-separator", "\t"])
+        .arg(&db)
+        .arg(QUERY);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Ok(crate::dto::OpencodeUsageDto {
+            installed,
+            has_auth,
+            is_free_tier,
+            free_limit_reached,
+            ..Default::default()
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+
+    let mut total_sessions = 0;
+    let mut total_messages = 0;
+    let mut tokens_input = 0;
+    let mut tokens_output = 0;
+    let mut tokens_cache_read = 0;
+    let mut tokens_cache_write = 0;
+    let mut total_cost = 0.0;
+    let mut days_span = 0;
+    let mut last_active_epoch = None;
+
+    if let Some(first_line) = lines.next() {
+        let parts: Vec<&str> = first_line.split('\t').collect();
+        if parts.len() >= 8 {
+            total_sessions = parts[0].parse().unwrap_or(0);
+            total_messages = parts[1].parse().unwrap_or(0);
+            tokens_input = parts[2].parse().unwrap_or(0);
+            tokens_output = parts[3].parse().unwrap_or(0);
+            tokens_cache_read = parts[4].parse().unwrap_or(0);
+            tokens_cache_write = parts[5].parse().unwrap_or(0);
+            total_cost = parts[6].parse().unwrap_or(0.0);
+            days_span = parts[7].parse().unwrap_or(0);
+            if parts.len() >= 9 {
+                last_active_epoch = parts[8].parse().ok();
+            }
+        }
+    }
+
+    let total_tokens = tokens_input + tokens_output + tokens_cache_read + tokens_cache_write;
+
+    let mut raw_tools: Vec<(String, u64)> = Vec::new();
+    let mut tool_sum = 0u64;
+    for line in lines {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 2 {
+            let name = parts[0].trim().to_string();
+            let count: u64 = parts[1].parse().unwrap_or(0);
+            if !name.is_empty() && count > 0 {
+                tool_sum += count;
+                raw_tools.push((name, count));
+            }
+        }
+    }
+
+    let top_tools: Vec<crate::dto::OpencodeToolUsageDto> = raw_tools
+        .into_iter()
+        .map(|(name, count)| {
+            let percentage = if tool_sum > 0 {
+                (count as f64 / tool_sum as f64) * 100.0
+            } else {
+                0.0
+            };
+            crate::dto::OpencodeToolUsageDto {
+                name,
+                count,
+                percentage,
+            }
+        })
+        .collect();
+
+    Ok(crate::dto::OpencodeUsageDto {
+        installed,
+        has_auth,
+        is_free_tier,
+        free_limit_reached,
+        total_sessions,
+        total_messages,
+        days_span,
+        total_cost,
+        tokens_input,
+        tokens_output,
+        tokens_cache_read,
+        tokens_cache_write,
+        total_tokens,
+        top_tools,
+        last_active_epoch,
+    })
+}
+
+#[derive(Deserialize)]
+struct AntigravityLine {
+    step_index: Option<u64>,
+    created_at: Option<String>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+}
+
+fn parse_antigravity(path: &Path) -> Vec<Rec> {
+    if path.file_name().and_then(|n| n.to_str()) != Some("transcript.jsonl") {
+        return Vec::new();
+    }
+    let mut recs = Vec::new();
+    let mut model = String::from("gemini-3.8-flash");
+    for_each_line(path, |line| {
+        if line.contains("Model Selection") {
+            if let Some(pos) = line.find("from None to ") {
+                let rest = &line[pos + 13..];
+                if let Some(end) = rest.find('(').or_else(|| rest.find('\\')).or_else(|| rest.find('"')) {
+                    let m = rest[..end].trim();
+                    if !m.is_empty() {
+                        model = m.to_ascii_lowercase().replace(' ', "-");
+                    }
+                }
+            } else if let Some(pos) = line.find("setting `Model Selection` to `") {
+                let rest = &line[pos + 30..];
+                if let Some(end) = rest.find('`') {
+                    let m = rest[..end].trim();
+                    if !m.is_empty() {
+                        model = m.to_ascii_lowercase().replace(' ', "-");
+                    }
+                }
+            }
+        }
+        if !line.contains("\"input_tokens\"") {
+            return;
+        }
+        let Ok(parsed) = serde_json::from_str::<AntigravityLine>(line) else {
+            return;
+        };
+        let Some(t) = parsed.created_at.as_deref().and_then(parse_iso) else {
+            return;
+        };
+        let i = parsed.input_tokens.unwrap_or(0);
+        let o = parsed.output_tokens.unwrap_or(0);
+        let c = parsed.cache_read_tokens.unwrap_or(0);
+        let rec = Rec {
+            t,
+            k: parsed.step_index.map(|idx| idx.to_string()).unwrap_or_default(),
+            m: model.clone(),
+            i,
+            o,
+            c,
+        };
+        if rec.total() > 0 && rec.t > 0 {
+            recs.push(rec);
+        }
+    });
+    recs
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +789,13 @@ fn scan(tz_offset_minutes: i32) -> ActivityDto {
         collect_jsonl(&dir.join("sessions"), &mut codex_files);
         collect_jsonl(&dir.join("archived_sessions"), &mut codex_files);
     }
+    let mut antigravity_files = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        let brain = home.join(".gemini/antigravity-cli/brain");
+        if brain.is_dir() {
+            collect_jsonl(&brain, &mut antigravity_files);
+        }
+    }
 
     let claude = read_files(
         claude_files,
@@ -505,6 +805,13 @@ fn scan(tz_offset_minutes: i32) -> ActivityDto {
         &mut dirty,
     );
     let codex = read_files(codex_files, parse_codex, &mut cache, &mut seen, &mut dirty);
+    let antigravity = read_files(
+        antigravity_files,
+        parse_antigravity,
+        &mut cache,
+        &mut seen,
+        &mut dirty,
+    );
     let opencode = read_opencode();
 
     // Forget files that are gone, and write the cache back only if it moved.
@@ -520,7 +827,12 @@ fn scan(tz_offset_minutes: i32) -> ActivityDto {
     }
 
     aggregate(
-        vec![("claude", claude), ("codex", codex), ("opencode", opencode)],
+        vec![
+            ("claude", claude),
+            ("codex", codex),
+            ("antigravity", antigravity),
+            ("opencode", opencode),
+        ],
         tz_offset_minutes,
     )
 }
@@ -531,6 +843,15 @@ fn scan(tz_offset_minutes: i32) -> ActivityDto {
 fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> ActivityDto {
     type Key<'a> = (i64, &'a str, &'a str);
     let mut spent: HashMap<Key<'_>, [u64; 3]> = HashMap::new();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let five_hours_ago = now.saturating_sub(5 * 3600);
+    let seven_days_ago = now.saturating_sub(7 * 86_400);
+
+    let mut stats_map: HashMap<(String, String), ModelUsageStat> = HashMap::new();
 
     for (agent, recs) in &sources {
         // The same message in two files (a resumed session) counts once.
@@ -557,8 +878,48 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
             slot[0] = slot[0].saturating_add(rec.i);
             slot[1] = slot[1].saturating_add(rec.o);
             slot[2] = slot[2].saturating_add(rec.c);
+
+            let key = (agent.to_string(), model.to_string());
+            let stat = stats_map.entry(key).or_insert_with(|| ModelUsageStat {
+                agent: agent.to_string(),
+                model: model.to_string(),
+                ..Default::default()
+            });
+
+            let total = rec.total();
+            if rec.t >= five_hours_ago && rec.t <= now + 3600 {
+                stat.five_hour_tokens = stat.five_hour_tokens.saturating_add(total);
+                stat.five_hour_input = stat.five_hour_input.saturating_add(rec.i);
+                stat.five_hour_output = stat.five_hour_output.saturating_add(rec.o);
+                stat.five_hour_cache = stat.five_hour_cache.saturating_add(rec.c);
+                stat.five_hour_turns = stat.five_hour_turns.saturating_add(1);
+            }
+            if rec.t >= seven_days_ago && rec.t <= now + 3600 {
+                stat.weekly_tokens = stat.weekly_tokens.saturating_add(total);
+                stat.weekly_input = stat.weekly_input.saturating_add(rec.i);
+                stat.weekly_output = stat.weekly_output.saturating_add(rec.o);
+                stat.weekly_cache = stat.weekly_cache.saturating_add(rec.c);
+                stat.weekly_turns = stat.weekly_turns.saturating_add(1);
+            }
+            stat.all_time_tokens = stat.all_time_tokens.saturating_add(total);
+            stat.all_time_input = stat.all_time_input.saturating_add(rec.i);
+            stat.all_time_output = stat.all_time_output.saturating_add(rec.o);
+            stat.all_time_cache = stat.all_time_cache.saturating_add(rec.c);
+            stat.all_time_turns = stat.all_time_turns.saturating_add(1);
+            if rec.t > 0 {
+                stat.last_used_at = Some(stat.last_used_at.unwrap_or(0).max(rec.t));
+            }
         }
     }
+
+    let mut model_stats: Vec<ModelUsageStat> = stats_map.into_values().collect();
+    model_stats.sort_by(|a, b| {
+        b.weekly_tokens
+            .cmp(&a.weekly_tokens)
+            .then_with(|| b.five_hour_tokens.cmp(&a.five_hour_tokens))
+            .then_with(|| b.all_time_tokens.cmp(&a.all_time_tokens))
+            .then_with(|| a.model.cmp(&b.model))
+    });
 
     let mut by_day: std::collections::BTreeMap<i64, Vec<ModelDay>> = Default::default();
     for ((day, agent, model), [input, output, cache]) in spent {
@@ -585,7 +946,7 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
             }
         })
         .collect();
-    ActivityDto { days }
+    ActivityDto { days, model_stats }
 }
 
 /// Reading a gigabyte of logs is no work for the command thread (see
@@ -706,5 +1067,15 @@ mod tests {
             println!("{agent:9} {model} {tokens}");
         }
         println!("{} active days", dto.days.len());
+    }
+
+    #[test]
+    fn real_opencode_usage() {
+        let stats = fetch_opencode_usage().expect("fetch_opencode_usage succeeds");
+        println!("OpenCode usage stats: {stats:?}");
+        assert!(stats.installed);
+        assert!(stats.total_sessions > 0);
+        assert!(stats.total_messages > 0);
+        assert!(stats.top_tools.len() > 0);
     }
 }

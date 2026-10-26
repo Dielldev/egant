@@ -109,7 +109,7 @@ const DESCRIPTORS: &[AgentDescriptor] = &[
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
         ],
-        install_hint: "Install the Claude Code CLI to enable (https://docs.anthropic.com/en/docs/claude-code/setup), then run `claude login`",
+        install_hint: "Install the Claude Code CLI to enable (`npm install -g @anthropic-ai/claude-code` or https://docs.claude.com/en/docs/claude-code/overview), then run `claude login`",
     },
     AgentDescriptor {
         id: AgentId::Codex,
@@ -137,7 +137,7 @@ const DESCRIPTORS: &[AgentDescriptor] = &[
             "/opt/homebrew/bin/opencode",
             "/usr/local/bin/opencode",
         ],
-        install_hint: "Install the opencode CLI to enable (`curl -fsSL https://opencode.ai/install | bash`), then run `opencode auth login`",
+        install_hint: "Install the opencode CLI to enable (`npm install -g opencode-ai` or `curl -fsSL https://opencode.ai/install | bash`), then run `opencode auth login`",
     },
     AgentDescriptor {
         id: AgentId::Cursor,
@@ -210,7 +210,7 @@ const DESCRIPTORS: &[AgentDescriptor] = &[
             "/opt/homebrew/bin/agy",
             "/usr/local/bin/agy",
         ],
-        install_hint: "Install the Antigravity CLI to enable (`curl -fsSL https://antigravity.google/cli/install.sh | bash`), then run `agy` once to sign in",
+        install_hint: "Install the Antigravity CLI to enable (`npm install -g @google/antigravity` or `curl -fsSL https://antigravity.google/cli/install.sh | bash`), then run `agy` once to sign in",
     },
 ];
 
@@ -527,7 +527,12 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
         }
     }
 
-    let mut start_args = vec!["/c".to_string(), "start".to_string(), "cmd.exe".to_string()];
+    let mut start_args = vec![
+        "/c".to_string(),
+        "start".to_string(),
+        "".to_string(),
+        "cmd.exe".to_string(),
+    ];
     start_args.extend(command_args);
     std::process::Command::new("cmd")
         .args(&start_args)
@@ -541,11 +546,20 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn which_bin(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    let path = execution_path();
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
         if candidate.is_file() {
             return Some(candidate);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            for ext in ["exe", "cmd", "bat", "ps1"] {
+                let with_ext = candidate.with_extension(ext);
+                if with_ext.is_file() {
+                    return Some(with_ext);
+                }
+            }
         }
     }
     None
@@ -622,11 +636,42 @@ pub fn prepare_program_args(program: &Path) -> (PathBuf, Vec<String>) {
             let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
             return (
                 PathBuf::from(comspec),
-                vec!["/c".to_string(), program.display().to_string()],
+                vec![
+                    "/d".to_string(),
+                    "/s".to_string(),
+                    "/c".to_string(),
+                    "call".to_string(),
+                    program.display().to_string(),
+                ],
             );
         }
     }
     (program.to_path_buf(), Vec::new())
+}
+
+/// The effective execution PATH, joining system PATH with discovered version-manager
+/// and package directories (e.g. npm, fnm, nvm, scoop, cargo, python scripts).
+pub fn execution_path() -> OsString {
+    let mut dirs = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path).filter(|d| !d.as_os_str().is_empty()));
+    }
+    dirs.extend(node_version_manager_bins());
+    #[cfg(windows)]
+    {
+        if let Some(system_root) = std::env::var_os("SystemRoot").map(PathBuf::from) {
+            dirs.push(system_root.join("System32"));
+            dirs.push(system_root.join("System32\\WindowsPowerShell\\v1.0"));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::new();
+    for d in dirs {
+        if seen.insert(d.clone()) {
+            unique.push(d);
+        }
+    }
+    std::env::join_paths(unique).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
 }
 
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
@@ -761,7 +806,12 @@ fn capture_login_shell_path() -> Option<OsString> {
     (!path.is_empty()).then(|| OsString::from(path))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn capture_login_shell_path() -> Option<OsString> {
+    Some(execution_path())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn capture_login_shell_path() -> Option<OsString> {
     None
 }
@@ -805,7 +855,12 @@ fn capture_login_shell_env() -> Vec<(String, String)> {
         .collect()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn capture_login_shell_env() -> Vec<(String, String)> {
+    vec![("PATH".to_string(), execution_path().to_string_lossy().to_string())]
+}
+
+#[cfg(not(any(unix, windows)))]
 fn capture_login_shell_env() -> Vec<(String, String)> {
     Vec::new()
 }
@@ -985,7 +1040,11 @@ fn antigravity_email() -> Option<String> {
     {
         antigravity_email_linux()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        antigravity_email_windows()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         None
     }
@@ -996,7 +1055,21 @@ fn antigravity_has_keyring() -> bool {
     keychain_has_service_account("gemini", "antigravity")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn antigravity_has_keyring() -> bool {
+    if keychain_has_service_account("gemini", "antigravity") {
+        return true;
+    }
+    if let Some(home) = home_dir() {
+        let cli_dir = home.join(".gemini").join("antigravity-cli");
+        if cli_dir.join("settings.json").is_file() || cli_dir.join("installation_id").is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn antigravity_has_keyring() -> bool {
     false
 }
@@ -1036,6 +1109,25 @@ fn antigravity_email_linux() -> Option<String> {
     }
     let secret = String::from_utf8(output.stdout).ok()?;
     antigravity_email_from_secret(secret.trim())
+}
+
+#[cfg(target_os = "windows")]
+fn antigravity_email_windows() -> Option<String> {
+    let home = home_dir()?;
+    let cli_dir = home.join(".gemini").join("antigravity-cli");
+    let log_file = cli_dir.join("cli.log");
+    if let Ok(content) = std::fs::read_to_string(&log_file) {
+        for line in content.lines().rev() {
+            if let Some(pos) = line.find("email=") {
+                let tail = &line[pos + 6..];
+                let email = tail.split([',', ' ', '\r', '\n']).next().unwrap_or("").trim();
+                if email.contains('@') {
+                    return Some(email.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn antigravity_email_from_secret(secret: &str) -> Option<String> {
@@ -1084,7 +1176,20 @@ fn keychain_has_service_account(service: &str, account: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn keychain_has_service_account(service: &str, account: &str) -> bool {
+    let mut cmd = std::process::Command::new("cmdkey");
+    cmd.arg("/list");
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+    if let Ok(out) = cmd.output() {
+        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        return text.contains(&service.to_lowercase()) && text.contains(&account.to_lowercase());
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn keychain_has_service_account(_service: &str, _account: &str) -> bool {
     false
 }
@@ -1102,7 +1207,20 @@ fn keychain_has(service: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn keychain_has(service: &str) -> bool {
+    let mut cmd = std::process::Command::new("cmdkey");
+    cmd.arg("/list");
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+    if let Ok(out) = cmd.output() {
+        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        return text.contains(&service.to_lowercase());
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn keychain_has(_service: &str) -> bool {
     false
 }
@@ -1197,8 +1315,8 @@ mod tests {
     fn antigravity_status_detects_login() {
         let status = build_status(AgentId::Antigravity);
         assert!(status.installed);
-        if status.connected {
-            assert!(status.email.is_some());
+        if status.connected && status.email.is_some() {
+            assert!(status.email.as_ref().unwrap().contains('@'));
         }
     }
 }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { BrowserNav } from "../lib/types";
 import type { PanelTab } from "../store";
-import { useEgant } from "../store";
+import { hostnameOf, useEgant } from "../store";
 
 /** How long a tab that just stopped being the visible one keeps its webview
  * alive before it's actually discarded. Long enough that flipping back to a
@@ -40,19 +40,6 @@ function scheduleSuspend(tabId: string): void {
       void api.browserClose(tabId);
     }, SUSPEND_GRACE_MS),
   );
-}
-
-/** The page's host, for the tab strip's title — `https://github.com/a/b`
- * reads as "github.com" there, the same shorthand a real browser tab uses.
- * Falls back to the raw string on anything `URL` won't parse, which only
- * happens on a malformed value from the backend, never on user input (that
- * always goes through `resolve_url` on the Rust side first). */
-function hostnameOf(url: string): string {
-  try {
-    return new URL(url).hostname || url;
-  } catch {
-    return url;
-  }
 }
 
 /** One button in the toolbar — back/forward/reload/open-externally all share
@@ -172,19 +159,23 @@ export function BrowserPane({ tab, active }: { tab: PanelTab; active: boolean })
   // navigation while it already is one (`go()` below drives those
   // navigations directly) — including it would hide and reopen the webview
   // on every address typed into an already-visible tab.
+  // Keeps address input in sync if tab.url is updated externally
+  useEffect(() => {
+    if (tab.url && !addressFocused.current) {
+      setAddress(tab.url);
+    }
+  }, [tab.url]);
+
   useEffect(() => {
     if (!shouldShow) return;
     cancelSuspend(tab.id);
     if (urlRef.current) {
       const rect = placeholderRef.current?.getBoundingClientRect();
-      void api.browserOpen(
-        tab.id,
-        urlRef.current,
-        rect?.x ?? 0,
-        rect?.y ?? 0,
-        rect?.width ?? 800,
-        rect?.height ?? 600,
-      );
+      const w = rect && rect.width > 0 ? rect.width : 500;
+      const h = rect && rect.height > 0 ? rect.height : 700;
+      const x = rect && rect.width > 0 ? rect.x : window.innerWidth - w;
+      const y = rect && rect.height > 0 ? rect.y : 38;
+      void api.browserOpen(tab.id, urlRef.current, x, y, w, h);
     }
     return () => {
       void api.browserSetVisible(tab.id, false);

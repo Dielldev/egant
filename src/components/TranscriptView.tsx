@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, FolderOpen, Undo2 } from "lucide-react";
+import { Check, ChevronDown, Copy, FolderOpen, TriangleAlert, Undo2 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { modShortcut } from "../lib/platform";
 import {
@@ -20,6 +20,7 @@ import { AgentCard } from "./AgentCard";
 import { CompactionDivider } from "./CompactionDivider";
 import { Composer } from "./Composer";
 import { DecisionPrompt } from "./DecisionPrompt";
+import { LinkifiedText } from "./ChatLink";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { QuestionCard } from "./QuestionCard";
@@ -527,6 +528,25 @@ export function TranscriptView() {
                 // *streaming* empty row still renders: its trailing ▌ is the
                 // "still typing" cue.
                 nodes.push(<span key={i} className="hidden" />);
+              } else if (entry.kind === "notice") {
+                // If a notice's text duplicates an adjacent assistant reply
+                // (e.g. from a CLI turn ending that echoed the response), skip it.
+                const prev = i > 0 ? entries[i - 1] : undefined;
+                const isDup =
+                  prev?.kind === "assistant" &&
+                  (entry.text.trim() === prev.text.trim() ||
+                    (prev.text.trim().length > 30 &&
+                      (entry.text.trim().endsWith(prev.text.trim()) ||
+                        prev.text.trim().endsWith(entry.text.trim()))));
+                if (isDup) {
+                  nodes.push(<span key={i} className="hidden" />);
+                } else {
+                  nodes.push(
+                    <div key={i} data-entry={i}>
+                      <RenderEntry entry={entry} sessionId={active.id} />
+                    </div>,
+                  );
+                }
               } else {
                 // Marked with its place, for a search result to scroll to.
                 nodes.push(
@@ -607,14 +627,20 @@ export function TranscriptView() {
       <div className="rise flex w-full shrink-0 flex-col items-center px-6 pb-2">
         <div className="flex w-full max-w-[735px] flex-col">
           {error && (
-            <button
-              type="button"
-              title="Dismiss"
-              onClick={dismissError}
-              className="row-in mb-2 w-full cursor-pointer truncate rounded-lg bg-[rgba(224,112,112,0.14)] px-3 py-1.5 text-left text-xs text-[var(--danger)]"
-            >
-              {error}
-            </button>
+            <div className="row-in mb-2 flex w-full items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs shadow-sm">
+              <div className="flex min-w-0 items-center gap-2">
+                <TriangleAlert size={13} className="shrink-0 text-[var(--danger)]" />
+                <span className="truncate text-[var(--ink)]">{error}</span>
+              </div>
+              <button
+                type="button"
+                title="Dismiss"
+                onClick={dismissError}
+                className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] text-[var(--faint)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+              >
+                Dismiss
+              </button>
+            </div>
           )}
           <Composer sessionId={active.id} />
         </div>
@@ -771,7 +797,7 @@ const RenderEntry = memo(function RenderEntry({
       return (
         <div className="flex w-full justify-end">
           <div className="max-w-[80%] rounded-2xl bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap text-[var(--ink)]">
-            {entry.text}
+            <LinkifiedText text={entry.text} />
           </div>
         </div>
       );
@@ -807,17 +833,7 @@ const RenderEntry = memo(function RenderEntry({
       return <AgentRequestCard sessionId={sessionId} id={entry.id} request={entry.request} />;
 
     case "notice":
-      return (
-        <div
-          className={`w-full rounded-xl p-2.5 text-xs whitespace-pre-wrap ${
-            entry.isError
-              ? "bg-[rgba(224,112,112,0.14)] text-[var(--danger)]"
-              : "bg-[var(--card)] text-[var(--muted)]"
-          }`}
-        >
-          {entry.text}
-        </div>
-      );
+      return <NoticeEntry entry={entry} />;
 
     case "compaction":
       return <CompactionDivider entry={entry} />;
@@ -880,6 +896,130 @@ function CopyButton({ text }: { text: string }) {
       )}
     </button>
   );
+}
+
+/** Checks whether text contains structured markdown like lists, code blocks, or links. */
+function isMarkdownContent(text: string): boolean {
+  if (/^(\s*#{1,6}\s+|\s*(\*|-|\d+\.)\s+|```|\[.+?\]\(.+?\))/m.test(text)) {
+    return true;
+  }
+  if (text.includes("\n\n") && /(`.+?`|\*\*.+?\*\*)/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+/** Extracts a concise title and the remaining specifics from an error string. */
+function parseErrorDetails(text: string): { title: string; details: string | null } {
+  const trimmed = text.trim();
+  const lines = trimmed.split("\n");
+  const first = lines[0]?.trim() ?? "Error";
+
+  if (lines.length === 1) {
+    if (first.length <= 100) {
+      return { title: first, details: null };
+    }
+    return { title: "Turn error", details: first };
+  }
+
+  if (first.length > 0 && first.length <= 100) {
+    const rest = lines.slice(1).join("\n").trim();
+    return { title: first, details: rest.length > 0 ? rest : null };
+  }
+
+  return { title: "Turn error", details: trimmed };
+}
+
+/** Specifics card for technical model and turn failures, with clean styling and copy. */
+function FailureCard({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(true);
+  const { title, details } = useMemo(() => parseErrorDetails(text), [text]);
+  const hasDetails = details !== null && details.length > 0;
+  const isLong = hasDetails && (details.length > 200 || details.split("\n").length > 4);
+
+  return (
+    <div className="flex w-full flex-col gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 text-xs shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <TriangleAlert size={14} className="shrink-0 text-[var(--danger)]" />
+          <span className="truncate font-medium text-[12px] text-[var(--ink)]">
+            {title}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 text-[var(--faint)]">
+          {hasDetails && isLong && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+            >
+              <span>{expanded ? "Hide specifics" : "Specifics"}</span>
+              <ChevronDown
+                size={12}
+                className={`transition-transform duration-150 ${expanded ? "rotate-180" : ""}`}
+              />
+            </button>
+          )}
+          <CopyButton text={text} />
+        </div>
+      </div>
+
+      {hasDetails && expanded && (
+        <div className="max-h-[300px] overflow-y-auto rounded-lg border border-[var(--border)] bg-[rgba(0,0,0,0.22)] p-2.5 font-mono text-[11px] leading-5 whitespace-pre-wrap text-[var(--muted)] select-text">
+          {details}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Renders a notice entry: as simple prose for markdown, simple text for brief
+ * status updates, or a structured card with specifics for failures. */
+function NoticeEntry({ entry }: { entry: Extract<Entry, { kind: "notice" }> }) {
+  const text = entry.text.trim();
+  if (!text) return null;
+
+  // If the notice contains markdown structure (lists, headings, links, code blocks),
+  // render it as simple assistant prose rather than wrapping it in an alert box.
+  if (isMarkdownContent(text)) {
+    return (
+      <div className="flex w-full flex-col gap-1.5 py-1 text-sm leading-6 text-[var(--ink)]">
+        <Markdown text={text} />
+      </div>
+    );
+  }
+
+  // Non-error notices (model fallback, clean exits):
+  if (!entry.isError) {
+    return (
+      <div className="flex items-center gap-2 py-1 text-xs text-[var(--muted)]">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--faint)] opacity-60" />
+        <span className="whitespace-pre-wrap">{text}</span>
+      </div>
+    );
+  }
+
+  // Error notices:
+  // Short/simple statuses ("Interrupted.", "Agent exited with status 1.") render
+  // as simple inline text with a subtle dot, avoiding heavy boxes for one-liners.
+  const isSingleLine = !text.includes("\n") && text.length <= 90;
+  const isSimpleStatus =
+    isSingleLine &&
+    !text.toLowerCase().includes("error:") &&
+    !text.toLowerCase().includes("failed:") &&
+    !text.toLowerCase().includes("exception");
+
+  if (isSimpleStatus) {
+    return (
+      <div className="flex items-center gap-2 py-1 text-xs text-[var(--muted)]">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--danger)]" />
+        <span>{text}</span>
+      </div>
+    );
+  }
+
+  // Model/turn failures with technical specifics: show in a dedicated, refined failure card.
+  return <FailureCard text={text} />;
 }
 
 /** One table row per outstanding request, like other agent apps: what the

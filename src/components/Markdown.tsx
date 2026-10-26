@@ -2,6 +2,7 @@ import { Check, Copy } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChatLink } from "./ChatLink";
 
 /** Renders assistant replies as markdown — headings, lists, tables, links and
  * code all get real structure instead of a wall of pre-wrapped text. Every
@@ -42,16 +43,7 @@ const components: Components = {
   ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="leading-6 marker:text-[var(--faint)]">{children}</li>,
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="text-[var(--accent)] underline underline-offset-2 hover:opacity-80"
-    >
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) => <ChatLink href={href}>{children}</ChatLink>,
   strong: ({ children }) => (
     <strong className="font-semibold text-[var(--ink)]">{children}</strong>
   ),

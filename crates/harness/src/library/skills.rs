@@ -628,8 +628,21 @@ fn strip_ansi(text: &str) -> String {
 }
 
 fn is_symlink(path: &Path) -> bool {
-    path.symlink_metadata()
-        .is_ok_and(|m| m.file_type().is_symlink())
+    let Ok(m) = path.symlink_metadata() else {
+        return false;
+    };
+    if m.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // 0x400 is FILE_ATTRIBUTE_REPARSE_POINT, covering NTFS directory junctions
+        if m.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 fn remove_entry(path: &Path) -> Result<(), String> {
@@ -657,8 +670,41 @@ fn symlink_dir(source: &Path, link: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn symlink_dir(source: &Path, link: &Path) -> Result<(), String> {
-    std::os::windows::fs::symlink_dir(source, link)
-        .map_err(|e| format!("couldn't link {}: {e}", link.display()))
+    if std::os::windows::fs::symlink_dir(source, link).is_ok() {
+        return Ok(());
+    }
+    // On Windows without Developer Mode, creating directory symlinks requires elevation
+    // (ERROR_PRIVILEGE_NOT_HELD). Creating an NTFS Directory Junction via mklink /J
+    // requires no special privilege for local directories.
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/d", "/s", "/c", "mklink", "/J"]);
+    cmd.arg(link);
+    cmd.arg(source);
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+    if let Ok(out) = cmd.output() {
+        if out.status.success() {
+            return Ok(());
+        }
+    }
+    copy_dir_recursive(source, link)
+        .map_err(|e| format!("couldn't link or copy {} to {}: {e}", source.display(), link.display()))
+}
+
+#[cfg(windows)]
+fn copy_dir_recursive(source: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = dest.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

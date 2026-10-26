@@ -32,6 +32,7 @@ import type {
   McpServer,
   MobilePairing,
   MobileStatus,
+  OpencodeUsageStats,
   PermissionReply,
   PrDetail,
   SendResult,
@@ -296,6 +297,8 @@ export const api = {
    * call — the composer polls it, not the hot render path. */
   claudeUsageLimits: () =>
     traced("claude_usage_limits", "", () => invoke<ClaudeUsage | null>("claude_usage_limits")),
+  opencodeUsageStats: () =>
+    traced("opencode_usage_stats", "", () => invoke<OpencodeUsageStats>("opencode_usage_stats")),
   /** Tokens per agent, model and day, read from the CLIs' own logs. The
    * first call after a fresh install reads a gigabyte, so it takes a couple
    * of seconds; later ones only re-read what changed. */
@@ -307,11 +310,13 @@ export const api = {
     ),
   wallpaperDataUrl: () =>
     traced("wallpaper_data_url", "", () => invoke<string | null>("wallpaper_data_url")),
-  /** Keeps the native window's titlebar theme and macOS frosted-glass blur
-   * in step with the Appearance setting (see `applyAppearance`). */
+  /** Keeps the native window's titlebar theme and backdrop in step with the
+   * Appearance setting (see `applyAppearance`). Resolves with the effect that
+   * took (`acrylic`, `mica`, `blur`, `vibrancy` or `none`) so Windows can
+   * fall back to a solid ground when no native blur is available. */
   syncWindowAppearance: (dark: boolean, glass: boolean) =>
     traced("sync_window_appearance", `dark=${dark} glass=${glass}`, () =>
-      invoke<void>("sync_window_appearance", { dark, glass }),
+      invoke<string>("sync_window_appearance", { dark, glass }),
     ),
 
   // Workspace panel — the file tree and the file tabs it opens.

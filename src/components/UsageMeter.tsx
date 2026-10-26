@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AlertTriangle } from "lucide-react";
 import { shouldOpenLeftward, shouldOpenUpward } from "../lib/popover";
 import {
   contextFraction,
@@ -7,7 +8,7 @@ import {
   formatCost,
   formatTokens,
 } from "../lib/transcript";
-import type { ClaudeUsage, SessionUsage } from "../lib/types";
+import type { ClaudeUsage, OpencodeUsageStats, SessionUsage } from "../lib/types";
 import {
   formatResetIn,
   hasUsageData,
@@ -15,6 +16,7 @@ import {
   roundPercent,
 } from "../lib/usageLimits";
 import { useNow } from "./useNow";
+import { useEgant } from "../store";
 
 /** One box, like Claude Code's own: how full this conversation's context
  * window is (every agent reports this), and — folded into the same popover
@@ -32,6 +34,7 @@ export function UsageMeter({
   usage,
   costUsd,
   claudeUsage,
+  opencodeUsage,
   showPercent,
   modelWindow,
 }: {
@@ -39,6 +42,8 @@ export function UsageMeter({
   costUsd: number;
   /** `null` for a non-Claude session, or before the first fetch lands. */
   claudeUsage: ClaudeUsage | null;
+  /** OpenCode usage and quota status if OpenCode is active. */
+  opencodeUsage?: OpencodeUsageStats | null;
   /** Prints the ring's figure beside it — the composer's footer, where the
    * meter sits alone and has the room to say what it's showing. */
   showPercent?: boolean;
@@ -58,6 +63,7 @@ export function UsageMeter({
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const now = useNow(30_000);
+  const openSettings = useEgant((s) => s.openSettings);
 
   useEffect(() => {
     if (!open) return;
@@ -83,7 +89,8 @@ export function UsageMeter({
 
   const hasContext = usage.totalTokens > 0 || usage.contextTokens > 0;
   const hasLimits = hasUsageData(claudeUsage);
-  if (!hasContext && !hasLimits) return null;
+  const hasOpencode = Boolean(opencodeUsage?.installed);
+  if (!hasContext && !hasLimits && !hasOpencode) return null;
 
   const contextFractionValue = hasContext ? contextFraction(usage, modelWindow ?? 0) : 0;
   const contextPercent = hasContext
@@ -100,7 +107,7 @@ export function UsageMeter({
   // first turn has settled, the account-wide quota (already fetched) takes
   // the ring over instead of showing nothing. The trigger itself stays
   // monochrome: exact figures live in the popover, next to their labels.
-  const ringPercent = contextPercent ?? limitsWorst ?? 0;
+  const ringPercent = contextPercent ?? limitsWorst ?? (opencodeUsage?.freeLimitReached ? 100 : 0);
   const radius = 5;
   const circumference = 2 * Math.PI * radius;
 
@@ -111,6 +118,10 @@ export function UsageMeter({
         title={
           contextPercent != null
             ? `${usage.contextTokens.toLocaleString()} of ${window_.toLocaleString()} tokens in context`
+            : opencodeUsage
+            ? opencodeUsage.freeLimitReached
+              ? "OpenCode — Free usage limit reached"
+              : "OpenCode usage and statistics"
             : "Claude usage — click for the reset times"
         }
         onClick={() => {
@@ -254,6 +265,53 @@ export function UsageMeter({
                 </div>
               )}
 
+              {opencodeUsage && (
+                <div
+                  className={
+                    contextPercent != null || hasLimits
+                      ? "mt-3 border-t border-[var(--border)] pt-3"
+                      : ""
+                  }
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-medium text-[var(--ink)]">
+                      OpenCode usage & quota
+                    </span>
+                    <span className="text-[10px] text-[var(--faint)]">opencode.db</span>
+                  </div>
+                  {opencodeUsage.freeLimitReached ? (
+                    <div className="mb-2 rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-[11px] text-rose-400">
+                      <div className="font-semibold text-rose-500 flex items-center gap-1">
+                        <AlertTriangle size={12} /> Free tier limit reached
+                      </div>
+                      <div className="text-[10px] text-[var(--muted)] mt-0.5">
+                        Free tier quota is exhausted. Subscribe or add keys.
+                      </div>
+                    </div>
+                  ) : opencodeUsage.hasAuth ? (
+                    <div className="mb-2 text-[11px] text-emerald-400">
+                      ✓ Provider account active
+                    </div>
+                  ) : (
+                    <div className="mb-2 text-[11px] text-[var(--muted)]">
+                      OpenCode Zen free tier active
+                    </div>
+                  )}
+                  <StatRow
+                    label="Sessions"
+                    value={opencodeUsage.totalSessions.toLocaleString()}
+                  />
+                  <StatRow
+                    label="Messages"
+                    value={opencodeUsage.totalMessages.toLocaleString()}
+                  />
+                  <StatRow
+                    label="Lifetime tokens"
+                    value={formatTokens(opencodeUsage.totalTokens)}
+                  />
+                </div>
+              )}
+
               {hasContext && (
                 <div
                   className={
@@ -300,6 +358,19 @@ export function UsageMeter({
                   </div>
                 </div>
               )}
+
+              <div className="mt-3 border-t border-[var(--border)] pt-2 text-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    openSettings("usage");
+                  }}
+                  className="w-full cursor-pointer rounded-md py-1 text-[11px] font-medium text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+                >
+                  View full usage in settings →
+                </button>
+              </div>
             </div>
           </>,
           document.body,

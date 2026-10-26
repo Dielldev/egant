@@ -446,8 +446,14 @@ fn first_meaningful_arg(tool_name: &str, input: &Value) -> Option<String> {
     // Bash-like tools name it `command`; file tools `file_path`/`path`.
     for key in [
         "command",
+        "CommandLine",
+        "command_line",
         "file_path",
         "path",
+        "Path",
+        "AbsolutePath",
+        "TargetFile",
+        "target_file",
         "pattern",
         "url",
         "query",
@@ -467,19 +473,36 @@ fn first_meaningful_arg(tool_name: &str, input: &Value) -> Option<String> {
     None
 }
 
+/// Checks if a string looks like a Unix or Windows file path.
+fn is_path_str(s: &str) -> bool {
+    if s.starts_with('/') || s.starts_with('\\') || s.starts_with('~') {
+        return true;
+    }
+    let mut chars = s.chars();
+    if let (Some(drive), Some(':')) = (chars.next(), chars.next()) {
+        if drive.is_ascii_alphabetic() {
+            if let Some(sep) = chars.next() {
+                return sep == '/' || sep == '\\';
+            }
+        }
+    }
+    false
+}
+
 /// The wider pattern "allow always" approves: the parent directory for a
 /// path (`/a/b/c.rs` → `/a/b/*`), the command prefix for shell
 /// (`git status --porcelain` → `git status *`), the host for a URL.
 fn always_pattern(specific: &str) -> String {
     let trimmed = specific.trim();
-    // A path: cover its directory.
-    if trimmed.starts_with('/') || trimmed.starts_with('~') {
-        if let Some(slash) = trimmed.rfind('/') {
+    // A path: cover its directory (Unix or Windows).
+    if is_path_str(trimmed) {
+        if let Some(slash) = trimmed.rfind(|c| c == '/' || c == '\\') {
             let dir = &trimmed[..slash];
+            let sep = trimmed.chars().nth(slash).unwrap_or('/');
             if dir.is_empty() {
-                return "/*".to_string();
+                return format!("{sep}*");
             }
-            return format!("{dir}/*");
+            return format!("{dir}{sep}*");
         }
         return format!("{trimmed}*");
     }

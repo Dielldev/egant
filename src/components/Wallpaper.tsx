@@ -1,4 +1,3 @@
-import { isLinux } from "../lib/platform";
 import { useEgant } from "../store";
 
 /** Where the launch picture starts to melt into the ground, and where it is
@@ -45,27 +44,13 @@ export function Wallpaper({
   const wallpaperUrl = useEgant((s) => s.wallpaperUrl);
   const dim = useEgant((s) => s.snapshot?.settings.wallpaperDim ?? 0.55);
   const bgEffect = useEgant((s) => s.appearance.bgEffect);
-  const glass = useEgant((s) => s.appearance.glass);
 
   // Conversation state: a barely-there theme tint over the native blur by
   // default, nearly nothing in Clear, or a flat opaque fill once glass is
-  // turned off. Linux has no desktop blur behind the window — never leave a
-  // fully transparent ground there.
+  // turned off. Platforms with no native desktop blur (linux, and Windows
+  // without Acrylic/Mica) swap in a solid stage in CSS — see `.stage-ground`.
   if (!launch) {
-    const linux = isLinux();
-    return (
-      <div
-        className="absolute inset-0"
-        style={{
-          background:
-            glass === "opaque" || linux
-              ? "var(--stage)"
-              : glass === "clear"
-                ? "transparent"
-                : "var(--stage-tint)",
-        }}
-      />
-    );
+    return <div className="stage-ground absolute inset-0" />;
   }
 
   // Appearance > Background effect: a texture draped over the artwork.
@@ -81,17 +66,7 @@ export function Wallpaper({
   // Linux with no native blur, get a flat fill — as in the conversation.)
   if (!wallpaperUrl) {
     return (
-      <div
-        className={`absolute inset-0 ${exiting ? "dissolve-out" : ""}`}
-        style={{
-          background:
-            glass === "opaque" || isLinux()
-              ? "var(--stage)"
-              : glass === "clear"
-                ? "transparent"
-                : "var(--stage-tint)",
-        }}
-      />
+      <div className={`stage-ground absolute inset-0 ${exiting ? "dissolve-out" : ""}`} />
     );
   }
 

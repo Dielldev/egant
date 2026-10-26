@@ -247,8 +247,8 @@ type Segment =
  * `parse_markers` reports — so a block's start/end line always lines up with
  * where `text.split("\n")` puts it. */
 function segmentsOf(text: string, blocks: ConflictBlock[]): Segment[] {
-  const lines = text.split("\n");
-  if (text.endsWith("\n")) lines.pop();
+  const lines = text.split(/\r?\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   const segments: Segment[] = [];
   let cursor = 0;
   for (const block of blocks) {

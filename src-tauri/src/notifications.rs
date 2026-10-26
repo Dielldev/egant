@@ -101,7 +101,27 @@ fn play_sound(kind: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn play_sound(kind: &str) -> Result<(), String> {
+    let script = match kind {
+        "completed" => "[System.Media.SystemSounds]::Asterisk.Play()",
+        "input" => "[System.Media.SystemSounds]::Exclamation.Play()",
+        "errors" => "[System.Media.SystemSounds]::Hand.Play()",
+        other => return Err(format!("unknown notification kind: {other}")),
+    };
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+    let status = cmd.status().map_err(|error| error.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("powershell sound exited with {status}"))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn play_sound(_kind: &str) -> Result<(), String> {
-    Err("native notification sounds are only available on macOS".into())
+    Err("native notification sounds are only available on macOS and Windows".into())
 }

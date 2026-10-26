@@ -27,6 +27,19 @@ export function isWindows(): boolean {
   return /Windows/i.test(navigator.userAgent || "");
 }
 
+/** Platform-appropriate device naming: "this Mac", "this PC", or "this device". */
+export function hostDeviceLabel(): string {
+  if (isMac()) return "this Mac";
+  if (isWindows()) return "this PC";
+  return "this device";
+}
+
+export function hostDeviceCapitalized(): string {
+  if (isMac()) return "This Mac";
+  if (isWindows()) return "This PC";
+  return "This device";
+}
+
 /** Left padding for the window-bar row: clears overlay traffic lights on
  * macOS; a small inset elsewhere (normal decorations own the chrome). */
 export function windowBarPadClass(): string {
@@ -93,6 +106,7 @@ export function installTitlebarDragHandler(): void {
  */
 export function modShortcut(chord: string): string {
   if (isMac()) return `⌘${chord}`;
+  if (chord === "⎋" || chord === "Esc") return "Esc";
   const rest = chord
     .replace(/⇧/g, "Shift+")
     .replace(/⎋/g, "Esc")

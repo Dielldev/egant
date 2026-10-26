@@ -37,7 +37,7 @@ export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 // ---------------------------------------------------------------------------
 
 function chunkCount(value: string): number {
-  const lines = value.split("\n");
+  const lines = value.split(/\r?\n/);
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   return lines.length;
 }
@@ -977,10 +977,13 @@ function GroupRowVerb({ kind, entry }: { kind: GroupRowKind; entry: ToolEntry })
       return <span className="shrink-0 text-[13px] text-[var(--muted)]">Edit</span>;
     case "write":
       return <span className="shrink-0 text-[13px] text-[var(--muted)]">Write</span>;
-    default:
+    default: {
+      const stripped = entry.name.includes(":") ? entry.name.split(":").pop()! : entry.name;
+      const clean = capitalize(stripped.replace(/_/g, " "));
       return (
-        <span className="shrink-0 text-[13px] text-[var(--muted)]">{capitalize(entry.name)}</span>
+        <span className="shrink-0 text-[13px] text-[var(--muted)]">{clean}</span>
       );
+    }
   }
 }
 
@@ -1078,6 +1081,17 @@ function GroupToolRow({
         );
       }
       default: {
+        if (filePath) {
+          return (
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              <FilePill path={filePath} struck={notApplied} />
+              {showCounts && <DiffCounts added={stat.added} removed={stat.removed} />}
+              {notApplied && (
+                <span className="shrink-0 text-[11px] text-[var(--danger)]">not applied</span>
+              )}
+            </span>
+          );
+        }
         const text = toolSummary(entry.input, entry.name);
         return (
           <span

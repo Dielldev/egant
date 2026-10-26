@@ -3,13 +3,17 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 import { installSoundUnlock } from "./lib/notify";
-import { installTitlebarDragHandler, isLinux } from "./lib/platform";
+import { installTitlebarDragHandler, isLinux, isWindows } from "./lib/platform";
 import { useEgant } from "./store";
 
-// Tag the document before the first React paint so Linux glass CSS (opaque
-// window + solid fills) applies immediately — no transparent "desktop hole".
+// Tag the document before the first React paint so platform glass CSS applies
+// immediately — no transparent "desktop hole". Windows starts solid and
+// switches once `sync_window_appearance` reports which native backdrop took.
 if (isLinux()) {
   document.documentElement.dataset.platform = "linux";
+} else if (isWindows()) {
+  document.documentElement.dataset.platform = "windows";
+  document.documentElement.dataset.windowGlass = "false";
 }
 
 installTitlebarDragHandler();

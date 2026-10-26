@@ -668,6 +668,30 @@ export interface ClaudeUsage {
   sevenDaySonnet: UsageWindow | null;
 }
 
+export interface OpencodeToolUsage {
+  name: string;
+  count: number;
+  percentage: number;
+}
+
+export interface OpencodeUsageStats {
+  installed: boolean;
+  hasAuth: boolean;
+  isFreeTier: boolean;
+  freeLimitReached: boolean;
+  totalSessions: number;
+  totalMessages: number;
+  daysSpan: number;
+  totalCost: number;
+  tokensInput: number;
+  tokensOutput: number;
+  tokensCacheRead: number;
+  tokensCacheWrite: number;
+  totalTokens: number;
+  topTools: OpencodeToolUsage[];
+  lastActiveEpoch?: number | null;
+}
+
 /** What one model spent on one day (`token_activity`). Cache reads and writes
  * are counted: they are most of the volume. */
 export interface ModelDay {
@@ -685,11 +709,35 @@ export interface DayActivity {
   models: ModelDay[];
 }
 
+/** Usage stats for one model across rolling windows (5-hour, weekly, all-time). */
+export interface ModelUsageStat {
+  agent: string;
+  model: string;
+  fiveHourTokens: number;
+  fiveHourInput: number;
+  fiveHourOutput: number;
+  fiveHourCache: number;
+  fiveHourTurns: number;
+  weeklyTokens: number;
+  weeklyInput: number;
+  weeklyOutput: number;
+  weeklyCache: number;
+  weeklyTurns: number;
+  allTimeTokens: number;
+  allTimeInput: number;
+  allTimeOutput: number;
+  allTimeCache: number;
+  allTimeTurns: number;
+  /** Unix epoch seconds of most recent turn, or null. */
+  lastUsedAt: number | null;
+}
+
 /** Every token moved through the agents' own logs, oldest day first, for the
  * launch screen's activity panel. Totals and splits are the panel's to sum,
  * so a range is just a filter over the days. */
 export interface TokenActivity {
   days: DayActivity[];
+  modelStats?: ModelUsageStat[];
 }
 
 /** 200000 → "200K", 1048576 → "1M", 0 → "". Used for the composer's

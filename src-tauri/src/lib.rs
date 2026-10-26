@@ -93,6 +93,14 @@ pub fn run() {
         .setup(|app| {
             {
                 use tauri::Manager;
+                // Windows draws its own caption and menu bar (the window is
+                // undecorated there — see `tauri.windows.conf.json`), so a
+                // native HMENU would put an unthemed second menu strip above
+                // it. The items themselves still reach the frontend through
+                // the custom bar, which calls the same actions.
+                #[cfg(target_os = "windows")]
+                let _ = app.remove_menu();
+
                 app.state::<sync::SyncHub>().attach(app.handle().clone());
                 mobile::init(app.handle());
 
@@ -116,29 +124,17 @@ pub fn run() {
                 let _ = egant_harness::agents::login_shell_env();
             });
 
-            // The window opens transparent (see `tauri.conf.json`); on macOS this
-            // paints a real frosted-glass blur of whatever is behind it, which is
-            // what makes the transparent stage read as glass instead of a hole.
-            // The frontend can turn it back off (Appearance > Glass > Opaque) via
+            // The window opens transparent (see the per-platform configs); on
+            // macOS and Windows this paints the platform's real backdrop of
+            // whatever is behind the window, which is what makes the
+            // transparent stage read as glass instead of a hole. The frontend
+            // can turn it back off (Appearance > Glass > Opaque) via
             // `sync_window_appearance`, which starts from this same state.
-            #[cfg(target_os = "macos")]
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window_vibrancy::apply_vibrancy(
-                        &window,
-                        window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
-                        None,
-                        None,
-                    );
-                }
-            }
-            #[cfg(target_os = "windows")]
-            {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window_vibrancy::apply_mica(&window, Some(true))
-                        .or_else(|_| window_vibrancy::apply_acrylic(&window, None));
+                    let effect = commands::apply_window_glass(&window, true, true);
+                    log::info!("window backdrop: {effect}");
                 }
             }
             Ok(())

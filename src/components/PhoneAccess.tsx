@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
+import { hostDeviceLabel } from "../lib/platform";
 import type { MobilePairing, MobileStatus } from "../lib/types";
 import { Card, Dot, Row, Toggle } from "./SettingsKit";
 import { useNow } from "./useNow";
@@ -130,7 +131,7 @@ export function ConnectDeviceRow({ phone }: { phone: PhoneAccess }) {
       title="Connect a device"
       sub={
         phone.status?.enabled
-          ? "Scan a QR code with your phone's camera. It remembers this Mac after that."
+          ? `Scan a QR code with your phone's camera. It remembers ${hostDeviceLabel()} after that.`
           : "Shows a QR code to scan with your phone's camera, and turns phone access on."
       }
       control={
@@ -156,7 +157,7 @@ export function PhoneAccessSettings({ phone }: { phone: PhoneAccess }) {
       <h2 className="text-[13px] font-semibold text-[var(--ink)]">Phone access</h2>
       <p className="mt-1 mb-3 max-w-[660px] text-[13px] leading-relaxed text-[var(--muted)]">
         From a connected phone you can see your sessions, send messages, stop agents and answer
-        prompts. The agents keep running on this Mac.
+        prompts. The agents keep running on {hostDeviceLabel()}.
       </p>
       {status && (
         <Card>
@@ -166,9 +167,9 @@ export function PhoneAccessSettings({ phone }: { phone: PhoneAccess }) {
             sub={
               status.enabled
                 ? status.running
-                  ? `egant is listening on this Mac only (port ${status.port}); Tailscale carries it to your phone.`
+                  ? `egant is listening on ${hostDeviceLabel()} only (port ${status.port}); Tailscale carries it to your phone.`
                   : (status.error ?? "Starting…")
-                : "Off — no phone can reach this Mac."
+                : `Off — no phone can reach ${hostDeviceLabel()}.`
             }
             control={
               <Toggle
@@ -224,8 +225,7 @@ function TailscaleRow({
   let sub: ReactNode;
   let action: ReactNode = null;
   if (!ts.installed) {
-    sub =
-      "Tailscale isn't installed on this Mac. Install it and sign in — with the public link, your phone doesn't need it.";
+    sub = `Tailscale isn't installed on ${hostDeviceLabel()}. Install it and sign in — with the public link, your phone doesn't need it.`;
     action = <LinkButton url="https://tailscale.com/download">Get Tailscale</LinkButton>;
   } else if (!ts.running) {
     sub =
@@ -233,7 +233,7 @@ function TailscaleRow({
         ? "Tailscale is installed but signed out. Open it and sign in."
         : `Tailscale isn't connected${ts.backendState ? ` (${ts.backendState})` : ""}. Open it and turn it on.`;
   } else if (!ts.httpsEnabled) {
-    sub = `Connected as ${ts.dnsName ?? "this Mac"}. Turn on HTTPS certificates for your tailnet (DNS settings), then recheck.`;
+    sub = `Connected as ${ts.dnsName ?? hostDeviceLabel()}. Turn on HTTPS certificates for your tailnet (DNS settings), then recheck.`;
     action = (
       <LinkButton url="https://login.tailscale.com/admin/dns">Open DNS settings</LinkButton>
     );
@@ -248,7 +248,7 @@ function TailscaleRow({
       </>
     );
   } else if (ts.portConflict) {
-    sub = `Another tailscale serve entry already uses port ${status.port} on this Mac.`;
+    sub = `Another tailscale serve entry already uses port ${status.port} on ${hostDeviceLabel()}.`;
   } else {
     const fix = status.error ? adminFix(status.error) : null;
     sub = (
@@ -333,14 +333,13 @@ function PublicLinkRow({
       </>
     );
   } else if (!tailscaleReady) {
-    sub = "Needs Tailscale ready on this Mac (above). Your phone doesn't need it.";
+    sub = `Needs Tailscale ready on ${hostDeviceLabel()} (above). Your phone doesn't need it.`;
   } else if (ts.funnelBlocked) {
-    sub = "Funnel's ports (443, 8443 and 10000) are all used by other tailscale serve entries on this Mac.";
+    sub = `Funnel's ports (443, 8443 and 10000) are all used by other tailscale serve entries on ${hostDeviceLabel()}.`;
   } else if (link.on) {
     sub = "Closed outside egant. Start opens it again.";
   } else {
-    sub =
-      "Off. Reach this Mac from any network with nothing to install on your phone, through Tailscale Funnel.";
+    sub = `Off. Reach ${hostDeviceLabel()} from any network with nothing to install on your phone, through Tailscale Funnel.`;
   }
   return (
     <Row
@@ -675,11 +674,11 @@ function ConnectDialog({
                 "This code has expired."
               ) : !ts.installed ? (
                 <>
-                  Install Tailscale on this Mac and sign in. Your phone doesn't need it.
+                  Install Tailscale on {hostDeviceLabel()} and sign in. Your phone doesn't need it.
                   <LinkButton url="https://tailscale.com/download">Get Tailscale</LinkButton>
                 </>
               ) : !ts.running ? (
-                "Tailscale isn't connected on this Mac. Open it and sign in, then try again."
+                `Tailscale isn't connected on ${hostDeviceLabel()}. Open it and sign in, then try again.`
               ) : !ts.httpsEnabled ? (
                 <>
                   Turn on HTTPS certificates for your tailnet, then try again.
@@ -688,10 +687,10 @@ function ConnectDialog({
                   </LinkButton>
                 </>
               ) : ts.funnelBlocked ? (
-                "Funnel's ports (443, 8443 and 10000) are all used by other tailscale serve entries on this Mac."
+                `Funnel's ports (443, 8443 and 10000) are all used by other tailscale serve entries on ${hostDeviceLabel()}.`
               ) : (
                 <>
-                  Open the public link so your phone can reach this Mac from any network. Anyone
+                  Open the public link so your phone can reach {hostDeviceLabel()} from any network. Anyone
                   can open the address; only phones you pair get in.
                   {!openError && openButton("Open public link")}
                 </>
@@ -738,12 +737,12 @@ function ConnectDialog({
         <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] bg-[var(--card)] px-4 py-3">
           <button
             type="button"
-            title="Open the phone app in this Mac's browser, paired with this code"
+            title={`Open the phone app in ${hostDeviceLabel()}'s browser, paired with this code`}
             disabled={!pairing || expired || paired != null}
             onClick={() => pairing && void api.openUrl(pairing.localUrl)}
             className="cursor-pointer rounded-lg px-2 py-1.5 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] disabled:cursor-default disabled:opacity-40"
           >
-            Try it on this Mac
+            Try it on {hostDeviceLabel()}
           </button>
           <button
             type="button"

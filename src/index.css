@@ -436,6 +436,50 @@ html[data-glass="clear"] .stage-glass {
   background: color-mix(in srgb, var(--stage) 5%, transparent);
 }
 
+/* The ground Wallpaper paints in the conversation — and on the launch screen
+ * with no picture. A class rather than an inline style so the platform rules
+ * below can turn the tint into a solid fill wherever there is no native blur
+ * behind the window. */
+.stage-ground {
+  background: var(--stage-tint);
+}
+html[data-glass="clear"] .stage-ground {
+  background: transparent;
+}
+html[data-glass="opaque"] .stage-ground,
+html[data-platform="linux"] .stage-ground {
+  background: var(--stage);
+}
+
+/* Windows' custom title bar (see `WindowsChrome.tsx`). It carries a refined
+ * Fluent stage colour so menu items and window title remain crisp and legible
+ * while Mica / Acrylic shines through underneath. */
+.windows-titlebar {
+  background: color-mix(in srgb, var(--stage) 72%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+html[data-window-glass="false"] .windows-titlebar {
+  background: var(--stage);
+  border-bottom: 1px solid var(--border);
+}
+.caption-button {
+  transition:
+    background-color 90ms ease,
+    color 90ms ease;
+}
+.caption-button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.caption-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+.caption-close:active {
+  background: #a82417;
+  color: #ffffff;
+}
+
 /* No Glass: the stage goes fully solid (the IDE look). The sidebar and
  * composer intentionally stay frosted glass, exactly as before; menus are
  * opaque everywhere. */
@@ -562,8 +606,8 @@ body {
   background: transparent;
   color: var(--ink);
   font-family:
-    "JetBrains Mono", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter,
-    sans-serif;
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI",
+    Inter, system-ui, sans-serif;
   font-size: 13px;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
@@ -594,6 +638,71 @@ html[data-platform="linux"]:not([data-glass="opaque"]) .composer {
 }
 html[data-platform="linux"][data-glass="clear"] .composer {
   background: color-mix(in srgb, var(--sidebar) 62%, transparent);
+}
+
+/* Windows without a native backdrop (DWM composition off, or Acrylic, Mica
+ * and blur all unavailable): keep the transparent window, but paint solid
+ * grounds inside it. CSS backdrop-filter cannot reach the desktop in
+ * WebView2, so leaving the tints alone here would show text straight over the
+ * wallpaper. `data-window-glass` becomes "true" once the backend reports an
+ * effect took; until then — and if the call fails — these rules apply. */
+html[data-platform="windows"][data-window-glass="false"] body {
+  background: var(--stage);
+}
+html[data-platform="windows"][data-window-glass="false"] .stage-ground {
+  background: var(--stage);
+}
+html[data-platform="windows"][data-window-glass="false"]:not([data-glass="opaque"]) .stage-glass {
+  background: color-mix(in srgb, var(--stage) 94%, transparent);
+}
+html[data-platform="windows"][data-window-glass="false"]:not([data-glass="opaque"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 84%, transparent);
+}
+html[data-platform="windows"][data-window-glass="false"][data-glass="clear"] .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 68%, transparent);
+}
+html[data-platform="windows"][data-window-glass="false"]:not([data-glass="opaque"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 86%, transparent);
+}
+html[data-platform="windows"][data-window-glass="false"][data-glass="clear"] .composer {
+  background: color-mix(in srgb, var(--sidebar) 72%, transparent);
+}
+
+/* Windows with native hardware backdrop active (Mica, Mica Alt/Tabbed, Acrylic).
+ * DWM handles hardware blurring; disabling webview CSS backdrop-filter avoids
+ * composite artifacts and sluggish rendering in WebView2. */
+html[data-platform="windows"]:not([data-window-glass="false"]) body {
+  background: transparent;
+}
+html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 76%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .stage-glass {
+  background: color-mix(in srgb, var(--stage) 80%, transparent);
+}
+html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .stage-ground {
+  background: color-mix(in srgb, var(--stage) 78%, transparent);
+}
+html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 82%, transparent);
+}
+
+/* Windows Clear glass: more translucent desktop presence */
+html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 50%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .stage-glass {
+  background: color-mix(in srgb, var(--stage) 52%, transparent);
+}
+html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .stage-ground {
+  background: color-mix(in srgb, var(--stage) 48%, transparent);
+}
+html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 56%, transparent);
 }
 
 /* Matches the Ghostty config: a white caret in text inputs, and the same

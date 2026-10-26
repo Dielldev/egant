@@ -81,6 +81,8 @@ export function Composer({
   const composerAgentPick = useEgant((s) => s.composerAgent);
   const claudeUsage = useEgant((s) => s.claudeUsage);
   const fetchClaudeUsage = useEgant((s) => s.fetchClaudeUsage);
+  const opencodeUsage = useEgant((s) => s.opencodeUsage);
+  const fetchOpencodeUsage = useEgant((s) => s.fetchOpencodeUsage);
   const catalog = useEgant((s) => s.catalog);
   const chatUiAgents = useEgant((s) => s.chatUiAgents);
   const askCliLaunch = useEgant((s) => s.askCliLaunch);
@@ -320,6 +322,14 @@ export function Composer({
     const timer = setInterval(() => void fetchClaudeUsage(), 5 * 60_000);
     return () => clearInterval(timer);
   }, [claudeActive, fetchClaudeUsage]);
+
+  const opencodeActive = (sessionId == null ? nextAgentId : agent) === "opencode";
+  useEffect(() => {
+    if (!opencodeActive) return;
+    void fetchOpencodeUsage();
+    const timer = setInterval(() => void fetchOpencodeUsage(), 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [opencodeActive, fetchOpencodeUsage]);
 
   // Pasted images ride along as real attachments — each backend attaches
   // them the way it actually supports (a vision block for Claude, `-i` for
@@ -749,6 +759,7 @@ export function Composer({
               usage={transcript.usage}
               costUsd={transcript.totalCostUsd}
               claudeUsage={claudeActive ? claudeUsage : null}
+              opencodeUsage={opencodeActive ? opencodeUsage : null}
               showPercent
               modelWindow={modelWindow}
             />

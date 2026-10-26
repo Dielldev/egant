@@ -90,12 +90,13 @@ fn interesting_paths(event: &Event) -> Vec<PathBuf> {
 
 fn is_noise(path: &Path) -> bool {
     let text = path.to_string_lossy();
-    text.contains("/.git/index.lock")
-        || text.contains("/.git/objects/")
-        || text.ends_with("~")
-        || text.ends_with(".swp")
-        || text.contains("/target/")
-        || text.contains("/node_modules/")
+    let normalized = text.replace('\\', "/");
+    normalized.contains("/.git/index.lock")
+        || normalized.contains("/.git/objects/")
+        || normalized.ends_with('~')
+        || normalized.ends_with(".swp")
+        || normalized.contains("/target/")
+        || normalized.contains("/node_modules/")
 }
 
 #[cfg(test)]
@@ -108,11 +109,19 @@ mod tests {
         assert!(is_noise(Path::new("/repo/.git/objects/ab/cdef")));
         assert!(is_noise(Path::new("/repo/target/debug/app")));
         assert!(is_noise(Path::new("/repo/src/main.rs.swp")));
+
+        // Windows backslash paths
+        assert!(is_noise(Path::new("C:\\repo\\.git\\index.lock")));
+        assert!(is_noise(Path::new("C:\\repo\\.git\\objects\\ab\\cdef")));
+        assert!(is_noise(Path::new("C:\\repo\\target\\debug\\app.exe")));
+        assert!(is_noise(Path::new("C:\\repo\\node_modules\\react\\index.js")));
     }
 
     #[test]
     fn source_files_are_kept() {
         assert!(!is_noise(Path::new("/repo/src/main.rs")));
         assert!(!is_noise(Path::new("/repo/.git/HEAD")));
+        assert!(!is_noise(Path::new("C:\\repo\\src\\main.rs")));
+        assert!(!is_noise(Path::new("C:\\repo\\.git\\HEAD")));
     }
 }

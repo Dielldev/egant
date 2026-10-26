@@ -25,6 +25,7 @@ import type {
   AgentStatus,
   CheckoutPlan,
   ClaudeUsage,
+  OpencodeUsageStats,
   DecisionRequest,
   DecisionResponse,
   DiffScope,
@@ -52,6 +53,7 @@ export type LibrarySection = "mcp" | "skills";
 export type SettingsSection =
   | "devices"
   | "agents"
+  | "usage"
   | "accounts"
   | "appearance"
   | "files"
@@ -379,13 +381,24 @@ export function applyAppearance(appearance: AppearanceState): void {
     appearance.accent === "default" ? "#8e7cf6" : appearance.accent,
   );
 
-  // The window itself: titlebar theme and (macOS only) the real
-  // frosted-glass blur behind the transparent stage. The blur stays on in
+  // The window itself: titlebar theme and the native backdrop behind the
+  // transparent stage (macOS vibrancy, Windows Acrylic/Mica). It stays on in
   // every Glass mode — including No Glass, where the sidebar is the one
   // surface that keeps its glass look and needs live blur behind it.
-  // Fire-and-forget — a rejected invoke (e.g. no window yet on first
-  // paint) just leaves the window at its previous state, which is harmless.
-  void api.syncWindowAppearance(theme === "dark", true).catch(() => {});
+  // Windows' CSS cannot see the desktop behind the webview, so it needs to
+  // know whether a native backdrop actually took. Until the call answers (and
+  // if it fails) the solid-ground rules stay on. On macOS the attribute is
+  // simply unused.
+  void api
+    .syncWindowAppearance(theme === "dark", true)
+    .then((effect) => {
+      if (!isWindows()) return;
+      root.dataset.windowGlass = effect === "none" ? "false" : "true";
+      root.dataset.windowEffect = effect;
+    })
+    .catch(() => {
+      if (isWindows()) root.dataset.windowGlass = "false";
+    });
 }
 
 interface EgantStore {
@@ -464,10 +477,9 @@ interface EgantStore {
    * caller can type into it. */
   openTerminalTab: (cwd?: string) => string;
   openHistoryTab: () => void;
-  /** Opens a fresh Browser tab onto its own "new tab" screen — unlike Files
-   * or Diffs, a second one is exactly the point (two pages open side by
-   * side), so this never reuses an existing tab. Returns the new tab's id. */
-  openBrowserTab: () => string;
+  /** Opens a fresh Browser tab onto its own "new tab" screen (or loads the
+   * given URL) — side by side with the chat. Returns the new tab's id. */
+  openBrowserTab: (url?: string) => string;
   /** What a Browser tab's page reports about itself, off the `browser-nav`
    * event — the address bar and the tab strip's title are both driven from
    * this rather than owning their own copy of it. */
@@ -619,6 +631,10 @@ interface EgantStore {
    * composer is showing — see `Composer`'s effect. */
   claudeUsage: ClaudeUsage | null;
   fetchClaudeUsage: () => Promise<void>;
+
+  /** OpenCode lifetime tokens, messages, session counts, and rate limit status. */
+  opencodeUsage: OpencodeUsageStats | null;
+  fetchOpencodeUsage: () => Promise<void>;
 
   /** Which agents the composer offers (`egant.agents` in localStorage).
    * Settings > Agents writes it; the picker reads it. Defaults enable the
@@ -1130,6 +1146,16 @@ function terminalTitle(n: number): string {
   return n === 1 ? "Terminal" : `Terminal ${n}`;
 }
 
+/** The page's host, for the tab strip's title — `https://github.com/a/b`
+ * reads as "github.com" there, the same shorthand a real browser tab uses. */
+export function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
+}
+
 /** Same numbering scheme as a terminal's, before a Browser tab has navigated
  * anywhere to be titled after. */
 function browserTitle(n: number): string {
@@ -1475,6 +1501,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       // Only a Claude turn moves Claude's own usage windows.
       const session = get().snapshot?.sessions.find((s) => s.id === sessionId);
       if (session?.agent === "claude") void get().fetchClaudeUsage();
+      if (session?.agent === "opencode") void get().fetchOpencodeUsage();
     }
   }
 
@@ -1660,18 +1687,40 @@ export const useEgant = create<EgantStore>()((set, get) => {
       saveString("egant.panelOpen", "true");
       return tab.id;
     },
-    openBrowserTab: () => {
-      const { panelTabs } = get();
-      const taken = new Set(panelTabs.map((tab) => tab.title));
+    openBrowserTab: (rawUrl?: string) => {
+      const initialUrl =
+        typeof rawUrl === "string" && rawUrl.trim().length > 0 ? rawUrl.trim() : undefined;
+      const { panelTabs, panelTab } = get();
+
+      // If an existing browser tab already has this exact URL, switch to it:
+      if (initialUrl) {
+        const existing = panelTabs.find((t) => t.kind === "browser" && t.url === initialUrl);
+        if (existing) {
+          set({ panelOpen: true, panelTab: existing.id });
+          saveString("egant.panelOpen", "true");
+          return existing.id;
+        }
+      }
+
+      // If the currently active tab is an empty browser tab with no URL, replace it:
+      const activeCurrentTab = panelTabs.find((t) => t.id === panelTab);
+      let tabs = panelTabs;
+      if (initialUrl && activeCurrentTab && activeCurrentTab.kind === "browser" && !activeCurrentTab.url) {
+        tabs = panelTabs.filter((t) => t.id !== activeCurrentTab.id);
+      }
+
+      const taken = new Set(tabs.map((tab) => tab.title));
       let n = 1;
       while (taken.has(browserTitle(n))) n += 1;
       const tab: PanelTab = {
         id: `browser-${nextPanelTabId()}`,
         kind: "browser",
-        title: browserTitle(n),
+        title: initialUrl ? hostnameOf(initialUrl) : browserTitle(n),
         cwd: workspaceRoot(get().snapshot),
+        url: initialUrl,
+        loading: !!initialUrl,
       };
-      set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
+      set({ panelOpen: true, panelTabs: [...tabs, tab], panelTab: tab.id });
       saveString("egant.panelOpen", "true");
       return tab.id;
     },
@@ -1901,6 +1950,18 @@ export const useEgant = create<EgantStore>()((set, get) => {
         set({ claudeUsage: usage });
       } catch {
         set({ claudeUsage: null });
+      }
+    },
+
+    opencodeUsage: null,
+    fetchOpencodeUsage: async () => {
+      try {
+        const usage = await api.opencodeUsageStats();
+        log.debug("store", "opencode usage stats refreshed");
+        set({ opencodeUsage: usage });
+      } catch (e) {
+        log.warn("store", `opencode usage stats failed: ${String(e)}`);
+        set({ opencodeUsage: null });
       }
     },
 

@@ -189,6 +189,21 @@ enum Next {
     Command(Result<RunnerCommand, async_channel::RecvError>),
 }
 
+fn kill_child(child: &mut async_process::Child) {
+    #[cfg(windows)]
+    {
+        // On Windows, child processes spawned via `cmd.exe /c` are not terminated
+        // by TerminateProcess on the parent. `taskkill /F /T` terminates the whole tree.
+        let pid = child.id();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+        let _ = cmd.output();
+    }
+    let _ = child.kill();
+}
+
 /// Runs one turn to completion. Returns whether the session is shutting down.
 async fn run_turn<T: TurnTranslator>(
     translator: &mut T,
@@ -211,6 +226,8 @@ async fn run_turn<T: TurnTranslator>(
     cmd.args(&prefix)
         .args(&request.args)
         .current_dir(&request.cwd)
+        .env("PATH", crate::agents::execution_path())
+        .envs(crate::agents::login_shell_env().iter().cloned())
         // The prompt travels on the command line; an open stdin only invites
         // a CLI to wait on it.
         .stdin(Stdio::null())
@@ -235,7 +252,7 @@ async fn run_turn<T: TurnTranslator>(
     };
 
     let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
+        kill_child(&mut child);
         log::error!("turn `{program}` started without stdout");
         send_all(
             events,
@@ -280,7 +297,7 @@ async fn run_turn<T: TurnTranslator>(
             Next::Command(Ok(RunnerCommand::Interrupt)) => {
                 log::info!("turn interrupted: {program}");
                 interrupted = true;
-                let _ = child.kill();
+                kill_child(&mut child);
                 let _ = child.status().await;
                 break;
             }
@@ -288,7 +305,7 @@ async fn run_turn<T: TurnTranslator>(
                 log::info!("turn shutdown: {program}");
                 interrupted = true;
                 shutdown = true;
-                let _ = child.kill();
+                kill_child(&mut child);
                 let _ = child.status().await;
                 break;
             }
@@ -296,7 +313,7 @@ async fn run_turn<T: TurnTranslator>(
             Next::Command(Err(_)) => {
                 interrupted = true;
                 shutdown = true;
-                let _ = child.kill();
+                kill_child(&mut child);
                 let _ = child.status().await;
                 break;
             }
