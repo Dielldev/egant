@@ -169,7 +169,10 @@ pub const CATALOG: &[CatalogEntry] = &[
         #[cfg(windows)]
         install_options: &[
             npm("npm install -g @anthropic-ai/claude-code", true),
-            powershell("powershell -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\"", false),
+            powershell(
+                "powershell -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\"",
+                false,
+            ),
         ],
         #[cfg(not(windows))]
         install_options: &[
@@ -190,9 +193,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         chat_ui: true,
         recommended: true,
         #[cfg(windows)]
-        install_options: &[
-            npm("npm install -g @openai/codex", true),
-        ],
+        install_options: &[npm("npm install -g @openai/codex", true)],
         #[cfg(not(windows))]
         install_options: &[
             npm("npm install -g @openai/codex", true),
@@ -219,7 +220,10 @@ pub const CATALOG: &[CatalogEntry] = &[
         #[cfg(windows)]
         install_options: &[
             npm("npm install -g opencode-ai", true),
-            powershell("powershell -ExecutionPolicy Bypass -Command \"irm https://opencode.ai/install.ps1 | iex\"", false),
+            powershell(
+                "powershell -ExecutionPolicy Bypass -Command \"irm https://opencode.ai/install.ps1 | iex\"",
+                false,
+            ),
         ],
         #[cfg(not(windows))]
         install_options: &[
@@ -259,7 +263,14 @@ pub const CATALOG: &[CatalogEntry] = &[
         recommended: false,
         #[cfg(windows)]
         install_options: &[
-            powershell("powershell -ExecutionPolicy Bypass -Command \"irm https://antigravity.google/cli/install.ps1 | iex\"", true),
+            InstallOption {
+                method: InstallMethod::Powershell,
+                command: "powershell -ExecutionPolicy Bypass -Command \"irm https://antigravity.google/cli/install.ps1 | iex\"",
+                // Same reason as the curl bootstrapper below: re-running the
+                // installer over an existing `agy` is a silent no-op.
+                update_command: Some("agy update"),
+                recommended: true,
+            },
             npm("npm install -g @google/antigravity", false),
         ],
         #[cfg(not(windows))]
@@ -805,7 +816,13 @@ pub(crate) fn run_in_login_shell(
 ) -> Result<(bool, String), String> {
     let mut spawn = if command.trim_start().starts_with("powershell") {
         let mut cmd = std::process::Command::new("powershell.exe");
-        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]);
+        cmd.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ]);
         cmd
     } else {
         let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
@@ -1030,13 +1047,17 @@ mod tests {
             update_command(codex, npm),
             "npm install -g @openai/codex@latest"
         );
-        // An explicit update command wins over the derivation.
-        let brew = codex
-            .install_options
-            .iter()
-            .find(|o| o.method == InstallMethod::Brew)
-            .unwrap();
-        assert_eq!(update_command(codex, brew), "brew upgrade codex");
+        // An explicit update command wins over the derivation. (Codex has
+        // no brew source on Windows.)
+        #[cfg(not(windows))]
+        {
+            let brew = codex
+                .install_options
+                .iter()
+                .find(|o| o.method == InstallMethod::Brew)
+                .unwrap();
+            assert_eq!(update_command(codex, brew), "brew upgrade codex");
+        }
         // Antigravity's bootstrapper refuses to run over an existing
         // install, so its update must not be the install command.
         let ag = entry("antigravity").unwrap();
@@ -1059,9 +1080,15 @@ mod tests {
             option_for(codex, Some("pip")).is_err(),
             "codex has no pip source"
         );
+        #[cfg(not(windows))]
         assert_eq!(
             option_for(codex, Some("brew")).unwrap().command,
             "brew install codex"
+        );
+        #[cfg(windows)]
+        assert!(
+            option_for(codex, Some("brew")).is_err(),
+            "codex has no brew source on Windows"
         );
         assert_eq!(
             option_for(codex, None).unwrap().method,

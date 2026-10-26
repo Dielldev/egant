@@ -663,7 +663,11 @@ fn parse_antigravity(path: &Path) -> Vec<Rec> {
         if line.contains("Model Selection") {
             if let Some(pos) = line.find("from None to ") {
                 let rest = &line[pos + 13..];
-                if let Some(end) = rest.find('(').or_else(|| rest.find('\\')).or_else(|| rest.find('"')) {
+                if let Some(end) = rest
+                    .find('(')
+                    .or_else(|| rest.find('\\'))
+                    .or_else(|| rest.find('"'))
+                {
                     let m = rest[..end].trim();
                     if !m.is_empty() {
                         model = m.to_ascii_lowercase().replace(' ', "-");
@@ -693,7 +697,10 @@ fn parse_antigravity(path: &Path) -> Vec<Rec> {
         let c = parsed.cache_read_tokens.unwrap_or(0);
         let rec = Rec {
             t,
-            k: parsed.step_index.map(|idx| idx.to_string()).unwrap_or_default(),
+            k: parsed
+                .step_index
+                .map(|idx| idx.to_string())
+                .unwrap_or_default(),
             m: model.clone(),
             i,
             o,

@@ -687,8 +687,13 @@ fn symlink_dir(source: &Path, link: &Path) -> Result<(), String> {
             return Ok(());
         }
     }
-    copy_dir_recursive(source, link)
-        .map_err(|e| format!("couldn't link or copy {} to {}: {e}", source.display(), link.display()))
+    copy_dir_recursive(source, link).map_err(|e| {
+        format!(
+            "couldn't link or copy {} to {}: {e}",
+            source.display(),
+            link.display()
+        )
+    })
 }
 
 #[cfg(windows)]

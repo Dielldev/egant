@@ -12,8 +12,9 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
     ArchivedSessionDto, ChangeDto, ClaudeUsageDto, CloseResultDto, CommitDto, CommitRefDto,
-    ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto, OpencodeUsageDto, RepoRefDto,
-    RepoStatusDto, SendResultDto, StateDto, TranscriptDto, UnmergedFileDto, WorktreeDto,
+    ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto,
+    OpencodeUsageDto, RepoRefDto, RepoStatusDto, SendResultDto, StateDto, TranscriptDto,
+    UnmergedFileDto, WorktreeDto,
 };
 use crate::service::{self, DecisionOutcome};
 use crate::sessions;
@@ -1197,7 +1198,11 @@ fn sync_window_appearance(app: AppHandle, dark: bool, glass: bool) -> Result<Str
 /// The platform's window backdrop, returning the name of what was applied
 /// (`none` when glass is off or the platform has nothing to apply).
 #[cfg(target_os = "macos")]
-pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, _dark: bool, glass: bool) -> String {
+pub(crate) fn apply_window_glass(
+    window: &tauri::WebviewWindow,
+    _dark: bool,
+    glass: bool,
+) -> String {
     if glass {
         match window_vibrancy::apply_vibrancy(
             window,
@@ -1256,7 +1261,11 @@ pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, dark: bool, glas
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) fn apply_window_glass(_window: &tauri::WebviewWindow, _dark: bool, _glass: bool) -> String {
+pub(crate) fn apply_window_glass(
+    _window: &tauri::WebviewWindow,
+    _dark: bool,
+    _glass: bool,
+) -> String {
     "none".to_string()
 }
 

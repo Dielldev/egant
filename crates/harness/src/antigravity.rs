@@ -523,7 +523,9 @@ impl AntigravityTranslator {
             if self.turn.spoke {
                 None
             } else if response.is_empty() {
-                Some(format!("Antigravity ended the turn with status `{status}`."))
+                Some(format!(
+                    "Antigravity ended the turn with status `{status}`."
+                ))
             } else {
                 Some(response.to_string())
             }
@@ -626,16 +628,20 @@ fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
             )
             .unwrap_or_default();
             let mut val = serde_json::json!({ "file_path": file_path });
-            if let Some(content) = pick_field(
-                &input,
-                &["Content", "content", "text", "body", "code"],
-            ) {
+            if let Some(content) =
+                pick_field(&input, &["Content", "content", "text", "body", "code"])
+            {
                 val["content"] = Value::String(content);
             }
             ("Write".to_string(), val)
         }
-        "replace_file_content" | "multi_replace_file_content" | "edit_file" | "edit"
-        | "multiedit" | "apply_patch" | "patch" => {
+        "replace_file_content"
+        | "multi_replace_file_content"
+        | "edit_file"
+        | "edit"
+        | "multiedit"
+        | "apply_patch"
+        | "patch" => {
             let file_path = pick_field(
                 &input,
                 &[
@@ -687,11 +693,8 @@ fn normalize_tool_call(name: &str, input: Value) -> (String, Value) {
             ("Edit".to_string(), val)
         }
         "run_command" | "bash" | "exec" | "shell" | "command" | "terminal" => {
-            let command = pick_field(
-                &input,
-                &["CommandLine", "command_line", "command", "cmd"],
-            )
-            .unwrap_or_default();
+            let command = pick_field(&input, &["CommandLine", "command_line", "command", "cmd"])
+                .unwrap_or_default();
             (
                 "Bash".to_string(),
                 serde_json::json!({ "command": command }),
@@ -1224,7 +1227,11 @@ mod tests {
             serde_json::json!({ "Path": "/tmp/new.ts", "Content": "console.log('hi');" }),
         );
         assert_eq!(
-            (name.as_str(), input["file_path"].as_str(), input["content"].as_str()),
+            (
+                name.as_str(),
+                input["file_path"].as_str(),
+                input["content"].as_str()
+            ),
             ("Write", Some("/tmp/new.ts"), Some("console.log('hi');"))
         );
         let (name, input) = normalize_tool_call(

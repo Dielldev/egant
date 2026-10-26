@@ -114,7 +114,9 @@ mod tests {
         assert!(is_noise(Path::new("C:\\repo\\.git\\index.lock")));
         assert!(is_noise(Path::new("C:\\repo\\.git\\objects\\ab\\cdef")));
         assert!(is_noise(Path::new("C:\\repo\\target\\debug\\app.exe")));
-        assert!(is_noise(Path::new("C:\\repo\\node_modules\\react\\index.js")));
+        assert!(is_noise(Path::new(
+            "C:\\repo\\node_modules\\react\\index.js"
+        )));
     }
 
     #[test]
