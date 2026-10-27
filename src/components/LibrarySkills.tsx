@@ -22,11 +22,11 @@ import {
   GroupTitle,
   INPUT,
   LibraryCard,
-  Monogram,
   Notice,
   PrimaryButton,
   SearchBox,
   Sheet,
+  SkillLogo,
   Tag,
   errorText,
 } from "./LibraryKit";
@@ -198,7 +198,7 @@ export function SkillsSection() {
   const catalogCard = (skill: CatalogSkill) => (
     <LibraryCard
       key={skill.id}
-      icon={<Monogram text={skill.name} />}
+      icon={<SkillLogo source={skill.source} name={skill.name} />}
       title={skill.name}
       tag={installedFor(skill) ? <Tag>installed</Tag> : undefined}
       description={skill.description ?? skill.source}
@@ -299,7 +299,7 @@ export function SkillsSection() {
               {installed.map((skill) => (
                 <LibraryCard
                   key={skill.id}
-                  icon={<Monogram text={skill.name} />}
+                  icon={<SkillLogo source={skill.source} name={skill.name} agents={skill.agents} />}
                   title={skill.name}
                   tag={
                     outdated.includes(skill.id) ? (
@@ -503,14 +503,18 @@ function SkillHeader({
   name,
   sub,
   link,
+  source,
+  agents,
 }: {
   name: string;
   sub: string;
   link?: { label: string; url: string };
+  source?: string | null;
+  agents?: string[];
 }) {
   return (
     <header className="flex items-start gap-3.5">
-      <Monogram text={name} />
+      <SkillLogo source={source} name={name} agents={agents} size={32} />
       <div className="min-w-0 flex-1">
         <div className="text-[17px] font-semibold text-[var(--ink)]">{name}</div>
         <div className="mt-0.5 text-[12.5px] leading-relaxed text-[var(--muted)]">{sub}</div>
@@ -587,6 +591,7 @@ function CatalogSkillSheet({
     >
       <SkillHeader
         name={skill.name}
+        source={skill.source}
         sub={[
           skill.source,
           skill.installs != null ? `${formatCount(skill.installs)} installs` : null,
@@ -720,6 +725,8 @@ function InstalledSkillSheet({
     >
       <SkillHeader
         name={skill.name}
+        source={skill.source}
+        agents={skill.agents}
         sub={skill.description || "No description."}
         link={
           skill.source

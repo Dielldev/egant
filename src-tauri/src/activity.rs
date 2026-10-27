@@ -113,6 +113,11 @@ pub struct ModelUsageStat {
     pub all_time_cache: u64,
     pub all_time_turns: u64,
     pub last_used_at: Option<i64>,
+    pub five_hour_resets_at: Option<i64>,
+    pub five_hour_earliest_at: Option<i64>,
+    pub one_hour_tokens: u64,
+    pub one_hour_turns: u64,
+    pub one_hour_resets_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -653,6 +658,19 @@ struct AntigravityLine {
     cache_read_tokens: Option<u64>,
 }
 
+fn is_valid_antigravity_model(candidate: &str) -> bool {
+    if candidate.is_empty() || candidate.len() > 40 {
+        return false;
+    }
+    if !candidate
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '.')
+    {
+        return false;
+    }
+    candidate.to_ascii_lowercase().starts_with("gemini")
+}
+
 fn parse_antigravity(path: &Path) -> Vec<Rec> {
     if path.file_name().and_then(|n| n.to_str()) != Some("transcript.jsonl") {
         return Vec::new();
@@ -660,27 +678,37 @@ fn parse_antigravity(path: &Path) -> Vec<Rec> {
     let mut recs = Vec::new();
     let mut model = String::from("gemini-3.8-flash");
     for_each_line(path, |line| {
-        if line.contains("Model Selection") {
-            if let Some(pos) = line.find("from None to ") {
+        if line.contains("<USER_SETTINGS_CHANGE>") && line.contains("Model Selection") {
+            let candidate = if let Some(pos) = line.find("from None to ") {
                 let rest = &line[pos + 13..];
-                if let Some(end) = rest
+                let end = rest
                     .find('(')
+                    .or_else(|| rest.find('.'))
                     .or_else(|| rest.find('\\'))
                     .or_else(|| rest.find('"'))
-                {
-                    let m = rest[..end].trim();
-                    if !m.is_empty() {
-                        model = m.to_ascii_lowercase().replace(' ', "-");
-                    }
-                }
+                    .unwrap_or(rest.len());
+                Some(rest[..end].trim())
             } else if let Some(pos) = line.find("setting `Model Selection` to `") {
                 let rest = &line[pos + 30..];
-                if let Some(end) = rest.find('`') {
-                    let m = rest[..end].trim();
-                    if !m.is_empty() {
-                        model = m.to_ascii_lowercase().replace(' ', "-");
-                    }
-                }
+                let end = rest.find('`').unwrap_or(rest.len());
+                Some(rest[..end].trim())
+            } else if let Some(pos) = line.find("setting `Model Selection` to ") {
+                let rest = &line[pos + 29..];
+                let end = rest
+                    .find('(')
+                    .or_else(|| rest.find('.'))
+                    .or_else(|| rest.find('\\'))
+                    .or_else(|| rest.find('"'))
+                    .unwrap_or(rest.len());
+                Some(rest[..end].trim())
+            } else {
+                None
+            };
+
+            if let Some(cand) = candidate
+                && is_valid_antigravity_model(cand)
+            {
+                model = cand.to_ascii_lowercase().replace(' ', "-");
             }
         }
         if !line.contains("\"input_tokens\"") {
@@ -855,6 +883,7 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let one_hour_ago = now.saturating_sub(3600);
     let five_hours_ago = now.saturating_sub(5 * 3600);
     let seven_days_ago = now.saturating_sub(7 * 86_400);
 
@@ -877,8 +906,25 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
         kept.extend(unique.into_values());
 
         for rec in kept {
+            let raw_model = if rec.m.is_empty() { "unknown" } else { &rec.m };
+            let is_malformed = raw_model.len() > 50
+                || raw_model.contains('\n')
+                || raw_model.contains('\r')
+                || raw_model.contains('{')
+                || raw_model.contains('}')
+                || raw_model.contains(';')
+                || raw_model.contains('&')
+                || raw_model.contains('=');
+            let model: &str = if is_malformed {
+                if *agent == "antigravity" {
+                    "gemini-3.8-flash"
+                } else {
+                    "unknown"
+                }
+            } else {
+                raw_model
+            };
             let local = rec.t - i64::from(tz_offset_minutes) * 60;
-            let model = if rec.m.is_empty() { "unknown" } else { &rec.m };
             let slot = spent
                 .entry((local.div_euclid(86_400), agent, model))
                 .or_default();
@@ -894,12 +940,32 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
             });
 
             let total = rec.total();
+            if rec.t >= one_hour_ago && rec.t <= now + 3600 {
+                stat.one_hour_tokens = stat.one_hour_tokens.saturating_add(total);
+                stat.one_hour_turns = stat.one_hour_turns.saturating_add(1);
+                stat.one_hour_resets_at = Some(
+                    stat.one_hour_resets_at
+                        .unwrap_or(0)
+                        .max(rec.t.saturating_add(3600)),
+                );
+            }
             if rec.t >= five_hours_ago && rec.t <= now + 3600 {
                 stat.five_hour_tokens = stat.five_hour_tokens.saturating_add(total);
                 stat.five_hour_input = stat.five_hour_input.saturating_add(rec.i);
                 stat.five_hour_output = stat.five_hour_output.saturating_add(rec.o);
                 stat.five_hour_cache = stat.five_hour_cache.saturating_add(rec.c);
                 stat.five_hour_turns = stat.five_hour_turns.saturating_add(1);
+                stat.five_hour_resets_at = Some(
+                    stat.five_hour_resets_at
+                        .unwrap_or(0)
+                        .max(rec.t.saturating_add(5 * 3600)),
+                );
+                stat.five_hour_earliest_at = Some(
+                    stat.five_hour_earliest_at
+                        .map_or(rec.t.saturating_add(5 * 3600), |prev| {
+                            prev.min(rec.t.saturating_add(5 * 3600))
+                        }),
+                );
             }
             if rec.t >= seven_days_ago && rec.t <= now + 3600 {
                 stat.weekly_tokens = stat.weekly_tokens.saturating_add(total);
@@ -1003,6 +1069,27 @@ mod tests {
         assert_eq!(recs.len(), 1);
         assert_eq!((recs[0].i, recs[0].o, recs[0].c), (2, 40, 150));
         assert_eq!(recs[0].m, "claude-opus-5");
+    }
+
+    #[test]
+    fn antigravity_parses_model_changes_and_ignores_code_mentions() {
+        let (_dir, path) = temp_log(
+            "transcript.jsonl",
+            &[
+                // Code reading snippet that contains 'Model Selection' and 'from None to '
+                r#"{"step_index":0,"type":"PLANNER_RESPONSE","created_at":"2026-10-25T17:50:00Z","content":"if line.contains(\"Model Selection\") { if let Some(pos) = line.find(\"from None to \") { let rest = &line[pos + 13..]; }}"}"#,
+                // Token turn right after reading code: should still be default model (gemini-3.8-flash)
+                r#"{"step_index":1,"created_at":"2026-10-25T17:51:00Z","input_tokens":100,"output_tokens":20,"cache_read_tokens":500}"#,
+                // Legitimate user settings change
+                r#"{"step_index":2,"type":"USER_INPUT","created_at":"2026-10-25T17:52:00Z","content":"<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 3.8 Flash (High).\n</USER_SETTINGS_CHANGE>"}"#,
+                // Token turn after legitimate change: should be gemini-3.8-flash
+                r#"{"step_index":3,"created_at":"2026-10-25T17:53:00Z","input_tokens":200,"output_tokens":40,"cache_read_tokens":600}"#,
+            ],
+        );
+        let recs = parse_antigravity(&path);
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].m, "gemini-3.8-flash");
+        assert_eq!(recs[1].m, "gemini-3.8-flash");
     }
 
     #[test]

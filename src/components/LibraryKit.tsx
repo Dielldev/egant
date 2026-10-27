@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useEgant } from "../store";
 import { ProviderLogo } from "./ProviderLogo";
+export { McpLogo, SkillLogo } from "./LibraryItemLogo";
 
 /** Agent id → the vendor its logo is drawn from, out of the install
  * catalog Settings > Agents already loads. */
@@ -359,7 +360,7 @@ export function LibraryCard({
   action,
   onOpen,
 }: {
-  icon: ReactNode;
+  icon?: ReactNode;
   title: string;
   tag?: ReactNode;
   description: ReactNode;

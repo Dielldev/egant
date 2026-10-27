@@ -852,21 +852,55 @@ fn stringify(value: &serde_json::Value) -> String {
         serde_json::Value::Array(items) => {
             items.iter().map(block_text).collect::<Vec<_>>().join("\n")
         }
+        serde_json::Value::Object(_) => block_text(value),
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
     }
 }
 
 /// One block of a tool result, as the transcript keeps it. Text is itself.
-/// A picture (a Read of a screenshot) or a document is said for what it is —
-/// `[image: image/png, 412 KB]` — rather than kept as its base64: as text
-/// that is the picture's whole size again in the saved session, and a wall
-/// of characters in its tool card. Anything else stays as its JSON.
+/// An image block preserves its data URL (data:image/...;base64,...) so the
+/// frontend can display the screenshot or picture in chat. Documents remain
+/// described by their metadata.
 fn block_text(block: &serde_json::Value) -> String {
     if let Some(text) = block.get("text").and_then(serde_json::Value::as_str) {
         return text.to_owned();
     }
     let kind = block.get("type").and_then(serde_json::Value::as_str);
+
+    if kind == Some("image") {
+        let (media, data) = if let Some(source) = block.get("source") {
+            let m = source
+                .get("media_type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("image/png");
+            let d = source.get("data").and_then(serde_json::Value::as_str);
+            (m, d)
+        } else if let Some(file) = block.get("file") {
+            let m = file
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("image/png");
+            let d = file.get("base64").and_then(serde_json::Value::as_str);
+            (m, d)
+        } else if let Some(d) = block.get("data").and_then(serde_json::Value::as_str) {
+            let m = block
+                .get("mimeType")
+                .or_else(|| block.get("media_type"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("image/png");
+            (m, Some(d))
+        } else {
+            ("image/png", None)
+        };
+        if let Some(data) = data {
+            if data.starts_with("data:") {
+                return data.to_owned();
+            }
+            return format!("data:{media};base64,{data}");
+        }
+    }
+
     let (Some(kind @ ("image" | "document")), Some(source)) = (kind, block.get("source")) else {
         return block.to_string();
     };
@@ -1454,12 +1488,14 @@ mod tests {
     const READ_IMAGE_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01L8DsCzS2zUrWmdhPKuWobc","type":"tool_result","content":[{"type":"image","source":{"type":"base64","data":"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4IyKCFTEMLQkAmD9BAZzFjLYAAAAASUVORK5CYII=","media_type":"image/png"}}]}]},"parent_tool_use_id":null,"session_id":"f354355b-40cc-4690-a1f2-cc1012a509ba","uuid":"063aed99-71d8-451b-b55e-560444abd563","timestamp":"2026-10-01T00:34:56.497Z","tool_use_result":{"type":"image","file":{"base64":"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4IyKCFTEMLQkAmD9BAZzFjLYAAAAASUVORK5CYII=","type":"image/png","originalSize":74,"dimensions":{"originalWidth":8,"originalHeight":8,"displayWidth":8,"displayHeight":8}}}}"#;
 
     #[test]
-    fn an_image_tool_result_is_described_not_kept_as_base64() {
+    fn an_image_tool_result_is_kept_as_data_url() {
         match translated(READ_IMAGE_RESULT).as_slice() {
             [HarnessEvent::ToolResult { id, output, .. }] => {
                 assert_eq!(id, "toolu_01L8DsCzS2zUrWmdhPKuWobc");
-                // 74 bytes: the file's `originalSize`, from its base64 alone.
-                assert_eq!(output, "[image: image/png, 74 bytes]");
+                assert_eq!(
+                    output,
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4IyKCFTEMLQkAmD9BAZzFjLYAAAAASUVORK5CYII="
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1467,17 +1503,20 @@ mod tests {
 
     #[test]
     fn a_result_mixing_text_and_a_picture_keeps_both_readable() {
+        let fake_data = "A".repeat(4 * 140_000);
         let output = stringify(&serde_json::json!([
             {"type": "text", "text": "Screenshot taken"},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                         "data": "A".repeat(4 * 140_000)}},
+                                         "data": fake_data}},
             {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                                             "data": "A".repeat(4 * 600_000)}},
             {"type": "tool_reference", "tool_name": "WebFetch"},
         ]));
         assert_eq!(
             output,
-            "Screenshot taken\n[image: image/jpeg, 411 KB]\n[document: application/pdf, 1.7 MB]\n{\"type\":\"tool_reference\",\"tool_name\":\"WebFetch\"}"
+            format!(
+                "Screenshot taken\ndata:image/jpeg;base64,{fake_data}\n[document: application/pdf, 1.7 MB]\n{{\"type\":\"tool_reference\",\"tool_name\":\"WebFetch\"}}"
+            )
         );
     }
 

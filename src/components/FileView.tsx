@@ -11,21 +11,9 @@ import type { CodeEditorHandle } from "./CodeEditor";
 import { FileIcon } from "./FileIcon";
 import { Markdown } from "./Markdown";
 import { useFilesSettings } from "./SettingsKit";
+import { extensionOf, isImage } from "../lib/images";
 
-const IMAGE_EXTENSIONS = new Set([
-  "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif", "icns",
-]);
-
-/** Extension, lower case, without the dot. */
-function extensionOf(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
-}
-
-/** Whether this is something to look at rather than read. */
-export function isImage(name: string): boolean {
-  return IMAGE_EXTENSIONS.has(extensionOf(name));
-}
+export { isImage };
 
 /** What this file can be rendered as, if anything — the other half of the
  * Diff/Preview and Source/Preview toggles. */

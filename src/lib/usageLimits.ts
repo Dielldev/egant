@@ -8,17 +8,43 @@ export function isUsageCritical(percent: number): boolean {
 
 /** "resets in 3h 12m" / "resets in 42m" / "" once the window has already
  * rolled over (or the endpoint gave no timestamp). */
-export function formatResetIn(resetsAt: string | null, now: number): string {
+export function formatResetIn(
+  resetsAt: string | number | null | undefined,
+  now: number,
+  options?: { withClock?: boolean; prefix?: string },
+): string {
   if (!resetsAt) return "";
-  const target = Date.parse(resetsAt);
-  if (!Number.isFinite(target)) return "";
-  const ms = target - now;
+  let targetMs: number;
+  if (typeof resetsAt === "number") {
+    targetMs = resetsAt < 1e11 ? resetsAt * 1000 : resetsAt;
+  } else {
+    targetMs = Date.parse(resetsAt);
+  }
+  if (!Number.isFinite(targetMs)) return "";
+  const ms = targetMs - now;
   if (ms <= 0) return "";
   const minutes = Math.round(ms / 60_000);
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
-  if (hours <= 0) return `resets in ${mins}m`;
-  return `resets in ${hours}h ${mins}m`;
+  const days = Math.floor(hours / 24);
+
+  const prefix = options?.prefix ?? "resets in";
+  let relative = "";
+  if (days >= 1) {
+    const remHours = hours % 24;
+    relative = `${prefix} ${days}d ${remHours}h`;
+  } else if (hours <= 0) {
+    relative = `${prefix} ${Math.max(1, mins)}m`;
+  } else {
+    relative = `${prefix} ${hours}h ${mins}m`;
+  }
+
+  if (options?.withClock) {
+    const date = new Date(targetMs);
+    const clock = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return `${relative} (${clock})`;
+  }
+  return relative;
 }
 
 /** Whether there is anything at all worth showing a pill for. */

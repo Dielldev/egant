@@ -6,6 +6,7 @@ import copilotLogo from "../assets/logos/copilot.svg?raw";
 import cursorLogo from "../assets/logos/cursor.svg?raw";
 import deepseekLogo from "../assets/logos/deepseek.svg?raw";
 import devinLogo from "../assets/logos/devin.svg?raw";
+import githubLogo from "../assets/logos/github.svg?raw";
 import gooseLogo from "../assets/logos/goose.svg?raw";
 import googleLogo from "../assets/logos/google.svg?raw";
 import metaLogo from "../assets/logos/meta.svg?raw";
@@ -15,6 +16,7 @@ import opencodeLogo from "../assets/logos/opencode.svg?raw";
 import openaiLogo from "../assets/logos/openai.svg?raw";
 import piLogo from "../assets/logos/pi.svg?raw";
 import qwenLogo from "../assets/logos/qwen.svg?raw";
+import vercelLogo from "../assets/logos/vercel.svg?raw";
 import xLogo from "../assets/logos/x.svg?raw";
 
 const LOGOS: Record<string, string> = {
@@ -32,6 +34,8 @@ const LOGOS: Record<string, string> = {
   xai: xLogo,
   x: xLogo,
   grok: xLogo,
+  vercel: vercelLogo,
+  github: githubLogo,
   // Agent marks for the Agents tab. Vendored from lobe-icons — see
   // ../assets/logos/LICENSE.md.
   amp: ampLogo,
@@ -47,6 +51,17 @@ const LOGOS: Record<string, string> = {
   qwen: qwenLogo,
 };
 
+export const BRAND_COLORS: Record<string, string> = {
+  claude: "#e8835a",
+  anthropic: "#e8835a",
+  google: "#4285f4",
+  gemini: "#4285f4",
+  antigravity: "#4285f4",
+  openai: "#10a37f",
+  codex: "#10a37f",
+  opencode: "#8e7cf6",
+};
+
 /** Accent for the monogram tile an agent with no vendored mark falls back to.
  * A tinted initial reads as a deliberate placeholder; the default grey letter
  * read as a missing asset. Marks themselves stay monochrome, so the row is one
@@ -60,14 +75,23 @@ export function providerSvg(provider: string): string | null {
 /** Brand mark for a model provider. Unknown providers get an initial tile,
  * so the list never depends on asset coverage. The tile clips its glyph
  * (`overflow-hidden`) so wide wordmarks can never bleed into the row text. */
-export function ProviderLogo({ provider, size = 26 }: { provider: string; size?: number }) {
+export function ProviderLogo({
+  provider,
+  size = 26,
+  color,
+}: {
+  provider: string;
+  size?: number;
+  color?: string;
+}) {
   const svg = providerSvg(provider);
+  const brandColor = color ?? BRAND_COLORS[provider.toLowerCase()];
   const tile =
     "flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--card)]";
   if (!svg) {
     // The letter scales with the tile, so a 48px tile in the agent sheet
     // isn't a lone 11px character floating in a box.
-    const tint = TINTS[provider.toLowerCase()];
+    const tint = brandColor ?? TINTS[provider.toLowerCase()];
     return (
       <span
         className={tile}
@@ -93,15 +117,14 @@ export function ProviderLogo({ provider, size = 26 }: { provider: string; size?:
     );
   }
   return (
-    // color-mix rather than a Tailwind opacity modifier: `--ink` is a plain
-    // custom property, not a registered Tailwind colour, so `/85` on it is
-    // not guaranteed to compile.
     <span
       className={tile}
       style={{
         width: size,
         height: size,
-        color: "color-mix(in srgb, var(--ink) 85%, transparent)",
+        color: brandColor ?? "var(--ink)",
+        backgroundColor: brandColor ? `color-mix(in srgb, ${brandColor} 12%, var(--card))` : undefined,
+        borderColor: brandColor ? `color-mix(in srgb, ${brandColor} 28%, var(--border))` : undefined,
       }}
     >
       <span className="provider-logo" dangerouslySetInnerHTML={{ __html: svg }} />

@@ -730,6 +730,16 @@ export interface ModelUsageStat {
   allTimeTurns: number;
   /** Unix epoch seconds of most recent turn, or null. */
   lastUsedAt: number | null;
+  /** Unix epoch seconds when the 5h window fully resets/rolls off, or null. */
+  fiveHourResetsAt?: number | null;
+  /** Unix epoch seconds when the earliest turn in the 5h window rolls off, or null. */
+  fiveHourEarliestAt?: number | null;
+  /** Tokens in the rolling 1-hour window. */
+  oneHourTokens?: number;
+  /** Turns in the rolling 1-hour window. */
+  oneHourTurns?: number;
+  /** Unix epoch seconds when the 1-hour window resets, or null. */
+  oneHourResetsAt?: number | null;
 }
 
 /** Every token moved through the agents' own logs, oldest day first, for the

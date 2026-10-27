@@ -1,9 +1,14 @@
 import {
   AlignJustify,
+  Camera,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
+  Download,
+  ExternalLink,
+  ImageOff,
+  Maximize2,
   Pencil,
   Plus,
   Search,
@@ -28,6 +33,18 @@ import { languageFor } from "../lib/language";
 import type { Entry } from "../lib/types";
 import { AddedLinesView, DiffView } from "./DiffView";
 import { FileIcon } from "./FileIcon";
+import {
+  copyImageToClipboard,
+  downloadImage,
+  extractDataUrl,
+  extractImagePaths,
+  isDataUrlImage,
+  isImage,
+  openImageInEditor,
+  resolveImageDataUrl,
+  useImageLightbox,
+} from "../lib/images";
+import { useEgant, workspaceRoot } from "../store";
 
 export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 
@@ -375,10 +392,236 @@ export function groupEntries(entries: Entry[]): RenderItem[] {
 // path/command header and copy button.
 // ---------------------------------------------------------------------------
 
+export function ToolImagePreview({
+  src,
+  filePath,
+  alt,
+  accompanyingText,
+  isError,
+}: {
+  src?: string;
+  filePath?: string;
+  alt?: string;
+  accompanyingText?: string | null;
+  isError?: boolean;
+}) {
+  const root = useEgant((s) => workspaceRoot(s.snapshot));
+  const openLightbox = useImageLightbox((s) => s.open);
+
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const raw = src || filePath;
+    if (!raw) {
+      setLoading(false);
+      setError(true);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+
+    resolveImageDataUrl(raw, root)
+      .then((dataUrl) => {
+        if (cancelled) return;
+        if (dataUrl) {
+          setResolvedUrl(dataUrl);
+          setError(false);
+        } else {
+          setError(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [src, filePath, root]);
+
+  const fileName = filePath
+    ? basename(filePath)
+    : src?.startsWith("data:")
+      ? "screenshot.png"
+      : basename(src || "") || "screenshot.png";
+
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!resolvedUrl) return;
+    const ok = await copyImageToClipboard(resolvedUrl);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    }
+  };
+
+  const handleDownload = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!resolvedUrl) return;
+    downloadImage(resolvedUrl, fileName);
+  };
+
+  const handleOpenInTab = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!filePath) return;
+    openImageInEditor(filePath, fileName);
+  };
+
+  const handleClickImage = () => {
+    if (!resolvedUrl) return;
+    openLightbox({
+      src: resolvedUrl,
+      alt,
+      title: alt || fileName,
+      filePath,
+      dimensions: dimensions ?? undefined,
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {accompanyingText && accompanyingText.trim() !== "" && (
+        <div className="font-mono text-[11px] leading-5 text-[var(--muted)] whitespace-pre-wrap">
+          {truncate(accompanyingText, 1000)}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex h-36 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-[rgba(0,0,0,0.1)] animate-pulse">
+          <div className="flex items-center gap-2 text-xs text-[var(--faint)]">
+            <Camera size={14} className="opacity-50" />
+            <span>Loading image…</span>
+          </div>
+        </div>
+      ) : error || !resolvedUrl ? (
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[rgba(0,0,0,0.1)] p-2.5 text-xs text-[var(--muted)]">
+          <ImageOff size={14} className="text-[var(--faint)]" />
+          <span className="font-mono text-[11px] truncate">
+            {fileName || "Could not load image"}
+          </span>
+          {filePath && (
+            <button
+              type="button"
+              onClick={handleOpenInTab}
+              className="ml-auto flex cursor-pointer items-center gap-1 text-[11px] text-[var(--accent)] hover:underline"
+            >
+              <span>Open</span>
+              <ExternalLink size={11} />
+            </button>
+          )}
+        </div>
+      ) : (
+        <div
+          className={`group relative flex flex-col overflow-hidden rounded-lg border ${
+            isError ? "border-[var(--danger)]" : "border-[var(--border)]"
+          } bg-[rgba(0,0,0,0.15)] shadow-sm`}
+        >
+          <div
+            className="image-checker relative flex cursor-pointer items-center justify-center overflow-hidden p-2"
+            onClick={handleClickImage}
+          >
+            <img
+              src={resolvedUrl}
+              alt={alt || "Screenshot"}
+              title="Click to view full size"
+              onLoad={(e) => {
+                const img = e.currentTarget;
+                setDimensions({
+                  width: img.naturalWidth,
+                  height: img.naturalHeight,
+                });
+              }}
+              className="max-h-[340px] w-auto max-w-full rounded object-contain transition-transform duration-150 group-hover:scale-[1.006]"
+            />
+
+            <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+              <button
+                type="button"
+                title="View full size"
+                onClick={handleClickImage}
+                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-black/60 text-white shadow hover:bg-black/80"
+              >
+                <Maximize2 size={12} strokeWidth={2} />
+              </button>
+
+              <button
+                type="button"
+                title="Copy image"
+                onClick={handleCopy}
+                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-black/60 text-white shadow hover:bg-black/80"
+              >
+                {copied ? (
+                  <Check size={12} className="text-emerald-400" strokeWidth={2.5} />
+                ) : (
+                  <Copy size={12} strokeWidth={2} />
+                )}
+              </button>
+
+              <button
+                type="button"
+                title="Download image"
+                onClick={handleDownload}
+                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-black/60 text-white shadow hover:bg-black/80"
+              >
+                <Download size={12} strokeWidth={2} />
+              </button>
+
+              {filePath && (
+                <button
+                  type="button"
+                  title="Open in file tab"
+                  onClick={handleOpenInTab}
+                  className="flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-black/60 text-white shadow hover:bg-black/80"
+                >
+                  <ExternalLink size={12} strokeWidth={2} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between border-t border-[var(--border)] bg-[rgba(0,0,0,0.06)] px-2.5 py-1 text-[11px] text-[var(--faint)]">
+            <span className="truncate font-mono">{fileName}</span>
+            {dimensions && (
+              <span className="shrink-0 font-mono text-[10px] opacity-75">
+                {dimensions.width} × {dimensions.height}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReadBody({ entry }: { entry: ToolEntry }) {
   const filePath = toolFilePath(entry.input);
   const base = basename(filePath) || "file";
   const raw = entry.output ?? "";
+
+  if (filePath && isImage(filePath)) {
+    const dataUrl = raw.startsWith("data:image/") ? raw : null;
+    return (
+      <div className="flex flex-col gap-1.5">
+        <BodyHeader path={filePath} />
+        <ToolImagePreview
+          src={dataUrl || filePath}
+          filePath={filePath}
+          alt={base}
+          isError={entry.isError}
+        />
+      </div>
+    );
+  }
+
   const { numbers, text } = useMemo(
     () => splitReadLines(truncate(raw, 4000, entry.outputBytes)),
     [raw, entry.outputBytes],
@@ -523,6 +766,13 @@ function CommandBody({ entry }: { entry: ToolEntry }) {
   const command = toolCommand(entry.input);
   const output = entry.output == null ? null : truncate(entry.output, 4000, entry.outputBytes);
   const empty = output != null && output.trim() === "";
+
+  const candidateImg = useMemo(() => {
+    const text = (command ?? "") + " " + (entry.output ?? "");
+    const paths = extractImagePaths(text);
+    return paths.find((p) => isImage(p));
+  }, [command, entry.output]);
+
   return (
     <>
       {command ? <BashPill command={truncate(command, 2000)} /> : null}
@@ -537,6 +787,11 @@ function CommandBody({ entry }: { entry: ToolEntry }) {
           }`}
         >
           {output}
+        </div>
+      )}
+      {candidateImg && (
+        <div className="mt-1">
+          <ToolImagePreview src={candidateImg} filePath={candidateImg} alt={candidateImg} />
         </div>
       )}
     </>
@@ -708,12 +963,50 @@ function isTodoTool(name: string): boolean {
   return ["todowrite", "todoread", "todo"].includes(name.toLowerCase());
 }
 
+export function isImageOrScreenshotTool(entry: ToolEntry): boolean {
+  const name = entry.name.toLowerCase();
+  if (
+    name.includes("screenshot") ||
+    name.includes("snapshot") ||
+    name.includes("capture") ||
+    name.includes("view_image") ||
+    name.includes("read_image")
+  ) {
+    return true;
+  }
+  const filePath = toolFilePath(entry.input);
+  if (filePath && isImage(filePath)) return true;
+  if (entry.output && (isDataUrlImage(entry.output) || extractDataUrl(entry.output) !== null)) {
+    return true;
+  }
+  const inputPaths = extractImagePaths(JSON.stringify(entry.input ?? ""));
+  if (inputPaths.length > 0) return true;
+  return false;
+}
+
 /** Any other tool (Grep, Glob, WebFetch, …): the identifying input as
  * highlighted search text plus the output in the same rounded frame with a
  * copy button — no more unthemed raw dumps. */
 function GenericBody({ entry }: { entry: ToolEntry }) {
   const summary = toolSummary(entry.input, entry.name);
   const showSummary = summary && summary !== entry.name;
+  const rawOutput = entry.output ?? "";
+
+  // Check if output has embedded data URL
+  const extracted = extractDataUrl(rawOutput);
+  const dataUrl = extracted?.dataUrl || (isDataUrlImage(rawOutput) ? rawOutput : null);
+  const textWithoutDataUrl = extracted ? extracted.remainingText : dataUrl ? "" : rawOutput;
+
+  // Check if input or output references an image file
+  const candidateImg =
+    !dataUrl
+      ? extractImagePaths(rawOutput + " " + JSON.stringify(entry.input ?? "")).find((p) =>
+          isImage(p),
+        )
+      : null;
+
+  const hasImage = !!(dataUrl || candidateImg);
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
@@ -728,10 +1021,26 @@ function GenericBody({ entry }: { entry: ToolEntry }) {
           <span className="flex-1" />
         )}
         {entry.output != null && (
-          <CopyButton text={truncate(entry.output, 4000, entry.outputBytes)} title="Copy output" />
+          <CopyButton
+            text={
+              hasImage
+                ? textWithoutDataUrl || summary || entry.name
+                : truncate(entry.output, 4000, entry.outputBytes)
+            }
+            title="Copy output"
+          />
         )}
       </div>
-      {entry.output != null && (
+
+      {hasImage ? (
+        <ToolImagePreview
+          src={dataUrl || candidateImg || undefined}
+          filePath={candidateImg || undefined}
+          alt={summary || entry.name}
+          accompanyingText={textWithoutDataUrl}
+          isError={entry.isError}
+        />
+      ) : entry.output != null ? (
         <div
           className={`max-h-[320px] overflow-y-auto rounded-lg bg-[rgba(0,0,0,0.15)] p-2 font-mono text-[11px] leading-5 whitespace-pre-wrap ${
             entry.isError ? "text-[var(--danger)]" : "text-[var(--faint)]"
@@ -739,12 +1048,23 @@ function GenericBody({ entry }: { entry: ToolEntry }) {
         >
           {truncate(entry.output, 4000, entry.outputBytes)}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
 function singleRowLabel(entry: ToolEntry): { text: string; added: number; removed: number; hasDiff: boolean } {
+  if (isImageOrScreenshotTool(entry)) {
+    const filePath = toolFilePath(entry.input);
+    if (filePath && isImage(filePath)) {
+      const base = basename(filePath);
+      return { text: `Screenshot · ${base}`, added: 0, removed: 0, hasDiff: false };
+    }
+    const name = entry.name;
+    const summary = toolSummary(entry.input, name);
+    const text = summary && summary !== name ? summary : "Captured screenshot";
+    return { text: truncate(text, 60), added: 0, removed: 0, hasDiff: false };
+  }
   const summary = activitySummary([entry]);
   return { text: summary.text, added: summary.added, removed: summary.removed, hasDiff: summary.hasDiff };
 }
@@ -756,7 +1076,8 @@ function singleRowLabel(entry: ToolEntry): { text: string; added: number; remove
  * turn with five calls shows five rows with the model's own words still
  * interleaved between them. */
 export function ToolActivityRow({ entry }: { entry: ToolEntry }) {
-  const [expanded, setExpanded] = useState(() => isTodoTool(entry.name));
+  const isScreenshot = isImageOrScreenshotTool(entry);
+  const [expanded, setExpanded] = useState(() => isTodoTool(entry.name) || isScreenshot);
   const label = useMemo(() => singleRowLabel(entry), [entry]);
   const busy = entry.output == null;
   const cat = toolCategory(entry.name);
@@ -767,10 +1088,10 @@ export function ToolActivityRow({ entry }: { entry: ToolEntry }) {
   }
   const filePath = toolFilePath(entry.input);
   const hasBody =
-    entry.output != null || cat === "edit" || cat === "write" || isTodoTool(entry.name);
+    entry.output != null || cat === "edit" || cat === "write" || isTodoTool(entry.name) || isScreenshot;
   const fileName = filePath ? basename(filePath) || "file" : "";
   const fileIsDir = filePath.endsWith("/");
-  const showFileIcon = filePath !== "" && cat !== "other";
+  const showFileIcon = filePath !== "" && cat !== "other" && !isScreenshot;
 
   return (
     <div className="flex w-full flex-col">
@@ -896,13 +1217,15 @@ function searchDetail(input: unknown): string {
  * when a turn carries them. */
 function groupHeaderText(entries: ToolEntry[]): string {
   const count = (fn: (e: ToolEntry) => boolean) => entries.filter(fn).length;
-  const commands = count((e) => toolCategory(e.name) === "command");
-  const reads = count((e) => toolCategory(e.name) === "read");
-  const searches = count((e) => isSearchTool(e.name));
-  const edits = count((e) => toolCategory(e.name) === "edit");
-  const writes = count((e) => toolCategory(e.name) === "write");
-  const others = entries.length - commands - reads - searches - edits - writes;
+  const screenshots = count((e) => isImageOrScreenshotTool(e));
+  const commands = count((e) => !isImageOrScreenshotTool(e) && toolCategory(e.name) === "command");
+  const reads = count((e) => !isImageOrScreenshotTool(e) && toolCategory(e.name) === "read");
+  const searches = count((e) => !isImageOrScreenshotTool(e) && isSearchTool(e.name));
+  const edits = count((e) => !isImageOrScreenshotTool(e) && toolCategory(e.name) === "edit");
+  const writes = count((e) => !isImageOrScreenshotTool(e) && toolCategory(e.name) === "write");
+  const others = entries.length - commands - reads - searches - edits - writes - screenshots;
   const parts: string[] = [];
+  if (screenshots > 0) parts.push(`took ${screenshots} screenshot${screenshots === 1 ? "" : "s"}`);
   if (commands > 0) parts.push(`Ran ${commands} command${commands === 1 ? "" : "s"}`);
   if (reads > 0) parts.push(`read ${reads} file${reads === 1 ? "" : "s"}`);
   if (searches > 0) parts.push(`searched ${searches} time${searches === 1 ? "" : "s"}`);
@@ -913,9 +1236,10 @@ function groupHeaderText(entries: ToolEntry[]): string {
   return parts.join(" · ");
 }
 
-type GroupRowKind = "read" | "command" | "search" | "edit" | "write" | "other";
+type GroupRowKind = "read" | "command" | "search" | "edit" | "write" | "screenshot" | "other";
 
 function groupRowKind(entry: ToolEntry): GroupRowKind {
+  if (isImageOrScreenshotTool(entry)) return "screenshot";
   if (isSearchTool(entry.name)) return "search";
   const cat = toolCategory(entry.name);
   if (cat === "read" || cat === "command" || cat === "edit" || cat === "write") return cat;
@@ -956,6 +1280,12 @@ function GroupRowIcon({ kind }: { kind: GroupRowKind }) {
           <Plus size={14} strokeWidth={2} />
         </span>
       );
+    case "screenshot":
+      return (
+        <span className={cls}>
+          <Camera size={14} strokeWidth={2} />
+        </span>
+      );
     default:
       return (
         <span className={cls}>
@@ -977,6 +1307,8 @@ function GroupRowVerb({ kind, entry }: { kind: GroupRowKind; entry: ToolEntry })
       return <span className="shrink-0 text-[13px] text-[var(--muted)]">Edit</span>;
     case "write":
       return <span className="shrink-0 text-[13px] text-[var(--muted)]">Write</span>;
+    case "screenshot":
+      return <span className="shrink-0 text-[13px] text-[var(--muted)]">Screenshot</span>;
     default: {
       const stripped = entry.name.includes(":") ? entry.name.split(":").pop()! : entry.name;
       const clean = capitalize(stripped.replace(/_/g, " "));

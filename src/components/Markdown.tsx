@@ -1,8 +1,19 @@
 import { Check, Copy } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChatImage } from "./ChatImage";
 import { ChatLink } from "./ChatLink";
+
+/** Converts raw HTML `<img>` tags into standard markdown `![alt](src)` images. */
+function normalizeHtmlImages(content: string): string {
+  if (!content.includes("<img")) return content;
+  return content.replace(/<img\s+[^>]*?src=["']([^"']+)["'][^>]*?>/gi, (match, src) => {
+    const altMatch = /alt=["']([^"']*)["']/i.exec(match);
+    const alt = altMatch ? altMatch[1] : "image";
+    return `![${alt}](${src})`;
+  });
+}
 
 /** Renders assistant replies as markdown — headings, lists, tables, links and
  * code all get real structure instead of a wall of pre-wrapped text. Every
@@ -13,10 +24,12 @@ import { ChatLink } from "./ChatLink";
  * dearest thing in a transcript, and a streaming reply re-renders the view on
  * every token. Only the reply whose text actually changed parses again. */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
+  const normalizedText = useMemo(() => normalizeHtmlImages(text), [text]);
+
   return (
     <div className="markdown flex flex-col text-sm leading-6 text-[var(--ink)]">
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
-        {text}
+        {normalizedText}
       </ReactMarkdown>
     </div>
   );
@@ -44,6 +57,13 @@ const components: Components = {
   ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="leading-6 marker:text-[var(--faint)]">{children}</li>,
   a: ({ href, children }) => <ChatLink href={href}>{children}</ChatLink>,
+  img: ({ src, alt, title }) => (
+    <ChatImage
+      src={typeof src === "string" ? src : undefined}
+      alt={typeof alt === "string" ? alt : undefined}
+      title={typeof title === "string" ? title : undefined}
+    />
+  ),
   strong: ({ children }) => (
     <strong className="font-semibold text-[var(--ink)]">{children}</strong>
   ),

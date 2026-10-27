@@ -5,6 +5,7 @@ import { CliStage } from "./components/CliStage";
 import { ConflictFileView } from "./components/ConflictResolution";
 import { DiffTabView } from "./components/DiffTabView";
 import { FileView } from "./components/FileView";
+import { ImageLightbox } from "./components/ImageLightbox";
 import { LaunchScreen } from "./components/LaunchScreen";
 import { NoticeToast } from "./components/NoticeToast";
 import { LogoLoader } from "./components/Logo";
@@ -509,6 +510,7 @@ function EgantWindow() {
         look the same either way. */}
       <CliLaunchDialog />
       <SearchModal />
+      <ImageLightbox />
     </div>
   );
 }

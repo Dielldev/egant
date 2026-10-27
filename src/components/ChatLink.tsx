@@ -1,9 +1,11 @@
-import { Check, Copy, ExternalLink, Globe } from "lucide-react";
+import { Check, Copy, ExternalLink, Globe, Image as ImageIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/api";
+import { isImage, openImageInEditor, resolveImageDataUrl, useImageLightbox } from "../lib/images";
 import { isMac } from "../lib/platform";
-import { hostnameOf, useEgant } from "../store";
+import { basename } from "../lib/transcript";
+import { hostnameOf, useEgant, workspaceRoot } from "../store";
 
 /** Ensures a web address has an explicit protocol so neither the in-app
  * webview nor the platform's URL opener rejects it. */
@@ -32,22 +34,40 @@ interface ChatLinkProps {
 }
 
 /** Interactive link component for chat transcripts and markdown.
- * - Primary click: opens in Egant's built-in browser tab in the side panel.
+ * - Primary click on web URL: opens in Egant's built-in browser tab in the side panel.
+ * - Primary click on image URL/path: opens in Egant's Image Lightbox.
  * - ⌘-click (Mac) / Ctrl-click / Middle-click or hover button: opens in external default browser.
- * - Right-click: shows a context menu with options to open in app, open in default browser, or copy link.
+ * - Right-click: shows a context menu with options.
  */
 export function ChatLink({ href, children, className }: ChatLinkProps) {
   const openBrowserTab = useEgant((s) => s.openBrowserTab);
+  const root = useEgant((s) => workspaceRoot(s.snapshot));
+  const openLightbox = useImageLightbox((s) => s.open);
+
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [copied, setCopied] = useState(false);
 
   const resolved = href ? resolveLinkUrl(href) : "";
   const isWebUrl = resolved.startsWith("http://") || resolved.startsWith("https://");
+  const isImageLink = !!href && isImage(href);
 
   const openInApp = useCallback(() => {
     if (!resolved) return;
     openBrowserTab(resolved);
   }, [openBrowserTab, resolved]);
+
+  const openImage = useCallback(() => {
+    if (!href) return;
+    void resolveImageDataUrl(href, root).then((dataUrl) => {
+      if (dataUrl) {
+        openLightbox({
+          src: dataUrl,
+          filePath: href.startsWith("data:") ? undefined : href.replace(/^file:\/\//, ""),
+          title: basename(href) || "Screenshot",
+        });
+      }
+    });
+  }, [href, root, openLightbox]);
 
   const openExternal = useCallback(() => {
     if (!resolved) return;
@@ -58,6 +78,13 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
+      if (isImageLink) {
+        e.preventDefault();
+        e.stopPropagation();
+        openImage();
+        return;
+      }
+
       if (!isWebUrl) return;
       e.preventDefault();
       e.stopPropagation();
@@ -68,7 +95,7 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
         openInApp();
       }
     },
-    [isWebUrl, openExternal, openInApp],
+    [isImageLink, isWebUrl, openImage, openExternal, openInApp],
   );
 
   const handleAuxClick = useCallback(
@@ -83,12 +110,12 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
-      if (!isWebUrl) return;
+      if (!isWebUrl && !isImageLink) return;
       e.preventDefault();
       e.stopPropagation();
       setMenuPos({ x: e.clientX, y: e.clientY });
     },
-    [isWebUrl],
+    [isWebUrl, isImageLink],
   );
 
   useEffect(() => {
@@ -104,8 +131,8 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
     return <span className={className}>{children}</span>;
   }
 
-  // Non-web links (anchors, etc.) retain standard behavior
-  if (!isWebUrl) {
+  // Non-web, non-image links retain standard anchor behavior
+  if (!isWebUrl && !isImageLink) {
     return (
       <a
         href={href}
@@ -117,10 +144,12 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
   }
 
   const shortcutHint = isMac() ? "⌘-click" : "Ctrl-click";
-  const tooltip = `${resolved}\nClick to open in app browser · ${shortcutHint} for system browser`;
+  const tooltip = isImageLink
+    ? `${href}\nClick to view screenshot`
+    : `${resolved}\nClick to open in app browser · ${shortcutHint} for system browser`;
 
   const MENU_WIDTH = 210;
-  const MENU_HEIGHT = 115;
+  const MENU_HEIGHT = 120;
   const left = menuPos
     ? Math.max(8, Math.min(menuPos.x, window.innerWidth - MENU_WIDTH - 8))
     : 0;
@@ -131,7 +160,7 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
   return (
     <span className="group/link inline relative">
       <a
-        href={resolved}
+        href={resolved || href}
         onClick={handleClick}
         onAuxClick={handleAuxClick}
         onContextMenu={handleContextMenu}
@@ -143,86 +172,112 @@ export function ChatLink({ href, children, className }: ChatLinkProps) {
       >
         {children}
       </a>
-      <button
-        type="button"
-        title="Open in system browser"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          openExternal();
-        }}
-        className="inline-flex items-center align-middle ml-0.5 p-0.5 rounded opacity-0 group-hover/link:opacity-70 hover:!opacity-100 text-[var(--faint)] hover:text-[var(--ink)] cursor-pointer transition-opacity"
-      >
-        <ExternalLink size={11} strokeWidth={2.2} />
-      </button>
+      {isWebUrl && (
+        <button
+          type="button"
+          title="Open in system browser"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openExternal();
+          }}
+          className="inline-flex items-center align-middle ml-0.5 p-0.5 rounded opacity-0 group-hover/link:opacity-70 hover:!opacity-100 text-[var(--faint)] hover:text-[var(--ink)] cursor-pointer transition-opacity"
+        >
+          <ExternalLink size={11} strokeWidth={2.2} />
+        </button>
+      )}
 
       {menuPos &&
         createPortal(
           <div
-            onClick={(e) => e.stopPropagation()}
-            onDoubleClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-50 select-none"
+            onClick={() => setMenuPos(null)}
             onContextMenu={(e) => {
               e.preventDefault();
-              e.stopPropagation();
+              setMenuPos(null);
             }}
           >
             <div
-              className="fixed inset-0 z-40 cursor-default"
-              onClick={() => setMenuPos(null)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setMenuPos(null);
-              }}
-            />
-            <div
-              style={{ left, top, width: MENU_WIDTH }}
-              className="menu menu-pop fixed z-50 flex flex-col overflow-hidden rounded-xl p-1 text-[12.5px]"
+              className="absolute z-50 min-w-[200px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 text-xs shadow-xl animate-in fade-in zoom-in-95 duration-100"
+              style={{ left, top }}
+              onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-2 py-1 text-[11px] font-medium text-[var(--faint)] truncate border-b border-[var(--border)] mb-1">
-                {hostnameOf(resolved)}
-              </div>
+              {isImageLink ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuPos(null);
+                      openImage();
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)]"
+                  >
+                    <ImageIcon size={13} className="shrink-0 text-[var(--faint)]" />
+                    <span className="truncate">View Screenshot</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuPos(null);
+                      const cleanPath = href.replace(/^file:\/\//, "");
+                      openImageInEditor(cleanPath, basename(cleanPath) || "image");
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)]"
+                  >
+                    <ExternalLink size={13} className="shrink-0 text-[var(--faint)]" />
+                    <span className="truncate">Open in File Tab</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuPos(null);
+                      openInApp();
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)]"
+                  >
+                    <Globe size={13} className="shrink-0 text-[var(--faint)]" />
+                    <span className="truncate">
+                      Open in Egant Browser ({hostnameOf(resolved) || "link"})
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuPos(null);
+                      openExternal();
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)]"
+                  >
+                    <ExternalLink size={13} className="shrink-0 text-[var(--faint)]" />
+                    <span className="truncate">Open in Default Browser</span>
+                  </button>
+                </>
+              )}
+
+              <div className="my-1 h-px bg-[var(--border)]" />
+
               <button
                 type="button"
                 onClick={() => {
-                  setMenuPos(null);
-                  openInApp();
-                }}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)] cursor-pointer"
-              >
-                <Globe size={13} className="shrink-0 text-[var(--accent)]" />
-                <span className="truncate">Open in App Browser</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMenuPos(null);
-                  openExternal();
-                }}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)] cursor-pointer"
-              >
-                <ExternalLink size={13} className="shrink-0 text-[var(--faint)]" />
-                <span className="truncate">Open in System Browser</span>
-              </button>
-              <div className="my-1 border-t border-[var(--border)] opacity-60" />
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(resolved).then(() => {
+                  void navigator.clipboard.writeText(href || resolved).then(() => {
                     setCopied(true);
                     setTimeout(() => {
-                      setMenuPos(null);
                       setCopied(false);
-                    }, 600);
+                      setMenuPos(null);
+                    }, 800);
                   });
                 }}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)] cursor-pointer"
+                className="flex w-full cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-left text-[var(--ink)] hover:bg-[var(--hover)]"
               >
                 {copied ? (
                   <Check size={13} className="shrink-0 text-[var(--accent)]" />
                 ) : (
                   <Copy size={13} className="shrink-0 text-[var(--faint)]" />
                 )}
-                <span className="truncate">{copied ? "Copied Link!" : "Copy Link Address"}</span>
+                <span className="truncate">{copied ? "Copied!" : "Copy Address"}</span>
               </button>
             </div>
           </div>,

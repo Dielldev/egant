@@ -1410,6 +1410,17 @@ fn discard_files(root: String, paths: Vec<String>) -> Result<(), String> {
     repo.discard(&paths).map_err(|error| error.to_string())
 }
 
+fn clean_blob_path(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    let s = s.strip_prefix("file://").unwrap_or(&s);
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(s)
+}
+
 /// One side of a file as git has it. `source` is `workdir`, `index` or `head`;
 /// `None` means that side has no such file, which is what one end of an added
 /// or deleted file looks like.
@@ -1419,9 +1430,30 @@ fn blob_bytes(root: &str, path: &Path, source: &str) -> Result<Option<Vec<u8>>, 
         // repository at all still has files to show, so this side never asks
         // git for permission. An absolute path (what a file tab carries)
         // replaces the base on `join`, which is exactly right.
-        let full = match egant_vcs::Repo::discover(root) {
-            Ok(repo) => repo.root().join(path),
-            Err(_) => Path::new(root).join(path),
+        let cleaned = clean_blob_path(path);
+        let full = if cleaned.is_absolute() {
+            cleaned
+        } else {
+            let candidate = if root.trim().is_empty() {
+                PathBuf::from(&cleaned)
+            } else {
+                match egant_vcs::Repo::discover(root) {
+                    Ok(repo) => repo.root().join(&cleaned),
+                    Err(_) => Path::new(root).join(&cleaned),
+                }
+            };
+            if candidate.is_file() {
+                candidate
+            } else if let Ok(cwd) = std::env::current_dir() {
+                let cwd_candidate = cwd.join(&cleaned);
+                if cwd_candidate.is_file() {
+                    cwd_candidate
+                } else {
+                    candidate
+                }
+            } else {
+                candidate
+            }
         };
         if !full.is_file() {
             return Ok(None);

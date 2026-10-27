@@ -4,6 +4,7 @@ import { modShortcut } from "../lib/platform";
 import {
   ASK_USER_QUESTION,
   askQuestions,
+  basename,
   describeAlwaysAllow,
   isCardRequest,
   isAgentTool,
@@ -15,7 +16,8 @@ import {
   truncate,
 } from "../lib/transcript";
 import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "../lib/types";
-import { useEgant } from "../store";
+import { useEgant, workspaceRoot } from "../store";
+import { extractImagePaths, isImage, resolveImageDataUrl, useImageLightbox } from "../lib/images";
 import { AgentCard } from "./AgentCard";
 import { CompactionDivider } from "./CompactionDivider";
 import { Composer } from "./Composer";
@@ -779,6 +781,62 @@ function Centered({
   );
 }
 
+function UserImageThumbnail({ path }: { path: string }) {
+  const root = useEgant((s) => workspaceRoot(s.snapshot));
+  const openLightbox = useImageLightbox((s) => s.open);
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    resolveImageDataUrl(path, root).then((dataUrl) => {
+      if (!cancelled && dataUrl) setUrl(dataUrl);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, root]);
+
+  if (!url) return null;
+
+  return (
+    <button
+      type="button"
+      title={`Click to view ${basename(path)}`}
+      onClick={() =>
+        openLightbox({
+          src: url,
+          filePath: path.startsWith("data:") ? undefined : path.replace(/^file:\/\//, ""),
+          title: basename(path) || "Screenshot",
+        })
+      }
+      className="group relative h-14 w-14 cursor-pointer overflow-hidden rounded-lg border border-[var(--border)] bg-[rgba(0,0,0,0.15)] shadow-sm hover:ring-1 hover:ring-[var(--accent)]"
+    >
+      <img src={url} alt={basename(path)} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+    </button>
+  );
+}
+
+function UserEntryBubble({ text }: { text: string }) {
+  const imagePaths = useMemo(() => {
+    return extractImagePaths(text).filter((p) => isImage(p));
+  }, [text]);
+
+  return (
+    <div className="flex w-full justify-end">
+      <div className="max-w-[80%] rounded-2xl bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap text-[var(--ink)]">
+        <LinkifiedText text={text} />
+        {imagePaths.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {imagePaths.map((p, i) => (
+              <UserImageThumbnail key={i} path={p} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** One row of the conversation. Memoized: the fold hands every entry it
  * didn't change back as the same object, so while a reply streams only its
  * own row renders again — not every row above it, and not their Markdown. */
@@ -794,13 +852,7 @@ const RenderEntry = memo(function RenderEntry({
     // the stage. One of the two has to be the ground, and there is far more
     // agent output than user input.
     case "user":
-      return (
-        <div className="flex w-full justify-end">
-          <div className="max-w-[80%] rounded-2xl bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap text-[var(--ink)]">
-            <LinkifiedText text={entry.text} />
-          </div>
-        </div>
-      );
+      return <UserEntryBubble text={entry.text} />;
 
     case "assistant":
       return (

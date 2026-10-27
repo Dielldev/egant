@@ -15,7 +15,7 @@ import {
   GroupTitle,
   INPUT,
   LibraryCard,
-  Monogram,
+  McpLogo,
   Notice,
   PrimaryButton,
   SearchBox,
@@ -128,7 +128,14 @@ export function McpSection() {
             return (
               <LibraryCard
                 key={server.name}
-                icon={<Monogram text={entry?.name ?? server.name} />}
+                icon={
+                  <McpLogo
+                    id={server.catalogId}
+                    name={entry?.name ?? server.name}
+                    url={server.url}
+                    docsUrl={entry?.docsUrl}
+                  />
+                }
                 title={entry?.name ?? server.name}
                 tag={<Tag>{server.transport}</Tag>}
                 description={entry?.description ?? describe(server)}
@@ -162,7 +169,14 @@ export function McpSection() {
         {recommended.map((entry) => (
           <LibraryCard
             key={entry.id}
-            icon={<Monogram text={entry.name} />}
+            icon={
+              <McpLogo
+                id={entry.id}
+                name={entry.name}
+                url={entry.url}
+                docsUrl={entry.docsUrl}
+              />
+            }
             title={entry.name}
             tag={<Tag>{entry.transport}</Tag>}
             description={entry.description}
@@ -434,7 +448,13 @@ function McpSheet({
       }
     >
       <header className="flex items-start gap-3.5">
-        <Monogram text={title} />
+        <McpLogo
+          id={entry?.id ?? editing?.catalogId}
+          name={title}
+          url={editing?.url ?? entry?.url}
+          docsUrl={entry?.docsUrl}
+          size={32}
+        />
         <div className="min-w-0 flex-1">
           <div className="text-[17px] font-semibold text-[var(--ink)]">{title}</div>
           {entry && <div className="mt-0.5 text-[12.5px] text-[var(--muted)]">{entry.description}</div>}
