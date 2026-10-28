@@ -1660,11 +1660,82 @@ kbd {
   font-size: 14px;
 }
 .guides-more {
-  padding: 40px 0 120px;
+  width: min(760px, 100% - 32px);
+  margin: 0 auto;
+  padding: 60px 0 120px;
+  text-align: center;
 }
 .text-link {
   color: var(--accent);
 }
 .text-link:hover {
   text-decoration: underline;
+}
+
+/* ---------- quickstart help callout ---------- */
+.quickstart-help {
+  max-width: 720px;
+  margin: 24px auto 0;
+  padding: 20px 24px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.quickstart-help-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+.quickstart-help-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.quickstart-help-desc {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+.quickstart-help-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.quickstart-help-chip {
+  font-size: 12px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+.quickstart-help-chip:hover {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+.quickstart-help-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .quickstart-help {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+  }
+  .quickstart-help-btn {
+    align-self: flex-start;
+  }
 }

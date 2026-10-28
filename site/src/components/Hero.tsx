@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Download } from "lucide-react";
+import { Link } from "react-router-dom";
 import { DOWNLOADS, HERO_SHOT, REPO, detectOs } from "../content";
 import { prefersReducedMotion } from "../useReveal";
 import { GithubIcon } from "./GithubIcon";
@@ -71,7 +72,10 @@ export function Hero() {
 
       <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
         {DOWNLOADS.mac.detail} · macOS first launch: System Settings →
-        Privacy &amp; Security → Open Anyway
+        Privacy &amp; Security → Open Anyway ·{" "}
+        <Link to="/guides#macos-gatekeeper" className="text-link">
+          Gatekeeper guide →
+        </Link>
       </p>
 
       <div className="hero-stage intro" style={{ animationDelay: "1000ms" }}>
