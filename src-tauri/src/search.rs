@@ -90,7 +90,7 @@ pub fn search_entries(
     let (mut users, mut replies, mut notices) = (0, 0, 0);
     for entry in entries {
         let (kind, ordinal, text) = match entry {
-            TranscriptEntry::User { text } => ("user", bump(&mut users), text),
+            TranscriptEntry::User { text, .. } => ("user", bump(&mut users), text),
             TranscriptEntry::Assistant { text, .. } => ("assistant", bump(&mut replies), text),
             TranscriptEntry::Notice { text, .. } => ("notice", bump(&mut notices), text),
             _ => continue,
@@ -178,7 +178,10 @@ mod tests {
     use super::*;
 
     fn user(text: &str) -> TranscriptEntry {
-        TranscriptEntry::User { text: text.into() }
+        TranscriptEntry::User {
+            text: text.into(),
+            images: Vec::new(),
+        }
     }
 
     fn reply(text: &str) -> TranscriptEntry {

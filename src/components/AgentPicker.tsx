@@ -8,6 +8,7 @@ import {
   Search,
   ShieldCheck,
   ShieldOff,
+  Sparkles,
   Star,
   TerminalSquare,
   TriangleAlert,
@@ -98,6 +99,7 @@ let lastVerified = 0;
 export function AgentPicker() {
   const agents = useEgant((s) => s.agents);
   const snapshot = useEgant((s) => s.snapshot);
+  const openConnectModels = useEgant((s) => s.openConnectModels);
   const composerAgent = useEgant((s) => s.composerAgent);
   const composerModel = useEgant((s) => s.composerModel);
   const composerVariant = useEgant((s) => s.composerVariant);
@@ -188,7 +190,15 @@ export function AgentPicker() {
     };
   }, [open]);
 
-  const effective = selectNextAgent(snapshot, composerAgent);
+  const effective = selectNextAgent(snapshot, composerAgent, agents);
+  const hasAnyConnectedModel = useMemo(
+    () =>
+      agents.some(
+        (a) =>
+          RUNNABLE.includes(a.id as (typeof RUNNABLE)[number]) && a.installed && a.connected,
+      ),
+    [agents],
+  );
   const visibleAgents: string[] = useMemo(() => {
     const enabled = RUNNABLE.filter((id) => enabledAgents[id] ?? true);
     const list: string[] = enabled.length > 0 ? [...enabled] : [...RUNNABLE];
@@ -576,21 +586,27 @@ export function AgentPicker() {
           key={`${effective}:${effectiveModelId}:${effectiveVariant}`}
           className="model-switch flex min-w-0 items-center gap-2"
         >
-          <ProviderGlyph
-            provider={AGENT_PROVIDER[effective] ?? effective}
-            size={16}
-            color={AGENT_ACCENT[effective]}
-          />
+          {!hasAnyConnectedModel ? (
+            <Sparkles size={16} strokeWidth={2} className="shrink-0 text-[var(--accent)]" />
+          ) : (
+            <ProviderGlyph
+              provider={AGENT_PROVIDER[effective] ?? effective}
+              size={16}
+              color={AGENT_ACCENT[effective]}
+            />
+          )}
           <span className="truncate text-[14px] font-semibold whitespace-nowrap text-[var(--ink)]">
             {/* A CLI agent's model is its own business, so the trigger names
               the agent instead of a model egant didn't choose. */}
-            {!isChat(effective)
-              ? (agentCatalog.find((c) => c.id === effective)?.name ??
-                current?.name ??
-                fallbackName(effective))
-              : effectiveModelId === ""
-                ? (current?.name ?? fallbackName(effective))
-                : (selectedModel?.name ?? effectiveModelId)}
+            {!hasAnyConnectedModel
+              ? "Connect models"
+              : !isChat(effective)
+                ? (agentCatalog.find((c) => c.id === effective)?.name ??
+                  current?.name ??
+                  fallbackName(effective))
+                : effectiveModelId === ""
+                  ? (current?.name ?? fallbackName(effective))
+                  : (selectedModel?.name ?? effectiveModelId)}
           </span>
           {!isChat(effective) ? (
             <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[13px] text-[var(--muted)]">
@@ -655,12 +671,11 @@ export function AgentPicker() {
               >
                 <ChevronLeft size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
                 {(selectedModel ?? cliDefaultModel) ? (
-                  <ProviderLogo provider={(selectedModel ?? cliDefaultModel)!.provider} size={22} />
+                  <ProviderLogo provider={(selectedModel ?? cliDefaultModel)!.provider} size={20} />
                 ) : (
                   <ProviderGlyph
                     provider={AGENT_PROVIDER[effective] ?? effective}
                     size={20}
-                    color={AGENT_ACCENT[effective]}
                   />
                 )}
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
@@ -825,21 +840,37 @@ export function AgentPicker() {
 
           {/* Only when something is actually wrong — and it's the fix, not a
             label: the trip to Settings is the whole reason to show it. */}
-          {notice !== null && (
+          {notice !== null ? (
             <button
               type="button"
               onClick={() => {
                 setOpen(false);
-                openSettings(installed ? "accounts" : "agents");
+                openConnectModels(effective);
               }}
               className="mt-1.5 flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-left text-[11px] text-amber-200 hover:bg-amber-400/15"
             >
               <TriangleAlert size={12} strokeWidth={2} className="shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{notice}</span>
+              <span className="min-w-0 flex-1 truncate">
+                {!hasAnyConnectedModel ? "No models connected on this device" : notice}
+              </span>
               <span className="shrink-0 font-medium underline underline-offset-2">
-                {installed ? "Sign in" : "Install"}
+                Connect models
               </span>
             </button>
+          ) : (
+            <div className="mt-1 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  openConnectModels();
+                }}
+                className="flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+              >
+                <Sparkles size={11} strokeWidth={2} className="text-[var(--accent)]" />
+                Connect models & providers…
+              </button>
+            </div>
           )}
 
           {/* A CLI agent has no model list to draw: egant isn't choosing the
@@ -1037,7 +1068,6 @@ export function AgentPicker() {
                           <ProviderGlyph
                             provider={AGENT_PROVIDER[effective] ?? effective}
                             size={20}
-                            color={AGENT_ACCENT[effective]}
                           />
                         }
                         name="Default"

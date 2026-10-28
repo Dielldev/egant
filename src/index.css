@@ -455,8 +455,8 @@ html[data-platform="linux"] .stage-ground {
  * Fluent stage colour so menu items and window title remain crisp and legible
  * while Mica / Acrylic shines through underneath. */
 .windows-titlebar {
-  background: color-mix(in srgb, var(--stage) 72%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--stage) 25%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
 }
 html[data-window-glass="false"] .windows-titlebar {
   background: var(--stage);
@@ -596,6 +596,13 @@ html,
 body,
 #root {
   height: 100%;
+  background: transparent;
+}
+
+/* Subtle border for undecorated window on Windows when restored */
+html[data-platform="windows"]:not([data-window-maximized="true"]) #root {
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  box-sizing: border-box;
 }
 
 body {
@@ -652,20 +659,14 @@ html[data-platform="windows"][data-window-glass="false"] body {
 html[data-platform="windows"][data-window-glass="false"] .stage-ground {
   background: var(--stage);
 }
-html[data-platform="windows"][data-window-glass="false"]:not([data-glass="opaque"]) .stage-glass {
-  background: color-mix(in srgb, var(--stage) 94%, transparent);
+html[data-platform="windows"][data-window-glass="false"] .stage-glass {
+  background: var(--stage);
 }
-html[data-platform="windows"][data-window-glass="false"]:not([data-glass="opaque"]) .sidebar-glass {
-  background: color-mix(in srgb, var(--sidebar) 84%, transparent);
+html[data-platform="windows"][data-window-glass="false"] .sidebar-glass {
+  background: var(--sidebar);
 }
-html[data-platform="windows"][data-window-glass="false"][data-glass="clear"] .sidebar-glass {
-  background: color-mix(in srgb, var(--sidebar) 68%, transparent);
-}
-html[data-platform="windows"][data-window-glass="false"]:not([data-glass="opaque"]) .composer {
-  background: color-mix(in srgb, var(--sidebar) 86%, transparent);
-}
-html[data-platform="windows"][data-window-glass="false"][data-glass="clear"] .composer {
-  background: color-mix(in srgb, var(--sidebar) 72%, transparent);
+html[data-platform="windows"][data-window-glass="false"] .composer {
+  background: var(--card);
 }
 
 /* Windows with native hardware backdrop active (Mica, Mica Alt/Tabbed, Acrylic).
@@ -675,34 +676,53 @@ html[data-platform="windows"]:not([data-window-glass="false"]) body {
   background: transparent;
 }
 html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .sidebar-glass {
-  background: color-mix(in srgb, var(--sidebar) 76%, transparent);
+  background: color-mix(in srgb, var(--sidebar) 30%, transparent);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .stage-glass {
-  background: color-mix(in srgb, var(--stage) 80%, transparent);
+  background: color-mix(in srgb, var(--stage) 18%, transparent);
 }
 html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .stage-ground {
-  background: color-mix(in srgb, var(--stage) 78%, transparent);
+  background: color-mix(in srgb, var(--stage) 12%, transparent);
 }
 html[data-platform="windows"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .composer {
-  background: color-mix(in srgb, var(--sidebar) 82%, transparent);
+  background: color-mix(in srgb, var(--sidebar) 68%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* Windows Clear glass: more translucent desktop presence */
 html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .sidebar-glass {
-  background: color-mix(in srgb, var(--sidebar) 50%, transparent);
+  background: color-mix(in srgb, var(--sidebar) 14%, transparent);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .stage-glass {
-  background: color-mix(in srgb, var(--stage) 52%, transparent);
+  background: color-mix(in srgb, var(--stage) 8%, transparent);
 }
 html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .stage-ground {
-  background: color-mix(in srgb, var(--stage) 48%, transparent);
+  background: transparent;
 }
 html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .composer {
-  background: color-mix(in srgb, var(--sidebar) 56%, transparent);
+  background: color-mix(in srgb, var(--sidebar) 42%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-platform="windows"][data-glass="clear"]:not([data-window-glass="false"]) .windows-titlebar {
+  background: color-mix(in srgb, var(--stage) 12%, transparent);
+}
+
+/* Windows No Glass (opaque): solid stage for focused IDE look, sidebar keeps subtle Mica */
+html[data-platform="windows"][data-glass="opaque"]:not([data-window-glass="false"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 30%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-platform="windows"][data-glass="opaque"]:not([data-window-glass="false"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 68%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* Matches the Ghostty config: a white caret in text inputs, and the same

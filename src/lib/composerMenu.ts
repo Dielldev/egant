@@ -14,17 +14,20 @@ export interface MenuTrigger {
 
 const SPACE = /\s/;
 
-/** The menu the caret is in, if any. A `/` only counts as the message's very
- * first character — the CLI only runs a command that opens the message, and
- * anywhere else it is a path. An `@` counts at the start of any word. */
+/** The menu the caret is in, if any. A `/` counts at the start of the message,
+ * at the start of any line, or at the start of any word. An `@` counts at the
+ * start of any word. */
 export function findTrigger(text: string, caret: number): MenuTrigger | null {
-  if (text.startsWith("/")) {
-    const space = text.search(SPACE);
-    const end = space < 0 ? text.length : space;
-    if (caret >= 1 && caret <= end) {
-      return { kind: "command", start: 0, end, query: text.slice(1, caret) };
-    }
+  // Check `/` command or skill trigger
+  let cmdStart = caret;
+  while (cmdStart > 0 && !SPACE.test(text[cmdStart - 1]!)) cmdStart--;
+  if (cmdStart < text.length && text[cmdStart] === "/" && caret > cmdStart) {
+    let end = caret;
+    while (end < text.length && !SPACE.test(text[end]!)) end++;
+    return { kind: "command", start: cmdStart, end, query: text.slice(cmdStart + 1, caret) };
   }
+
+  // Check `@` file mention
   let start = caret;
   while (start > 0 && !SPACE.test(text[start - 1]!)) start--;
   if (text[start] !== "@" || start >= caret) return null;
@@ -35,7 +38,7 @@ export function findTrigger(text: string, caret: number): MenuTrigger | null {
 
 /** What picking a command does: put it in the box to be sent (with whatever
  * it takes after it), or something egant does itself. */
-export type CommandRun = "insert" | "model" | "mode" | "clear";
+export type CommandRun = "insert" | "model" | "mode" | "clear" | "skills";
 
 export interface CommandItem {
   name: string;
@@ -48,6 +51,12 @@ export interface CommandItem {
  * rather than wiping this one — the conversation stays in the sidebar —
  * and `/model` and `/mode` open the pickers the footer already has. */
 const OWN_COMMANDS: (CommandItem & { claudeOnly?: boolean })[] = [
+  {
+    name: "skills",
+    description: "Browse and manage skills in the Library",
+    hint: null,
+    run: "skills",
+  },
   {
     name: "compact",
     description: "Summarize the conversation so far to free up context",

@@ -68,6 +68,13 @@ fn keep_panic_reports() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    {
+        // Prevent WebView2 from flashing white before HTML/CSS loads:
+        // Sets the default background color of WebView2 to fully transparent.
+        std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "0x00000000");
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("egant starting (set RUST_LOG=debug for protocol details)");
     keep_panic_reports();
@@ -133,6 +140,10 @@ pub fn run() {
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    }
                     let effect = commands::apply_window_glass(&window, true, true);
                     log::info!("window backdrop: {effect}");
                 }

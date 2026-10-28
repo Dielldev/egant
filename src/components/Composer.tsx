@@ -5,9 +5,12 @@ import {
   FoldVertical,
   FolderTree,
   GitBranch,
+  Image as ImageIcon,
   Loader2,
   Paperclip,
   Pencil,
+  Plug,
+  Sparkles,
   Square,
   TerminalSquare,
   TriangleAlert,
@@ -16,13 +19,14 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, pickAttachments } from "../lib/api";
+import { isImage, resolveImageDataUrl } from "../lib/images";
 import { log } from "../lib/logger";
 import { modShortcut } from "../lib/platform";
 import { commandItems, findTrigger, mention } from "../lib/composerMenu";
-import { fuzzyFilter } from "../lib/fuzzy";
+import { fuzzyFilter, fuzzyScore } from "../lib/fuzzy";
 import { contextFraction } from "../lib/transcript";
 import { modelWindowFor } from "../lib/types";
-import { selectNextAgent, useEgant, usesChatUi } from "../store";
+import { HARNESSED, selectNextAgent, useEgant, usesChatUi } from "../store";
 import { AgentPicker, agentName } from "./AgentPicker";
 import { ComposerMenu, type MenuItem } from "./ComposerMenu";
 import { ModeInfo } from "./ModeInfo";
@@ -76,7 +80,6 @@ export function Composer({
   const sendOnLaunch = useEgant((s) => s.sendOnLaunch);
   const interrupt = useEgant((s) => s.interrupt);
   const focusComposerToken = useEgant((s) => s.focusComposerToken);
-  const openSettings = useEgant((s) => s.openSettings);
   const snapshot = useEgant((s) => s.snapshot);
   const composerAgentPick = useEgant((s) => s.composerAgent);
   const claudeUsage = useEgant((s) => s.claudeUsage);
@@ -101,6 +104,9 @@ export function Composer({
   const [files, setFiles] = useState<{ root: string; list: string[]; at: number } | null>(null);
   const createSession = useEgant((s) => s.createSession);
   const requestPicker = useEgant((s) => s.requestPicker);
+  const openLibrary = useEgant((s) => s.openLibrary);
+  const installedSkills = useEgant((s) => s.installedSkills);
+  const fetchSkills = useEgant((s) => s.fetchSkills);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -129,6 +135,10 @@ export function Composer({
   useEffect(() => {
     if (autoFocus) areaRef.current?.focus();
   }, [autoFocus]);
+
+  useEffect(() => {
+    if (installedSkills.length === 0) void fetchSkills();
+  }, [installedSkills.length, fetchSkills]);
 
   // The lightbox is the only thing Esc needs to close here — the textarea
   // itself has no escape behavior to conflict with.
@@ -185,36 +195,67 @@ export function Composer({
     !ended &&
     transcript.usage.contextTokens > 0 &&
     contextFraction(transcript.usage, modelWindow) >= COMPACT_OFFER_AT;
-  // The `/` and `@` menus: only in a conversation, where there is a session
-  // to list commands for and a folder to list files in.
-  const trigger = sessionId != null && !hero ? findTrigger(text, caret) : null;
+  // The `/` and `@` menus: in a conversation or on the launch screen.
+  const trigger = findTrigger(text, caret);
   const triggerKey = trigger ? `${trigger.kind}:${trigger.start}` : null;
   const menuOpen = trigger != null && triggerKey !== dismissed;
   const cwd = session?.cwd ?? null;
   const commands = useMemo(
-    () => (session ? commandItems(session.agent, transcript?.commands) : []),
+    () => (session ? commandItems(session.agent, transcript?.commands) : commandItems("claude", undefined)),
     [session?.agent, transcript?.commands],
   );
   const menuItems = useMemo((): MenuItem[] => {
     if (!menuOpen || !trigger) return [];
     if (trigger.kind === "command") {
-      return fuzzyFilter(commands, trigger.query, (c) => c.name, MENU_LIMIT).map((command) => ({
-        kind: "command",
-        command,
-      }));
+      const q = trigger.query.trim().toLowerCase();
+      if (!q) {
+        const skillItems: MenuItem[] = installedSkills.map((skill) => ({ kind: "skill", skill }));
+        const cmdItems: MenuItem[] = commands.map((command) => ({ kind: "command", command }));
+        return [...skillItems, ...cmdItems].slice(0, MENU_LIMIT);
+      }
+
+      type Scored = { item: MenuItem; score: number };
+      const scored: Scored[] = [];
+
+      for (const skill of installedSkills) {
+        const idScore = fuzzyScore(q, skill.id);
+        const nameScore = skill.name !== skill.id ? fuzzyScore(q, skill.name) : null;
+        const descScore = skill.description ? fuzzyScore(q, skill.description) : null;
+        let best = -Infinity;
+        if (idScore != null) best = Math.max(best, idScore);
+        if (nameScore != null) best = Math.max(best, nameScore - 1);
+        if (descScore != null) best = Math.max(best, descScore - 3);
+        if (best > -Infinity) {
+          scored.push({ item: { kind: "skill", skill }, score: best });
+        }
+      }
+
+      for (const command of commands) {
+        const nameScore = fuzzyScore(q, command.name);
+        const descScore = command.description ? fuzzyScore(q, command.description) : null;
+        let best = -Infinity;
+        if (nameScore != null) best = Math.max(best, nameScore);
+        if (descScore != null) best = Math.max(best, descScore - 3);
+        if (best > -Infinity) {
+          scored.push({ item: { kind: "command", command }, score: best });
+        }
+      }
+
+      scored.sort((a, b) => b.score - a.score);
+      return scored.slice(0, MENU_LIMIT).map((s) => s.item);
     }
     if (!files || files.root !== cwd) return [];
     return fuzzyFilter(files.list, trigger.query, (path) => path, MENU_LIMIT).map((path) => ({
       kind: "file",
       path,
     }));
-  }, [menuOpen, trigger?.kind, trigger?.query, commands, files, cwd]);
+  }, [menuOpen, trigger?.kind, trigger?.query, commands, installedSkills, files, cwd]);
   const menuStatus =
     trigger?.kind === "mention" && (!files || files.root !== cwd)
       ? "Listing files…"
       : trigger?.kind === "mention"
         ? "No file matches"
-        : "No command matches";
+        : "No skill or command matches";
 
   // The `@` menu's files, fetched as it opens — and again once they are old
   // enough to be missing what the agent just wrote.
@@ -257,6 +298,11 @@ export function Composer({
       replaceTrigger(rest.startsWith(" ") ? mention(item.path) : `${mention(item.path)} `);
       return;
     }
+    if (item.kind === "skill") {
+      const rest = text.slice(trigger?.end ?? 0);
+      replaceTrigger(rest.startsWith(" ") ? `/${item.skill.id}` : `/${item.skill.id} `);
+      return;
+    }
     const { command } = item;
     switch (command.run) {
       case "insert": {
@@ -264,6 +310,10 @@ export function Composer({
         replaceTrigger(rest.startsWith(" ") ? `/${command.name}` : `/${command.name} `);
         return;
       }
+      case "skills":
+        replaceTrigger("");
+        openLibrary("skills");
+        return;
       case "model":
       case "mode":
         replaceTrigger("");
@@ -279,6 +329,7 @@ export function Composer({
   // The agent is fixed when the session starts; the model and effort under
   // it are what the badge switches.
   const agents = useEgant((s) => s.agents);
+  const openConnectModels = useEgant((s) => s.openConnectModels);
   const agent = session?.agent ?? null;
   const mode = session?.permissionMode ?? "auto";
 
@@ -286,8 +337,18 @@ export function Composer({
   // message would start — so a sign-in problem can be flagged before the
   // user hits send and gets a failed session for their trouble, instead of
   // silently promising a model this device isn't actually logged into.
-  const nextAgentId = sessionId == null ? selectNextAgent(snapshot, composerAgentPick) : null;
+  const nextAgentId =
+    sessionId == null ? selectNextAgent(snapshot, composerAgentPick, agents) : null;
   const nextAgentStatus = nextAgentId ? agents.find((a) => a.id === nextAgentId) : undefined;
+  const currentAgentStatus = agent ? agents.find((a) => a.id === agent) : undefined;
+
+  const hasAnyInstalledModel = agents.some(
+    (a) => HARNESSED.includes(a.id) && a.installed,
+  );
+  const hasAnyConnectedModel = agents.some(
+    (a) => HARNESSED.includes(a.id) && a.installed && a.connected,
+  );
+
   // The agent the next session would start *as a CLI* rather than as chat —
   // either one egant has no harness for, or one whose chat UI the picker's
   // toggle has been turned off for. There is no message to compose for it:
@@ -306,6 +367,11 @@ export function Composer({
         : !nextAgentStatus.connected
           ? `${nextAgentStatus.name} isn't connected on this device — sign in before sending.`
           : null;
+
+  const sessionNotice =
+    sessionId != null && currentAgentStatus != null && !currentAgentStatus.connected
+      ? `${currentAgentStatus.name} isn't connected — sign in before sending.`
+      : null;
   const cliAgentName = cliAgent
     ? (catalog.find((c) => c.id === cliAgent)?.name ?? agentName(agents, cliAgent))
     : "";
@@ -345,6 +411,14 @@ export function Composer({
       askCliLaunch(cliAgent);
       return;
     }
+    // If no models are connected on launch, open connect models dialog instead of failing
+    if (
+      (hero || sessionId == null) &&
+      (!hasAnyConnectedModel || (nextAgentStatus && !nextAgentStatus.installed))
+    ) {
+      openConnectModels(nextAgentId);
+      return;
+    }
     if (!hasContent || ended || imagesSaving) return;
     const paths = readyImages.map((img) => img.path as string);
     if (hero || sessionId == null) void sendOnLaunch(text, paths);
@@ -357,8 +431,37 @@ export function Composer({
   const attach = async () => {
     const paths = await pickAttachments().catch(() => [] as string[]);
     if (paths.length === 0) return;
-    const mention = paths.map((p) => `@${p}`).join(" ");
-    setText((prev) => (prev.trim() === "" ? `${mention} ` : `${prev.trimEnd()} ${mention} `));
+    const imageFiles: string[] = [];
+    const nonImageFiles: string[] = [];
+    for (const p of paths) {
+      if (isImage(p)) {
+        imageFiles.push(p);
+      } else {
+        nonImageFiles.push(p);
+      }
+    }
+    if (nonImageFiles.length > 0) {
+      const mention = nonImageFiles.map((p) => `@${p}`).join(" ");
+      setText((prev) => (prev.trim() === "" ? `${mention} ` : `${prev.trimEnd()} ${mention} `));
+    }
+    for (const p of imageFiles) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setPastedImages((prev) => [
+        ...prev,
+        { id, dataUrl: "", path: p, error: false },
+      ]);
+      resolveImageDataUrl(p)
+        .then((dataUrl) => {
+          if (dataUrl) {
+            setPastedImages((prev) =>
+              prev.map((img) => (img.id === id ? { ...img, dataUrl } : img)),
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          log.error("composer", `couldn't load image preview: ${String(error)}`, error);
+        });
+    }
     areaRef.current?.focus();
   };
 
@@ -405,6 +508,27 @@ export function Composer({
     }
   };
 
+  const handleDrop = (e: React.DragEvent) => {
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    const imageFiles = files.filter(
+      (file) => file.type.startsWith("image/") || isImage(file.name),
+    );
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      for (const file of imageFiles) {
+        addPastedImage(file);
+      }
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+
   const area = (
     <textarea
       ref={areaRef}
@@ -417,6 +541,8 @@ export function Composer({
       }}
       onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
       onPaste={handlePaste}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
       onKeyDown={(e) => {
         // An open menu has the keys first: arrows walk it, Enter or Tab take
         // the highlighted row, Esc closes it and leaves the text alone.
@@ -448,11 +574,13 @@ export function Composer({
         }
       }}
       placeholder={
-        cliAgent
-          ? `${cliAgentName} runs in its own terminal`
-          : busy
-            ? "Queue a message…"
-            : "Do anything…"
+        !hasAnyConnectedModel && (hero || sessionId == null)
+          ? "Connect a model to start chatting…"
+          : cliAgent
+            ? `${cliAgentName} runs in its own terminal`
+            : busy
+              ? "Queue a message…"
+              : "Do anything…"
       }
       className="block max-h-[240px] w-full resize-none bg-transparent text-[15px] leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--muted)] disabled:opacity-50"
     />
@@ -470,17 +598,23 @@ export function Composer({
               type="button"
               title={img.error ? "Couldn't save this image" : "Click to view"}
               onClick={() => {
-                if (!img.error) setPreviewImage(img.dataUrl);
+                if (!img.error && img.dataUrl) setPreviewImage(img.dataUrl);
               }}
               className={`h-11 w-11 cursor-pointer overflow-hidden rounded-lg border bg-[var(--card)] ${
                 img.error ? "border-[var(--danger)]/50" : "border-[var(--border)]"
               }`}
             >
-              <img
-                src={img.dataUrl}
-                alt="Pasted"
-                className={`h-full w-full object-cover ${img.error ? "opacity-40" : ""}`}
-              />
+              {img.dataUrl ? (
+                <img
+                  src={img.dataUrl}
+                  alt="Attached preview"
+                  className={`h-full w-full object-cover ${img.error ? "opacity-40" : ""}`}
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center bg-[var(--hover)] text-[var(--muted)]">
+                  <ImageIcon size={16} />
+                </div>
+              )}
               {img.path == null && !img.error && (
                 <span className="absolute inset-0 flex items-center justify-center bg-black/35">
                   <Loader2 size={14} strokeWidth={2.5} className="animate-spin text-white" />
@@ -630,8 +764,32 @@ export function Composer({
 
   if (hero || sessionId == null) {
     return (
-      <div ref={wrapRef} className="composer w-full rounded-2xl px-5 py-4">
-        {connectionNotice && (
+      <div
+        ref={wrapRef}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        className="composer w-full rounded-2xl px-5 py-4"
+      >
+        {!hasAnyConnectedModel ? (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3.5 py-2.5 text-[12px] text-[var(--ink)] shadow-sm">
+            <span className="flex min-w-0 items-center gap-2">
+              <Sparkles size={14} strokeWidth={2} className="shrink-0 text-[var(--accent)]" />
+              <span className="truncate">
+                {!hasAnyInstalledModel
+                  ? "No models installed — connect OpenCode, Claude, Codex, or another provider to get started."
+                  : "No models connected — sign in or connect OpenCode, Claude, or Codex to start chatting."}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => openConnectModels(nextAgentId)}
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[11px] font-semibold text-white shadow hover:opacity-90 transition-opacity"
+            >
+              <Plug size={12} strokeWidth={2.5} />
+              Connect models
+            </button>
+          </div>
+        ) : connectionNotice ? (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
             <span className="flex min-w-0 items-center gap-1.5">
               <TriangleAlert size={13} strokeWidth={2} className="shrink-0" />
@@ -639,13 +797,13 @@ export function Composer({
             </span>
             <button
               type="button"
-              onClick={() => openSettings("accounts")}
+              onClick={() => openConnectModels(nextAgentId)}
               className="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:text-amber-100"
             >
-              Connect
+              Connect models
             </button>
           </div>
-        )}
+        ) : null}
         {imageRow}
         {area}
         {/* Picker left, actions right — the launch picker chooses what the
@@ -672,6 +830,21 @@ export function Composer({
 
   return (
     <div ref={wrapRef} className="w-full min-w-0">
+      {sessionNotice && (
+        <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <TriangleAlert size={13} strokeWidth={2} className="shrink-0" />
+            <span className="truncate">{sessionNotice}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => openConnectModels(agent)}
+            className="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:text-amber-100"
+          >
+            Connect models
+          </button>
+        </div>
+      )}
       {queueRow}
       {/* One DOM for both widths — only classes change — so the text box is
         never remounted (and never loses focus or its caret) as the column is
@@ -689,6 +862,8 @@ export function Composer({
           />
         )}
         <div
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
           className={`composer flex w-full flex-wrap items-end gap-x-2 rounded-[26px] py-2 pr-2 pl-2 ${
             narrow ? "gap-y-1" : ""
           }`}

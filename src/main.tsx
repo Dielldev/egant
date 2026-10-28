@@ -4,17 +4,18 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 import { installSoundUnlock } from "./lib/notify";
 import { installTitlebarDragHandler, isLinux, isWindows } from "./lib/platform";
-import { useEgant } from "./store";
+import { applyAppearance, useEgant } from "./store";
 
-// Tag the document before the first React paint so platform glass CSS applies
-// immediately — no transparent "desktop hole". Windows starts solid and
-// switches once `sync_window_appearance` reports which native backdrop took.
+// Tag the document and paint theme attributes before the first React paint so
+// platform glass CSS applies immediately without any initial solid color flicker.
 if (isLinux()) {
   document.documentElement.dataset.platform = "linux";
 } else if (isWindows()) {
   document.documentElement.dataset.platform = "windows";
-  document.documentElement.dataset.windowGlass = "false";
+  document.documentElement.dataset.windowGlass = "true";
 }
+
+applyAppearance(useEgant.getState().appearance);
 
 installTitlebarDragHandler();
 installSoundUnlock();

@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager, State};
 
 use crate::dto::{
-    ArchivedSessionDto, ChangeDto, ClaudeUsageDto, CloseResultDto, CommitDto, CommitRefDto,
-    ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto,
+    ArchivedSessionDto, ChangeDto, ClaudeUsageDto, CloseResultDto, CodexUsageDto, CommitDto,
+    CommitRefDto, ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto,
     OpencodeUsageDto, RepoRefDto, RepoStatusDto, SendResultDto, StateDto, TranscriptDto,
     UnmergedFileDto, WorktreeDto,
 };
@@ -1114,6 +1114,24 @@ async fn claude_usage_limits() -> Result<Option<ClaudeUsageDto>, String> {
     })
 }
 
+/// OpenAI / Codex plan rate limits from the ChatGPT backend, for the Usage
+/// page. `Ok(None)` means Codex isn't signed in with a ChatGPT account (or
+/// runs on an API key) — nothing to show, not an error. Cached like the
+/// Claude call, so every surface shares one request per minute.
+#[tauri::command]
+async fn codex_usage_limits() -> Result<Option<CodexUsageDto>, String> {
+    log::debug!("codex_usage_limits");
+    tauri::async_runtime::spawn_blocking(|| {
+        egant_harness::usage_limits::fetch_codex().map(|usage| usage.map(CodexUsageDto::from))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        log::warn!("codex_usage_limits failed: {error}");
+        error
+    })
+}
+
 /// OpenCode lifetime and recent stats from local sqlite database and rate limit state.
 #[tauri::command]
 async fn opencode_usage_stats() -> Result<OpencodeUsageDto, String> {
@@ -1227,12 +1245,11 @@ pub(crate) fn apply_window_glass(
 /// Acrylic and DWM blur serve as fallbacks on Windows 10.
 #[cfg(target_os = "windows")]
 pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, dark: bool, glass: bool) -> String {
-    let _ = window_vibrancy::clear_tabbed(window);
-    let _ = window_vibrancy::clear_mica(window);
-    let _ = window_vibrancy::clear_acrylic(window);
-    let _ = window_vibrancy::clear_blur(window);
-
     if !glass {
+        let _ = window_vibrancy::clear_tabbed(window);
+        let _ = window_vibrancy::clear_mica(window);
+        let _ = window_vibrancy::clear_acrylic(window);
+        let _ = window_vibrancy::clear_blur(window);
         return "none".to_string();
     }
 
@@ -1247,9 +1264,9 @@ pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, dark: bool, glas
 
     // Win10 Acrylic & Blur fallbacks:
     let tint: window_vibrancy::Color = if dark {
-        (18, 18, 22, 180)
+        (18, 18, 22, 120)
     } else {
-        (242, 242, 246, 185)
+        (242, 242, 246, 120)
     };
     if window_vibrancy::apply_acrylic(window, Some(tint)).is_ok() {
         return "acrylic".to_string();
@@ -1904,6 +1921,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         connect_agent,
         list_models,
         claude_usage_limits,
+        codex_usage_limits,
         opencode_usage_stats,
         crate::activity::token_activity,
         wallpaper_data_url,
@@ -1914,6 +1932,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         crate::revert::revert_turn,
         crate::search::search_transcripts,
         crate::github::gh_status,
+        crate::github::gh_user,
         crate::github::pr_list,
         crate::github::pr_detail,
         crate::github::pr_create,

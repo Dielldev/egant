@@ -12,7 +12,6 @@ import type { ClaudeUsage, OpencodeUsageStats, SessionUsage } from "../lib/types
 import {
   formatResetIn,
   hasUsageData,
-  isUsageCritical,
   roundPercent,
 } from "../lib/usageLimits";
 import { useNow } from "./useNow";
@@ -214,11 +213,7 @@ export function UsageMeter({
                   </div>
                   <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bubble)]">
                     <div
-                      className={`h-full rounded-full ${
-                        contextFractionValue >= 0.9
-                          ? "bg-[var(--danger)]"
-                          : "bg-[var(--muted)]"
-                      }`}
+                      className="h-full rounded-full bg-[var(--muted)]"
                       style={{ width: `${contextPercent}%` }}
                     />
                   </div>
@@ -280,17 +275,17 @@ export function UsageMeter({
                     <span className="text-[10px] text-[var(--faint)]">opencode.db</span>
                   </div>
                   {opencodeUsage.freeLimitReached ? (
-                    <div className="mb-2 rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-[11px] text-rose-400">
-                      <div className="font-semibold text-rose-500 flex items-center gap-1">
-                        <AlertTriangle size={12} /> Free tier limit reached
+                    <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--hover)] p-2 text-[11px] text-[var(--ink)]">
+                      <div className="font-semibold text-[var(--ink)] flex items-center gap-1">
+                        <AlertTriangle size={12} className="text-[var(--muted)]" /> Free tier limit reached
                       </div>
                       <div className="text-[10px] text-[var(--muted)] mt-0.5">
                         Free tier quota is exhausted. Subscribe or add keys.
                       </div>
                     </div>
                   ) : opencodeUsage.hasAuth ? (
-                    <div className="mb-2 text-[11px] text-emerald-400">
-                      ✓ Provider account active
+                    <div className="mb-2 text-[11px] text-[var(--muted)]">
+                      Provider account active
                     </div>
                   ) : (
                     <div className="mb-2 text-[11px] text-[var(--muted)]">
@@ -392,21 +387,18 @@ function LimitRow({
   now: number;
   spaced?: boolean;
 }) {
-  const critical = isUsageCritical(percent);
   const resetLabel = formatResetIn(resetsAt, now);
   return (
     <div className={spaced ? "mt-3" : ""}>
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[var(--faint)]">{label}</span>
-        <span
-          className={`font-medium ${critical ? "text-[var(--danger)]" : "text-[var(--ink)]"}`}
-        >
+        <span className="font-medium text-[var(--ink)]">
           {percent}%
         </span>
       </div>
       <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-[var(--bubble)]">
         <div
-          className={`h-full rounded-full ${critical ? "bg-[var(--danger)]" : "bg-[var(--muted)]"}`}
+          className="h-full rounded-full bg-[var(--muted)]"
           style={{ width: `${percent}%` }}
         />
       </div>

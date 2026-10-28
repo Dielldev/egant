@@ -266,6 +266,7 @@ mod tests {
     fn user(n: usize) -> TranscriptEntry {
         TranscriptEntry::User {
             text: format!("message {n}"),
+            images: Vec::new(),
         }
     }
 

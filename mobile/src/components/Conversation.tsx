@@ -461,10 +461,16 @@ function Entries({
   return <>{nodes}</>;
 }
 
-function UserBubble({ text }: { text: string }) {
+function UserBubble({ text, images }: { text: string; images?: string[] }) {
+  const hasImages = images && images.length > 0;
   return (
     <div className="flex w-full justify-end pl-10">
       <div className="max-w-full rounded-[22px] rounded-br-[8px] bg-[var(--bubble)] px-4 py-2.5 text-[16px] leading-6 break-words whitespace-pre-wrap text-[var(--ink)]">
+        {hasImages && (
+          <div className="mb-1 text-[12px] opacity-70">
+            📷 Uploaded {images.length === 1 ? "image" : `${images.length} images`}
+          </div>
+        )}
         {text}
       </div>
     </div>
@@ -486,7 +492,7 @@ const EntryView = memo(function EntryView({
   const openPreview = useMobile((s) => s.openPreview);
   switch (entry.kind) {
     case "user":
-      return <UserBubble text={entry.text} />;
+      return <UserBubble text={entry.text} images={entry.images} />;
     case "assistant":
       return (
         <div

@@ -66,7 +66,7 @@ export const BRAND_COLORS: Record<string, string> = {
  * A tinted initial reads as a deliberate placeholder; the default grey letter
  * read as a missing asset. Marks themselves stay monochrome, so the row is one
  * consistent icon system rather than a mix of tinted and untinted art. */
-const TINTS: Record<string, string> = {};
+export const TINTS: Record<string, string> = {};
 
 export function providerSvg(provider: string): string | null {
   return LOGOS[provider.toLowerCase()] ?? null;
@@ -77,38 +77,29 @@ export function providerSvg(provider: string): string | null {
  * (`overflow-hidden`) so wide wordmarks can never bleed into the row text. */
 export function ProviderLogo({
   provider,
-  size = 26,
+  size = 24,
   color,
+  className,
 }: {
   provider: string;
   size?: number;
   color?: string;
+  className?: string;
 }) {
   const svg = providerSvg(provider);
-  const brandColor = color ?? BRAND_COLORS[provider.toLowerCase()];
-  const tile =
-    "flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--card)]";
   if (!svg) {
-    // The letter scales with the tile, so a 48px tile in the agent sheet
-    // isn't a lone 11px character floating in a box.
-    const tint = brandColor ?? TINTS[provider.toLowerCase()];
+    const tile =
+      "flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--card)]";
     return (
       <span
-        className={tile}
+        className={`${tile} ${className ?? ""}`}
         style={{
           width: size,
           height: size,
-          ...(tint
-            ? {
-                color: tint,
-                background: `color-mix(in srgb, ${tint} 14%, transparent)`,
-                borderColor: `color-mix(in srgb, ${tint} 30%, transparent)`,
-              }
-            : null),
         }}
       >
         <span
-          className={tint ? "font-semibold" : "font-semibold text-[var(--muted)]"}
+          className="font-semibold text-[var(--muted)]"
           style={{ fontSize: Math.max(10, Math.round(size * 0.42)) }}
         >
           {provider.slice(0, 1).toUpperCase()}
@@ -118,37 +109,35 @@ export function ProviderLogo({
   }
   return (
     <span
-      className={tile}
+      className={`provider-logo inline-flex shrink-0 items-center justify-center text-[var(--ink)] ${className ?? ""}`}
       style={{
         width: size,
         height: size,
-        color: brandColor ?? "var(--ink)",
-        backgroundColor: brandColor ? `color-mix(in srgb, ${brandColor} 12%, var(--card))` : undefined,
-        borderColor: brandColor ? `color-mix(in srgb, ${brandColor} 28%, var(--border))` : undefined,
+        color: color ?? "var(--ink)",
       }}
-    >
-      <span className="provider-logo" dangerouslySetInnerHTML={{ __html: svg }} />
-    </span>
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
   );
 }
 
-/** Bare mark for the picker's provider tabs — no tile, just the glyph, so
- * the tab strip matches the reference (icons + sliding underline). */
+/** Bare mark for the picker's provider tabs and inline agent icons. */
 export function ProviderGlyph({
   provider,
   size = 16,
   color,
+  className,
 }: {
   provider: string;
   size?: number;
   color?: string;
+  className?: string;
 }) {
   const svg = providerSvg(provider);
   if (!svg) {
     return (
       <span
-        className="flex items-center justify-center font-bold"
-        style={{ width: size, height: size, color, fontSize: size - 2 }}
+        className={`flex items-center justify-center font-bold text-[var(--ink)] ${className ?? ""}`}
+        style={{ width: size, height: size, color: color ?? "var(--ink)", fontSize: size - 2 }}
       >
         {provider.slice(0, 1).toUpperCase()}
       </span>
@@ -156,8 +145,8 @@ export function ProviderGlyph({
   }
   return (
     <span
-      className="provider-logo inline-flex items-center justify-center"
-      style={{ width: size, height: size, color }}
+      className={`provider-logo inline-flex items-center justify-center text-[var(--ink)] ${className ?? ""}`}
+      style={{ width: size, height: size, color: color ?? "var(--ink)" }}
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );

@@ -7,13 +7,20 @@ import {
   Terminal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AGENT_ACCENT, AGENT_PROVIDER, fallbackName } from "../lib/agents";
+import { AGENT_PROVIDER, fallbackName } from "../lib/agents";
 import { api } from "../lib/api";
 import { log } from "../lib/logger";
-import type { ClaudeUsage, ModelUsageStat, OpencodeUsageStats, TokenActivity } from "../lib/types";
-import { formatResetIn, isUsageCritical, roundPercent } from "../lib/usageLimits";
+import { formatTokens } from "../lib/transcript";
+import type {
+  ClaudeUsage,
+  CodexUsage,
+  ModelUsageStat,
+  OpencodeUsageStats,
+  TokenActivity,
+} from "../lib/types";
+import { formatResetIn, roundPercent } from "../lib/usageLimits";
 import { useEgant } from "../store";
-import { BRAND_COLORS, ProviderLogo } from "./ProviderLogo";
+import { ProviderLogo } from "./ProviderLogo";
 import { Card, DevicePill, Pills, SectionHead, usePersistentState } from "./SettingsKit";
 import { useNow } from "./useNow";
 
@@ -45,6 +52,15 @@ export function baseModelName(id: string): string {
     .replace(/-(high|low|medium|minimal|xhigh|ultra)$/i, "")
     .replace(/\s*\((High|Low|Medium|Minimal|X-High|Ultra)\)$/i, "");
   return formatModelTitle(clean);
+}
+
+/** Human-readable name for a Codex window based on its length. */
+function codexWindowName(seconds: number | null): string {
+  if (seconds == null || seconds <= 0) return "Usage window";
+  if (seconds <= 6 * 3600) return "5-hour session limit";
+  if (seconds <= 7 * 86400) return "Weekly limit";
+  const days = Math.round(seconds / 86400);
+  return `${days}-day limit`;
 }
 
 /** Determine which provider group an agent/model belongs to. */
@@ -120,7 +136,7 @@ interface MainModelQuota {
   resetsAt: string | number | null;
   statusText?: string;
   statusBadge?: string;
-  turns?: number;
+  vendor: string;
 }
 
 export function UsageSection() {
@@ -129,6 +145,8 @@ export function UsageSection() {
   const verifyAgents = useEgant((s) => s.verifyAgents);
   const claudeUsage = useEgant((s) => s.claudeUsage);
   const fetchClaudeUsage = useEgant((s) => s.fetchClaudeUsage);
+  const codexUsage = useEgant((s) => s.codexUsage);
+  const fetchCodexUsage = useEgant((s) => s.fetchCodexUsage);
   const opencodeUsage = useEgant((s) => s.opencodeUsage);
   const fetchOpencodeUsage = useEgant((s) => s.fetchOpencodeUsage);
 
@@ -150,6 +168,7 @@ export function UsageSection() {
           return null;
         }),
         fetchClaudeUsage().catch(() => null),
+        fetchCodexUsage().catch(() => null),
         fetchOpencodeUsage().catch(() => null),
         verifyAgents().catch(() => null),
       ]);
@@ -161,7 +180,7 @@ export function UsageSection() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [fetchClaudeUsage, fetchOpencodeUsage, verifyAgents]);
+  }, [fetchClaudeUsage, fetchCodexUsage, fetchOpencodeUsage, verifyAgents]);
 
   useEffect(() => {
     void loadData();
@@ -258,12 +277,8 @@ export function UsageSection() {
       });
     }
 
-    // Compute fallback reset if needed
-    for (const sec of sectionsMap.values()) {
-      if (sec.fiveHourTokens > 0 && !sec.fiveHourResetsAt && sec.lastUsedAt) {
-        sec.fiveHourResetsAt = sec.lastUsedAt + 5 * 3600;
-      }
-    }
+    // (No invented reset times here: providers without a real usage endpoint
+    // get local activity counts only — never a guessed percentage or clock.)
 
     return Array.from(sectionsMap.values()).filter(
       (sec) => sec.models.length > 0 || sec.connected || sec.weeklyTokens > 0,
@@ -374,6 +389,7 @@ export function UsageSection() {
               key={sec.id}
               section={sec}
               claudeUsage={sec.id === "anthropic" ? claudeUsage : null}
+              codexUsage={sec.id === "openai" ? codexUsage : null}
               opencodeUsage={sec.id === "opencode" ? opencodeUsage : null}
               now={now}
             />
@@ -387,178 +403,86 @@ export function UsageSection() {
 function ProviderUsageCard({
   section,
   claudeUsage,
+  codexUsage,
   opencodeUsage,
   now,
 }: {
   section: ProviderSectionData;
   claudeUsage: ClaudeUsage | null;
+  codexUsage: CodexUsage | null;
   opencodeUsage: OpencodeUsageStats | null;
   now: number;
 }) {
-  const brandColor =
-    BRAND_COLORS[section.vendor.toLowerCase()] ??
-    BRAND_COLORS[section.id.toLowerCase()] ??
-    AGENT_ACCENT[section.agentId] ??
-    "var(--accent)";
-
-  // Derive the main models & quotas for this provider in PERCENTAGE
+  // Real plan quotas only. When a provider doesn't expose a usable quota
+  // endpoint (or isn't signed in) we show nothing here instead of an invented
+  // percentage — see the body below.
   const quotas: MainModelQuota[] = useMemo(() => {
     const list: MainModelQuota[] = [];
-
-    // Anthropic: Direct from Claude OAuth Plan Limits
     if (section.id === "anthropic") {
       if (claudeUsage) {
         if (claudeUsage.fiveHour) {
           list.push({
             key: "five-hour",
-            name: "Session Limit (5-Hour Window)",
+            name: "5-hour session limit",
             percent: roundPercent(claudeUsage.fiveHour),
             resetsAt: claudeUsage.fiveHour.resetsAt,
             statusText: "Rolling 5-hour session window",
-          });
-        }
-        if (claudeUsage.sevenDaySonnet) {
-          list.push({
-            key: "sonnet-weekly",
-            name: "Claude 3.7 Sonnet (Weekly Quota)",
-            percent: roundPercent(claudeUsage.sevenDaySonnet),
-            resetsAt: claudeUsage.sevenDaySonnet.resetsAt,
-            statusText: "Weekly dedicated Sonnet allocation",
+            vendor: "claude",
           });
         }
         if (claudeUsage.sevenDay) {
           list.push({
             key: "seven-day",
-            name: "Weekly Limit (All Models)",
+            name: "Weekly limit (all models)",
             percent: roundPercent(claudeUsage.sevenDay),
             resetsAt: claudeUsage.sevenDay.resetsAt,
             statusText: "7-day account-wide plan quota",
+            vendor: "claude",
           });
         }
-      }
-
-      // If no official OAuth quota (or empty), fallback to main models from activity
-      if (list.length === 0) {
-        const activeModels = section.models.filter(
-          (m) => m.stats && (m.stats.fiveHourTokens > 0 || m.stats.weeklyTokens > 0),
-        );
-        if (activeModels.length > 0) {
-          for (const m of activeModels) {
-            const data = m.stats!;
-            const pct = data.fiveHourTokens > 0
-              ? Math.min(100, Math.max(5, Math.round((data.fiveHourTokens / 1_000_000) * 100)))
-              : 0;
-            list.push({
-              key: m.model,
-              name: m.displayName,
-              percent: pct,
-              resetsAt: data.fiveHourResetsAt ?? null,
-              statusText: data.fiveHourTurns > 0 ? `${data.fiveHourTurns} turns in window` : undefined,
-              turns: data.fiveHourTurns,
-            });
-          }
-        } else {
+        if (claudeUsage.sevenDaySonnet) {
           list.push({
-            key: "claude-session",
-            name: "Claude 3.7 Sonnet (Session Window)",
-            percent: 0,
-            resetsAt: null,
-            statusText: undefined,
+            key: "sonnet-weekly",
+            name: "Weekly limit · Sonnet",
+            percent: roundPercent(claudeUsage.sevenDaySonnet),
+            resetsAt: claudeUsage.sevenDaySonnet.resetsAt,
+            statusText: "Weekly dedicated Sonnet allocation",
+            vendor: "claude",
           });
         }
       }
       return list;
     }
-
-    // Google / Antigravity: Group effort variants into base main models
-    if (section.id === "google") {
-      const baseMap = new Map<string, {
-        fiveHourTokens: number;
-        fiveHourTurns: number;
-        resetsAt: number | null;
-      }>();
-
-      for (const m of section.models) {
-        if (!m.stats || (m.stats.fiveHourTokens === 0 && m.stats.weeklyTokens === 0)) {
-          continue;
-        }
-        const base = m.baseName || "Gemini 3.8 Flash";
-        const entry = baseMap.get(base) ?? { fiveHourTokens: 0, fiveHourTurns: 0, resetsAt: null };
-        entry.fiveHourTokens += m.stats.fiveHourTokens;
-        entry.fiveHourTurns += m.stats.fiveHourTurns;
-        if (m.stats.fiveHourResetsAt) {
-          entry.resetsAt = Math.max(entry.resetsAt ?? 0, m.stats.fiveHourResetsAt);
-        } else if (m.stats.lastUsedAt && m.stats.fiveHourTokens > 0) {
-          entry.resetsAt = Math.max(entry.resetsAt ?? 0, m.stats.lastUsedAt + 5 * 3600);
-        }
-        baseMap.set(base, entry);
-      }
-
-      if (baseMap.size === 0) {
-        baseMap.set("Gemini 3.8 Flash", { fiveHourTokens: 0, fiveHourTurns: 0, resetsAt: null });
-      }
-
-      for (const [base, data] of baseMap.entries()) {
-        const pct = data.fiveHourTokens > 0
-          ? Math.min(100, Math.max(5, Math.round((data.fiveHourTokens / 1_000_000) * 100)))
-          : 0;
-        list.push({
-          key: base,
-          name: base,
-          percent: pct,
-          resetsAt: data.resetsAt,
-          statusText: data.fiveHourTurns > 0 ? `${data.fiveHourTurns} turns in window` : undefined,
-          turns: data.fiveHourTurns,
-        });
-      }
-      return list;
-    }
-
-    // OpenAI / Codex: Main models
     if (section.id === "openai") {
-      const baseMap = new Map<string, {
-        fiveHourTokens: number;
-        fiveHourTurns: number;
-        resetsAt: number | null;
-      }>();
-
-      for (const m of section.models) {
-        if (!m.stats || (m.stats.fiveHourTokens === 0 && m.stats.weeklyTokens === 0)) {
-          continue;
+      if (codexUsage) {
+        if (codexUsage.primary) {
+          const w = codexUsage.primary;
+          list.push({
+            key: "primary",
+            name: codexWindowName(w.windowSeconds),
+            percent: Math.min(100, Math.max(0, Math.round(w.usedPercent))),
+            resetsAt: w.resetsAtEpoch,
+            statusText: codexUsage.plan ? `ChatGPT ${codexUsage.plan}` : undefined,
+            statusBadge: codexUsage.limitReached ? "Limit reached" : undefined,
+            vendor: "openai",
+          });
         }
-        const base = m.baseName || "Codex / GPT-5.6";
-        const entry = baseMap.get(base) ?? { fiveHourTokens: 0, fiveHourTurns: 0, resetsAt: null };
-        entry.fiveHourTokens += m.stats.fiveHourTokens;
-        entry.fiveHourTurns += m.stats.fiveHourTurns;
-        if (m.stats.fiveHourResetsAt) {
-          entry.resetsAt = Math.max(entry.resetsAt ?? 0, m.stats.fiveHourResetsAt);
-        } else if (m.stats.lastUsedAt && m.stats.fiveHourTokens > 0) {
-          entry.resetsAt = Math.max(entry.resetsAt ?? 0, m.stats.lastUsedAt + 5 * 3600);
+        if (codexUsage.secondary) {
+          const w = codexUsage.secondary;
+          list.push({
+            key: "secondary",
+            name: codexWindowName(w.windowSeconds),
+            percent: Math.min(100, Math.max(0, Math.round(w.usedPercent))),
+            resetsAt: w.resetsAtEpoch,
+            statusBadge: codexUsage.limitReached ? "Limit reached" : undefined,
+            vendor: "openai",
+          });
         }
-        baseMap.set(base, entry);
-      }
-
-      if (baseMap.size === 0) {
-        baseMap.set("Codex / GPT-5.6", { fiveHourTokens: 0, fiveHourTurns: 0, resetsAt: null });
-      }
-
-      for (const [base, data] of baseMap.entries()) {
-        const pct = data.fiveHourTokens > 0
-          ? Math.min(100, Math.max(5, Math.round((data.fiveHourTokens / 1_000_000) * 100)))
-          : 0;
-        list.push({
-          key: base,
-          name: base,
-          percent: pct,
-          resetsAt: data.resetsAt,
-          statusText: data.fiveHourTurns > 0 ? `${data.fiveHourTurns} turns in window` : undefined,
-          turns: data.fiveHourTurns,
-        });
       }
       return list;
     }
-
-    // OpenCode: Free tier and auth quota
+    // OpenCode: its real quota state comes from opencodeUsage (auth / free-tier
+    // exhaustion) and is rendered as a status row, never as a guessed percent.
     if (section.id === "opencode") {
       if (opencodeUsage?.freeLimitReached) {
         list.push({
@@ -568,6 +492,7 @@ function ProviderUsageCard({
           resetsAt: null,
           statusBadge: "Rate Limited",
           statusText: "Free community quota reached on this network",
+          vendor: "opencode",
         });
       } else if (opencodeUsage?.hasAuth) {
         list.push({
@@ -577,8 +502,9 @@ function ProviderUsageCard({
           resetsAt: null,
           statusBadge: "Active",
           statusText: "Authenticated with provider credentials",
+          vendor: "opencode",
         });
-      } else {
+      } else if (opencodeUsage) {
         list.push({
           key: "opencode-zen",
           name: "OpenCode Zen (Community Models)",
@@ -586,46 +512,35 @@ function ProviderUsageCard({
           resetsAt: null,
           statusBadge: "Ready",
           statusText: "Free community tier ready",
+          vendor: "opencode",
         });
       }
       return list;
     }
-
-    // Generic fallback for any other provider
-    const pct = section.fiveHourTokens > 0
-      ? Math.min(100, Math.max(5, Math.round((section.fiveHourTokens / 1_000_000) * 100)))
-      : 0;
-    list.push({
-      key: section.id,
-      name: `${section.name} (Session Window)`,
-      percent: pct,
-      resetsAt: section.fiveHourResetsAt,
-      statusText: section.fiveHourTurns > 0 ? `${section.fiveHourTurns} turns in window` : undefined,
-      turns: section.fiveHourTurns,
-    });
+    // Google / others: no plan quota endpoint we can read — show nothing here.
     return list;
-  }, [section, claudeUsage, opencodeUsage]);
+  }, [section, claudeUsage, codexUsage, opencodeUsage]);
 
-  // Primary percentage to show in provider header badge
+  // Primary percentage to show in the provider header badge — only when there
+  // are real windows to average over.
   const maxPercent = useMemo(() => {
-    if (quotas.length === 0) return 0;
+    if (quotas.length === 0) return null;
     return Math.max(...quotas.map((q) => q.percent));
   }, [quotas]);
 
   return (
     <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-xs">
-      {/* Provider Header with Vivid Brand Logo */}
+      {/* Provider Header with Clean Monochrome Logo */}
       <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3.5">
         <div className="flex items-center gap-3 min-w-0">
-          <ProviderLogo provider={section.vendor} size={30} color={brandColor} />
+          <ProviderLogo provider={section.vendor} size={28} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-[14px] text-[var(--ink)] truncate">
                 {section.name}
               </span>
               {section.connected && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface)] px-2 py-0.5 text-[10px] font-medium text-emerald-500 border border-emerald-500/20">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                <span className="rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--muted)]">
                   Connected
                 </span>
               )}
@@ -634,25 +549,15 @@ function ProviderUsageCard({
         </div>
 
         <div className="flex items-center gap-3">
-          <span
-            className="rounded-full px-2.5 py-1 text-[11px] font-semibold tabular-nums border"
-            style={{
-              color: maxPercent >= 90 ? "#ef4444" : maxPercent > 0 ? brandColor : "var(--muted)",
-              borderColor:
-                maxPercent >= 90
-                  ? "rgba(239, 68, 68, 0.3)"
-                  : maxPercent > 0
-                  ? `color-mix(in srgb, ${brandColor} 30%, var(--border))`
-                  : "var(--border)",
-              backgroundColor: "var(--card)",
-            }}
-          >
-            {maxPercent > 0 ? `${maxPercent}% used` : "0% used"}
-          </span>
+          {maxPercent != null && (
+            <span className="rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-0.5 text-[11px] font-medium tabular-nums text-[var(--muted)]">
+              {maxPercent}% used
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Main Models Bars — in Percentage with Brand Colors */}
+      {/* Main Models Bars */}
       <div className="p-4 space-y-3">
         {quotas.map((q) => (
           <MainModelBar
@@ -661,11 +566,60 @@ function ProviderUsageCard({
             percent={q.percent}
             resetsAt={q.resetsAt}
             now={now}
-            brandColor={brandColor}
+            vendor={q.vendor}
             statusText={q.statusText}
             statusBadge={q.statusBadge}
           />
         ))}
+
+        {quotas.length === 0 && (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-4 text-[12px] text-[var(--muted)]">
+            {section.id === "anthropic"
+              ? "Claude didn't report a plan quota right now — it may be signed out on your Mac, or the endpoint is rate-limiting. Local activity is below."
+              : section.id === "openai"
+                ? "Codex didn't report a plan quota right now — it may be signed in with an API key, or the endpoint is unavailable. Local activity is below."
+                : section.id === "google"
+                  ? "Google / Antigravity doesn't expose a plan quota we can read — local activity is below."
+                  : section.id === "opencode" && opencodeUsage
+                    ? null
+                    : "No plan quota to show for this provider."}
+          </div>
+        )}
+
+        {/* Local activity for providers without a real quota endpoint, and as
+            a complement for the ones that have one. */}
+        {section.models.length > 0 && (
+          <div className="space-y-2">
+            {section.id !== "anthropic" && section.id !== "openai" && (
+              <div className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--faint)]">
+                Local activity (real usage from this machine's logs)
+              </div>
+            )}
+            {section.id === "anthropic" && section.models.length > 0 && (
+              <div className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--faint)]">
+                Local activity
+              </div>
+            )}
+            {section.models.map((m) => {
+              const s = m.stats;
+              if (!s) return null;
+              const weekly = s.weeklyTokens;
+              const turns = s.weeklyTurns;
+              return (
+                <div
+                  key={m.model}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[11px] text-[var(--muted)]"
+                >
+                  <span className="font-medium text-[var(--ink)] truncate">{m.displayName}</span>
+                  <span className="tabular-nums">
+                    {weekly > 0 ? `${formatTokens(weekly)} tokens this week` : "no usage this week"}
+                    {turns > 0 ? ` · ${turns} turn${turns === 1 ? "" : "s"}` : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* OpenCode Connect Action banner if rate limited */}
         {section.id === "opencode" && opencodeUsage?.freeLimitReached && (
@@ -681,7 +635,7 @@ function MainModelBar({
   percent,
   resetsAt,
   now,
-  brandColor,
+  vendor,
   statusText,
   statusBadge,
 }: {
@@ -689,59 +643,41 @@ function MainModelBar({
   percent: number;
   resetsAt?: string | number | null;
   now: number;
-  brandColor: string;
+  vendor: string;
   statusText?: string;
   statusBadge?: string;
 }) {
-  const critical = isUsageCritical(percent);
-  const elevated = percent >= 60;
   const resetLabel = formatResetIn(resetsAt, now, { withClock: true });
-
-  const barFillColor = critical ? "#ef4444" : elevated ? "#f59e0b" : brandColor;
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span
-            className="h-2.5 w-2.5 rounded-full shrink-0"
-            style={{ backgroundColor: barFillColor }}
-          />
+        <div className="flex items-center gap-2.5 min-w-0">
+          <ProviderLogo provider={vendor} size={20} />
           <span className="font-semibold text-[13px] text-[var(--ink)] truncate">
             {name}
           </span>
           {statusBadge && (
-            <span
-              className="rounded-full px-2 py-0.5 text-[10px] font-semibold border"
-              style={{
-                color: statusBadge === "Rate Limited" ? "#ef4444" : "#10b981",
-                borderColor: statusBadge === "Rate Limited" ? "rgba(239, 68, 68, 0.3)" : "rgba(16, 185, 129, 0.3)",
-                backgroundColor: statusBadge === "Rate Limited" ? "rgba(239, 68, 68, 0.1)" : "rgba(16, 185, 129, 0.1)",
-              }}
-            >
+            <span className="rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--muted)]">
               {statusBadge}
             </span>
           )}
         </div>
 
         <div className="text-right">
-          <span
-            className="text-[17px] font-bold tabular-nums"
-            style={{ color: critical ? "#ef4444" : "var(--ink)" }}
-          >
+          <span className="text-[15px] font-semibold tabular-nums text-[var(--ink)]">
             {percent}%
           </span>
-          <span className="ml-1 text-[11px] text-[var(--faint)]">used</span>
+          <span className="ml-1 text-[11px] text-[var(--muted)]">used</span>
         </div>
       </div>
 
-      {/* Progress Bar (Solid Brand Color) */}
+      {/* Progress Bar */}
       <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[var(--bubble)]">
         <div
-          className="h-full rounded-full transition-all duration-500"
+          className="h-full rounded-full transition-all duration-300 bg-[var(--muted)]"
           style={{
-            width: `${Math.min(100, Math.max(percent > 0 ? 3 : 0, percent))}%`,
-            backgroundColor: barFillColor,
+            width: `${Math.min(100, Math.max(0, percent))}%`,
           }}
         />
       </div>
@@ -751,12 +687,12 @@ function MainModelBar({
         <div>
           {resetLabel ? (
             <span className="inline-flex items-center gap-1.5 font-medium text-[var(--ink)]">
-              <Clock size={12} style={{ color: brandColor }} />
+              <Clock size={12} className="text-[var(--muted)]" />
               <span>{resetLabel}</span>
             </span>
           ) : percent === 0 ? (
-            <span className="inline-flex items-center gap-1.5 text-emerald-500 font-medium">
-              <CheckCircle2 size={12} />
+            <span className="inline-flex items-center gap-1.5 text-[var(--muted)]">
+              <CheckCircle2 size={12} className="text-[var(--muted)]" />
               <span>Ready · 100% capacity available</span>
             </span>
           ) : (
@@ -785,14 +721,14 @@ function OpencodeLimitBanner() {
   };
 
   return (
-    <div className="rounded-xl border border-rose-500/30 bg-[var(--card)] p-4">
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
       <div className="flex items-start gap-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-500/10 text-rose-500">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--hover)] text-[var(--muted)]">
           <AlertTriangle size={17} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-[13px] text-rose-500">
+            <span className="font-semibold text-[13px] text-[var(--ink)]">
               OpenCode Free Usage Limit Reached
             </span>
           </div>
@@ -804,7 +740,7 @@ function OpencodeLimitBanner() {
               type="button"
               onClick={handleConnect}
               disabled={connecting}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--accent-ink)] hover:opacity-90 disabled:opacity-50"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               <Terminal size={13} />
               {connecting ? "Opening Terminal…" : "Add Account (opencode auth login)"}

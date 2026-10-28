@@ -838,7 +838,7 @@ fn name_session(app: &AppHandle, id: u64) {
                 .entries
                 .iter()
                 .find_map(|entry| match entry {
-                    TranscriptEntry::User { text } => Some(text.clone()),
+                    TranscriptEntry::User { text, .. } => Some(text.clone()),
                     _ => None,
                 })?;
             Some((
@@ -1482,7 +1482,13 @@ pub fn send_text(
             session.meta.title_source = TitleSource::FirstLine;
             new_title = Some(title);
         }
-        session.transcript.push_user(text.clone());
+        let image_strings: Vec<String> = images
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        session
+            .transcript
+            .push_user_with_images(text.clone(), image_strings);
         session.last_user_text = Some(text.clone());
         session.last_user_images = images.clone();
         session.last_activity_ms = unix_now_ms();
@@ -2075,7 +2081,13 @@ fn retry_last_turn(session: &mut crate::state::ManagedSession) {
         return;
     };
     let images = session.last_user_images.clone();
-    session.transcript.push_user(text.clone());
+    let image_strings: Vec<String> = images
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    session
+        .transcript
+        .push_user_with_images(text.clone(), image_strings);
     dispatch(session, SessionCommand::Send(text, images));
 }
 

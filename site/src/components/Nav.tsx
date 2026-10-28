@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Mark } from "./Mark";
 
 export function Nav() {
@@ -20,8 +21,8 @@ export function Nav() {
       <nav className="nav-links">
         <a href="#features">Features</a>
         <a href="#tour">Tour</a>
-        <a href="#themes">Themes</a>
         <a href="#phone">Phone</a>
+        <Link to="/guides">Guides</Link>
         <a href="#start">Build it</a>
       </nav>
       <a className="btn btn-primary btn-sm" href="#download">

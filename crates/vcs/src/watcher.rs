@@ -93,10 +93,19 @@ fn is_noise(path: &Path) -> bool {
     let normalized = text.replace('\\', "/");
     normalized.contains("/.git/index.lock")
         || normalized.contains("/.git/objects/")
+        || normalized.contains("/.git/logs/")
+        || normalized.contains("/.git/refs/")
         || normalized.ends_with('~')
         || normalized.ends_with(".swp")
         || normalized.contains("/target/")
         || normalized.contains("/node_modules/")
+        || normalized.contains("/.opencode/")
+        || normalized.contains("/.claude/")
+        || normalized.contains("/.codex/")
+        || normalized.contains("/.turbo/")
+        || normalized.contains("/.next/")
+        || normalized.contains("/dist/")
+        || normalized.contains("/build/")
 }
 
 #[cfg(test)]
@@ -109,6 +118,10 @@ mod tests {
         assert!(is_noise(Path::new("/repo/.git/objects/ab/cdef")));
         assert!(is_noise(Path::new("/repo/target/debug/app")));
         assert!(is_noise(Path::new("/repo/src/main.rs.swp")));
+        assert!(is_noise(Path::new("/repo/.opencode/state.json")));
+        assert!(is_noise(Path::new("/repo/.claude/settings.json")));
+        assert!(is_noise(Path::new("/repo/.next/cache/build.js")));
+        assert!(is_noise(Path::new("/repo/dist/bundle.js")));
 
         // Windows backslash paths
         assert!(is_noise(Path::new("C:\\repo\\.git\\index.lock")));
@@ -117,6 +130,7 @@ mod tests {
         assert!(is_noise(Path::new(
             "C:\\repo\\node_modules\\react\\index.js"
         )));
+        assert!(is_noise(Path::new("C:\\repo\\.opencode\\cache\\data.json")));
     }
 
     #[test]

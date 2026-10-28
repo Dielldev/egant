@@ -1,4 +1,5 @@
 import { Download } from "lucide-react";
+import { Link } from "react-router-dom";
 import { DOWNLOADS, REPO } from "../content";
 import { Mark } from "./Mark";
 import { Reveal } from "./Reveal";
@@ -29,6 +30,7 @@ export function Footer() {
         </span>
         <span>Tauri · Rust · React — everything runs on your machine.</span>
         <a href={REPO}>github.com/Dielldev/egant</a>
+        <Link to="/guides">Guides</Link>
       </footer>
     </>
   );

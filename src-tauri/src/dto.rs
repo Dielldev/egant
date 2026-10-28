@@ -20,6 +20,8 @@ use crate::settings::SettingsDto;
 pub enum EntryDto {
     User {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
     },
     Assistant {
         text: String,
@@ -59,7 +61,10 @@ pub enum EntryDto {
 impl From<&TranscriptEntry> for EntryDto {
     fn from(entry: &TranscriptEntry) -> Self {
         match entry {
-            TranscriptEntry::User { text } => EntryDto::User { text: text.clone() },
+            TranscriptEntry::User { text, images } => EntryDto::User {
+                text: text.clone(),
+                images: images.clone(),
+            },
             TranscriptEntry::Assistant { text, streaming } => EntryDto::Assistant {
                 text: text.clone(),
                 streaming: *streaming,
@@ -789,6 +794,50 @@ impl From<egant_harness::usage_limits::ClaudeUsage> for ClaudeUsageDto {
             five_hour: usage.five_hour.map(UsageWindowDto::from),
             seven_day: usage.seven_day.map(UsageWindowDto::from),
             seven_day_sonnet: usage.seven_day_sonnet.map(UsageWindowDto::from),
+        }
+    }
+}
+
+/// One Codex rate-limit window. The ChatGPT backend reports its reset as a
+/// Unix timestamp and its window length in seconds, so those come through
+/// raw — the frontend formats both.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexWindowDto {
+    pub used_percent: f64,
+    pub resets_at_epoch: Option<i64>,
+    pub window_seconds: Option<u64>,
+}
+
+/// Codex's plan rate limits, from the ChatGPT backend. `None` fields mean
+/// that window doesn't apply on this plan; the whole struct is `null` when
+/// Codex isn't signed in with a ChatGPT account.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexUsageDto {
+    pub primary: Option<CodexWindowDto>,
+    pub secondary: Option<CodexWindowDto>,
+    pub limit_reached: bool,
+    pub plan: Option<String>,
+}
+
+impl From<egant_harness::usage_limits::CodexWindow> for CodexWindowDto {
+    fn from(window: egant_harness::usage_limits::CodexWindow) -> Self {
+        Self {
+            used_percent: window.used_percent,
+            resets_at_epoch: window.resets_at_epoch,
+            window_seconds: window.window_seconds,
+        }
+    }
+}
+
+impl From<egant_harness::usage_limits::CodexUsage> for CodexUsageDto {
+    fn from(usage: egant_harness::usage_limits::CodexUsage) -> Self {
+        Self {
+            primary: usage.primary.map(CodexWindowDto::from),
+            secondary: usage.secondary.map(CodexWindowDto::from),
+            limit_reached: usage.limit_reached,
+            plan: usage.plan,
         }
     }
 }

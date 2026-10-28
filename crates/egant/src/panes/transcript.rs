@@ -486,7 +486,7 @@ fn render_entry(index: usize, entry: &TranscriptEntry) -> AnyElement {
         // The user's turn is a right-aligned bubble; the agent's is plain text on
         // the stage. One of the two has to be the ground, and there is far more
         // agent output than user input.
-        TranscriptEntry::User { text } => h_flex()
+        TranscriptEntry::User { text, .. } => h_flex()
             .w_full()
             .justify_end()
             .child(

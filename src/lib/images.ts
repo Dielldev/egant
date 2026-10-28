@@ -47,9 +47,9 @@ export function extractDataUrl(
   return { dataUrl, remainingText };
 }
 
-/** Regular expression for matching image file paths in text (e.g. tool output or bash commands). */
+/** Regular expression for matching image file paths in text (e.g. tool output, mentions or bash commands). */
 const IMAGE_PATH_REGEX =
-  /(?:^|[\s"'`([<{])([a-zA-Z0-9_.~/\\-]+\.(?:png|jpe?g|webp|gif|svg|bmp|avif|icns))(?=$|[\s"'`)\]>}])/gi;
+  /(?:^|[\s"'`([<{@])([a-zA-Z0-9_.~/\\-]+\.(?:png|jpe?g|webp|gif|svg|bmp|avif|icns))(?=$|[\s"'`)\]>}])/gi;
 
 /** Finds candidate image file paths mentioned inside text. */
 export function extractImagePaths(text: string): string[] {

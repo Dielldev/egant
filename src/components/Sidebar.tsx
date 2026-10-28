@@ -11,15 +11,16 @@ import {
   Folder,
   GitBranch,
   Laptop,
-  Library,
   List,
   ListFilter,
   MapPin,
   Pencil,
+  Plug,
   Plus,
   Search,
   Settings,
   Smartphone,
+  Sparkles,
   TerminalSquare,
   X,
 } from "lucide-react";
@@ -83,6 +84,7 @@ export function Sidebar() {
   const openLibrary = useEgant((s) => s.openLibrary);
   const closeLibrary = useEgant((s) => s.closeLibrary);
   const libraryOpen = useEgant((s) => s.libraryOpen);
+  const librarySection = useEgant((s) => s.librarySection);
   const sidebarWidth = useEgant((s) => s.sidebarWidth);
   const setSidebarWidth = useEgant((s) => s.setSidebarWidth);
 
@@ -555,12 +557,25 @@ export function Sidebar() {
             onClick={() => openSearch()}
           />
           <NavRow
-            icon={Library}
-            label="Library"
+            icon={Sparkles}
+            label="Skills"
             chord="⇧L"
-            title="MCP servers and skills for every agent"
-            active={libraryOpen}
-            onClick={() => (libraryOpen ? closeLibrary() : openLibrary())}
+            title="Browse and manage agent skills"
+            active={libraryOpen && librarySection === "skills"}
+            onClick={() => {
+              if (libraryOpen && librarySection === "skills") closeLibrary();
+              else openLibrary("skills");
+            }}
+          />
+          <NavRow
+            icon={Plug}
+            label="MCP Servers"
+            title="Tools and integrations for every agent"
+            active={libraryOpen && librarySection === "mcp"}
+            onClick={() => {
+              if (libraryOpen && librarySection === "mcp") closeLibrary();
+              else openLibrary("mcp");
+            }}
           />
         </div>
         <div className="flex w-full items-center gap-1">
@@ -614,7 +629,7 @@ function NavRow({
 }: {
   icon: LucideIcon;
   label: string;
-  chord: string;
+  chord?: string;
   title: string;
   active?: boolean;
   onClick: () => void;
@@ -622,7 +637,7 @@ function NavRow({
   return (
     <button
       type="button"
-      title={`${title} · ${modShortcut(chord)}`}
+      title={chord ? `${title} · ${modShortcut(chord)}` : title}
       onClick={onClick}
       className={`flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] ${
         active
@@ -634,7 +649,7 @@ function NavRow({
         <Icon size={16} strokeWidth={2} />
       </span>
       <span className="min-w-0 flex-1 truncate text-left">{label}</span>
-      <KeyCaps chord={chord} />
+      {chord && <KeyCaps chord={chord} />}
     </button>
   );
 }

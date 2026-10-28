@@ -1604,3 +1604,67 @@ kbd {
     background-color: var(--muted);
   }
 }
+
+/* ---------- guides page ---------- */
+.guides-intro {
+  min-height: 42vh;
+  padding-top: 140px;
+  max-width: 760px;
+}
+.guides-intro h1 {
+  font-size: clamp(36px, 6vw, 60px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  margin: 12px 0 18px;
+}
+.guides-index {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin-top: 40px;
+  width: min(920px, 100%);
+}
+.guide-index-card {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 18px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.4;
+  transition: border-color 0.25s var(--ease), transform 0.25s var(--ease);
+}
+.guide-index-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+.guide {
+  max-width: 760px;
+  scroll-margin-top: 80px;
+}
+.guide h2 {
+  font-size: clamp(26px, 4vw, 36px);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin: 12px 0 18px;
+}
+.guide-steps {
+  margin-top: 28px;
+}
+.guide-note {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 10px 10px 0;
+  background: var(--glass-bg);
+  font-size: 14px;
+}
+.guides-more {
+  padding: 40px 0 120px;
+}
+.text-link {
+  color: var(--accent);
+}
+.text-link:hover {
+  text-decoration: underline;
+}

@@ -352,14 +352,34 @@ pub(crate) fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>) 
 
 /// The installed copy's SKILL.md, for the detail sheet.
 pub fn read_installed(id: &str) -> Result<String, String> {
-    check_id(id)?;
-    let home = home_dir()?;
-    let path = std::iter::once(home.join(CANONICAL_DIR))
-        .chain(TARGETS.iter().map(|t| home.join(t.dir)))
-        .map(|dir| dir.join(id).join("SKILL.md"))
-        .find(|p| p.is_file())
-        .ok_or_else(|| format!("{id} isn't installed"))?;
+    let path = find_installed_skill_path(id).ok_or_else(|| format!("{id} isn't installed"))?;
     std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Path to the installed copy's SKILL.md, if installed.
+pub fn find_installed_skill_path(id: &str) -> Option<PathBuf> {
+    if let Ok(()) = check_id(id) {
+        if let Ok(home) = home_dir() {
+            if let Some(path) = std::iter::once(home.join(CANONICAL_DIR))
+                .chain(TARGETS.iter().map(|t| home.join(t.dir)))
+                .map(|dir| dir.join(id).join("SKILL.md"))
+                .find(|p| p.is_file())
+            {
+                return Some(path);
+            }
+        }
+    }
+    if let Ok(lib) = library() {
+        for skill in lib.installed {
+            if skill.id.eq_ignore_ascii_case(id) || skill.name.eq_ignore_ascii_case(id) {
+                let p = PathBuf::from(&skill.path).join("SKILL.md");
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

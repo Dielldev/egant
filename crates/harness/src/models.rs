@@ -1137,8 +1137,14 @@ fn run_with_timeout(program: &PathBuf, args: &[&str], timeout: Duration) -> Opti
     let mut cmd = std::process::Command::new(prog);
     cmd.args(&prefix)
         .args(args)
-        .env("PATH", crate::agents::execution_path())
-        .stdin(Stdio::null())
+        .env("PATH", crate::agents::execution_path());
+    if std::env::var_os("BUN_JSC_forceRAMSize").is_none() {
+        cmd.env("BUN_JSC_forceRAMSize", "268435456");
+    }
+    if std::env::var_os("NODE_OPTIONS").is_none() {
+        cmd.env("NODE_OPTIONS", "--max-old-space-size=512");
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -1169,6 +1175,15 @@ fn run_with_timeout(program: &PathBuf, args: &[&str], timeout: Duration) -> Opti
                 });
             }
             Ok(None) if start.elapsed() > timeout => {
+                #[cfg(windows)]
+                {
+                    let pid = child.id();
+                    let mut cmd = std::process::Command::new("taskkill");
+                    cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                    let _ = cmd.output();
+                }
                 child.kill().ok();
                 let _ = child.wait();
                 return None;

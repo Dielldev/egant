@@ -58,7 +58,7 @@ export type AgentRequest = DecisionRequest;
 export type AgentResponse = DecisionResponse;
 
 export type Entry =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; images?: string[] }
   /** `at` is stamped by the fold when the reply opens, so it is absent on
    * entries restored from a backend snapshot. */
   | { kind: "assistant"; text: string; streaming: boolean; at?: number }
@@ -346,7 +346,7 @@ export type SyncEnvelope = {
   origin: SyncOrigin;
 } & (
   | { type: "harness"; payload: HarnessEvent }
-  | { type: "user_message"; payload: { text: string } }
+  | { type: "user_message"; payload: { text: string; images?: string[] } }
   | { type: "permissions"; payload: { state: TurnState; pending: PendingPermission[] } }
   | { type: "decision"; payload: { decisionId: string; response: DecisionResponse } }
   | { type: "session"; payload: unknown }
@@ -531,6 +531,8 @@ export interface AgentStatus {
   installHint: string;
   connected: boolean;
   email: string | null;
+  accountName?: string | null;
+  plan?: string | null;
 }
 
 /** One published way to install an agent — npm, Homebrew, the vendor's curl
@@ -666,6 +668,24 @@ export interface ClaudeUsage {
   fiveHour: UsageWindow | null;
   sevenDay: UsageWindow | null;
   sevenDaySonnet: UsageWindow | null;
+}
+
+/** One Codex rate-limit window (`codex_usage_limits`). The ChatGPT backend
+ * reports its reset as a Unix timestamp and the window's length in seconds,
+ * so both come through raw. */
+export interface CodexWindow {
+  usedPercent: number;
+  resetsAtEpoch: number | null;
+  windowSeconds: number | null;
+}
+/** Codex's plan rate limits, straight from the ChatGPT backend. `null`
+ * fields mean that window doesn't apply on this plan; the whole call comes
+ * back `null` when Codex isn't signed in with a ChatGPT account. */
+export interface CodexUsage {
+  primary: CodexWindow | null;
+  secondary: CodexWindow | null;
+  limitReached: boolean;
+  plan: string | null;
 }
 
 export interface OpencodeToolUsage {
@@ -903,6 +923,17 @@ export interface GhStatus {
   authenticated: boolean;
   /** What to tell the user when one of the above is false. */
   hint: string;
+}
+
+/** The active GitHub user profile, via `gh api user`. */
+export interface GhUser {
+  login: string;
+  name: string | null;
+  email: string | null;
+  avatarUrl: string;
+  bio: string | null;
+  blog: string | null;
+  publicRepos: number | null;
 }
 
 export interface PullRequest {

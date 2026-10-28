@@ -560,12 +560,60 @@ pub fn project_system_prompt(project_name: &str, cwd: &std::path::Path) -> Strin
     )
 }
 
+/// If `text` begins with a skill invocation (e.g. `/<skill-id>` or `/<skill-id> <instruction>`),
+/// resolves the installed skill's `SKILL.md` and wraps the prompt with the skill's instructions
+/// so that any agent (Claude, Antigravity, OpenCode, Codex, etc.) reads and applies the skill.
+pub fn wrap_skill_if_installed(
+    project_name: &str,
+    cwd: &std::path::Path,
+    text: &str,
+) -> Option<String> {
+    let stripped = text.strip_prefix('/')?;
+    let mut parts = stripped.splitn(2, char::is_whitespace);
+    let skill_id = parts.next()?.trim();
+    if skill_id.is_empty() {
+        return None;
+    }
+    let skill_path = library::skills::find_installed_skill_path(skill_id)?;
+    let skill_content = std::fs::read_to_string(&skill_path).ok()?;
+    let user_instruction = parts.next().map(str::trim).unwrap_or("");
+
+    let prompt = if user_instruction.is_empty() {
+        format!(
+            "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n\
+            [Skill: {skill_id} | Path: {skill_file}]\n\
+            Please apply and follow the instructions in the {skill_id} skill below:\n\n\
+            <skill_instructions>\n\
+            {skill_content}\n\
+            </skill_instructions>",
+            path = cwd.display(),
+            skill_file = skill_path.display(),
+        )
+    } else {
+        format!(
+            "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n\
+            [Skill: {skill_id} | Path: {skill_file}]\n\
+            Please apply and follow the instructions in the {skill_id} skill below to fulfill the user request:\n\n\
+            <skill_instructions>\n\
+            {skill_content}\n\
+            </skill_instructions>\n\n\
+            User request: {user_instruction}",
+            path = cwd.display(),
+            skill_file = skill_path.display(),
+        )
+    };
+    Some(prompt)
+}
+
 /// Per-turn envelope carrying the same fact as [`project_system_prompt`].
 /// The transcript stores the user's original text; only what crosses the
 /// wire is wrapped, so the UI stays clean while the agent is grounded on
 /// every turn — including turns in sessions created before the system prompt
 /// existed, and resumes where the CLI reuses the recorded prompt verbatim.
 pub fn wrap_turn_with_project(project_name: &str, cwd: &std::path::Path, text: &str) -> String {
+    if let Some(wrapped_skill) = wrap_skill_if_installed(project_name, cwd, text) {
+        return wrapped_skill;
+    }
     format!(
         "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n{text}",
         path = cwd.display()
@@ -602,6 +650,41 @@ mod project_context_tests {
             "Arka"
         );
         assert!(!project_display_name(std::path::Path::new("/")).is_empty());
+    }
+
+    #[test]
+    fn wrap_skill_returns_none_for_normal_text_and_commands() {
+        assert!(wrap_skill_if_installed("Arka", std::path::Path::new("/tmp"), "hello").is_none());
+        assert!(
+            wrap_skill_if_installed("Arka", std::path::Path::new("/tmp"), "/compact").is_none()
+        );
+        assert!(
+            wrap_skill_if_installed(
+                "Arka",
+                std::path::Path::new("/tmp"),
+                "/nonexistent-skill-xyz"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn wrap_skill_finds_and_wraps_installed_skill() {
+        // Test with any installed skill if present in ~/.agents or ~/.claude
+        if let Some(path) = library::skills::find_installed_skill_path("frontend-design") {
+            assert!(path.is_file());
+            let wrapped = wrap_skill_if_installed(
+                "egant",
+                std::path::Path::new("/tmp/egant"),
+                "/frontend-design redesign the navbar",
+            );
+            assert!(wrapped.is_some());
+            let prompt = wrapped.unwrap();
+            assert!(prompt.contains("[Project: egant"));
+            assert!(prompt.contains("[Skill: frontend-design"));
+            assert!(prompt.contains("redesign the navbar"));
+            assert!(prompt.contains("<skill_instructions>"));
+        }
     }
 }
 

@@ -3,5 +3,6 @@
   "framework": null,
   "installCommand": "npm ci",
   "buildCommand": "npm run build:site",
-  "outputDirectory": "site/dist"
+  "outputDirectory": "site/dist",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }

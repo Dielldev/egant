@@ -5,12 +5,10 @@ import {
   ArrowUpDown,
   Bell,
   BellRing,
-  Box,
   Check,
   ChevronLeft,
   ChevronRight,
   ChevronLeft as BackChevron,
-  CirclePlus,
   Eye,
   Folder,
   AlignLeft,
@@ -21,9 +19,8 @@ import {
   MessageCircle,
   Monitor,
   Music,
-  Pencil,
   Play,
-  RefreshCw,
+  QrCode,
   SlidersHorizontal,
   Volume2,
 } from "lucide-react";
@@ -43,16 +40,15 @@ import { hostDeviceCapitalized, isMac, modShortcut, windowBarPadClass } from "..
 import { shouldOpenUpward } from "../lib/popover";
 import { ACCENTS, DARK_THEMES, LIGHT_THEMES } from "../lib/themes";
 import { ageLabel } from "../lib/transcript";
-import type { AgentStatus, ArchivedSession } from "../lib/types";
-import { roundPercent } from "../lib/usageLimits";
+import type { ArchivedSession } from "../lib/types";
 import type { ThemeName } from "cuelume";
 import { useEgant } from "../store";
 import type { BgEffect, GlassMode, SettingsSection } from "../store";
+import { AccountsSection } from "./AccountsSettings";
 import { AgentsSection } from "./AgentsSettings";
 import { UsageSection } from "./UsageSettings";
 import {
   Card,
-  DevicePill,
   Dot,
   FILES_SETTINGS_EVENT,
   Pills,
@@ -64,8 +60,10 @@ import {
 import { useNow } from "./useNow";
 import {
   ConnectDeviceRow,
+  HostDeviceRow,
   PairedPhones,
   PhoneAccessSettings,
+  PhoneCompanionCard,
   PhoneConnectDialog,
   usePhoneAccess,
 } from "./PhoneAccess";
@@ -212,15 +210,6 @@ function NavArrow({
   );
 }
 
-function timeAgo(ts: number, now: number): string {
-  const minutes = Math.max(0, Math.round((now - ts) / 60000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 function osLabel(): string {
   const ua = navigator.userAgent || "";
   if (/mac/i.test(ua)) return "macOS";
@@ -298,390 +287,72 @@ function DevicesSection() {
       <SectionHead
         title="Devices"
         count={1 + (phone.status?.devices.length ?? 0)}
-        sub={`${hostDeviceCapitalized()}, and the phones you've connected to it.`}
-      />
-      <Card>
-        <div className="flex items-center gap-3.5 px-4 py-3.5">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted)]">
-            <Monitor size={16} strokeWidth={2} />
-          </span>
-          <div className="min-w-0 flex-1">
-            {editing ? (
-              <input
-                autoFocus
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    setOverride(draft.trim() || null);
-                    setEditing(false);
-                  }
-                  if (e.key === "Escape") {
-                    // Cancel the rename without backing out of settings.
-                    e.stopPropagation();
-                    setEditing(false);
-                  }
-                }}
-                onBlur={() => {
-                  setOverride(draft.trim() || null);
-                  setEditing(false);
-                }}
-                className="w-full max-w-[280px] rounded-md border border-[var(--accent)] bg-transparent px-1.5 py-0.5 text-[13px] font-semibold text-[var(--ink)] outline-none"
-              />
-            ) : (
-              <div className="truncate text-[13px] font-semibold text-[var(--ink)]">{name}</div>
-            )}
-            <div className="mt-0.5 truncate text-[12px] text-[var(--faint)]">
-              {osLabel()}
-              <Dot />v{version}
-              <Dot />
-              Last seen {timeAgo(now, now)}
-              <Dot />
-              Added {timeAgo(addedAt, now)}
-              <Dot />
-              {deviceId}
-            </div>
-          </div>
-          <span className="shrink-0 text-[12px] text-[var(--muted)]">{hostDeviceCapitalized()}</span>
+        sub={`${hostDeviceCapitalized()}, and the companion phones linked to control your sessions.`}
+        right={
           <button
             type="button"
-            onClick={() => {
+            onClick={() => void phone.connect()}
+            disabled={phone.busy}
+            className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--ink)] px-3 py-1.5 text-[12px] font-medium text-[var(--stage)] hover:opacity-90 disabled:opacity-50 transition"
+          >
+            <QrCode size={13} strokeWidth={2} />
+            Pair phone
+          </button>
+        }
+      />
+
+      {/* Companion Spotlight Card */}
+      <PhoneCompanionCard phone={phone} />
+
+      {/* Linked Devices Group */}
+      <div className="mt-8">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-[13px] font-semibold text-[var(--ink)]">Linked Devices</h2>
+          <span className="text-[12px] text-[var(--faint)]">
+            {1 + (phone.status?.devices.length ?? 0)} {1 + (phone.status?.devices.length ?? 0) === 1 ? "node" : "nodes"}
+          </span>
+        </div>
+
+        <Card>
+          <HostDeviceRow
+            name={name}
+            editing={editing}
+            draft={draft}
+            onStartEdit={() => {
               setDraft(name);
               setEditing(true);
             }}
-            className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-          >
-            <Pencil size={13} strokeWidth={2} />
-            Rename
-          </button>
-        </div>
-        <PairedPhones phone={phone} />
-        <ConnectDeviceRow phone={phone} />
-      </Card>
+            onChangeDraft={setDraft}
+            onSaveEdit={() => {
+              setOverride(draft.trim() || null);
+              setEditing(false);
+            }}
+            onCancelEdit={() => setEditing(false)}
+            os={osLabel()}
+            version={version}
+            deviceId={deviceId}
+            addedAt={addedAt}
+            now={now}
+            enginePort={phone.status?.port}
+            engineRunning={phone.status?.running ?? false}
+          />
+          <PairedPhones phone={phone} />
+          <ConnectDeviceRow phone={phone} />
+        </Card>
+      </div>
+
+      {/* Remote Access & Networking */}
       <PhoneAccessSettings phone={phone} />
+
+      {/* Pairing Modal */}
       <PhoneConnectDialog phone={phone} />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Accounts
+// Accounts (see ./AccountsSettings.tsx)
 // ---------------------------------------------------------------------------
-
-function AccountsSection() {
-  const machine = useEgant((s) => s.snapshot?.machineName ?? "Local device");
-  const agents = useEgant((s) => s.agents);
-  const fetchAgents = useEgant((s) => s.fetchAgents);
-  const verifyAgents = useEgant((s) => s.verifyAgents);
-  const refresh = useEgant((s) => s.refresh);
-  const claudeUsage = useEgant((s) => s.claudeUsage);
-  const fetchClaudeUsage = useEgant((s) => s.fetchClaudeUsage);
-  const opencodeUsage = useEgant((s) => s.opencodeUsage);
-  const fetchOpencodeUsage = useEgant((s) => s.fetchOpencodeUsage);
-  const [spinning, setSpinning] = useState(false);
-  useEffect(() => {
-    void verifyAgents();
-    void fetchClaudeUsage();
-    void fetchOpencodeUsage();
-  }, [verifyAgents, fetchClaudeUsage, fetchOpencodeUsage]);
-
-  const statusOf = (id: string) => agents.find((a) => a.id === id);
-  const known = agents.length > 0;
-  const connectedCount = ["claude", "codex", "opencode", "antigravity", "cursor"].filter(
-    (id) => statusOf(id)?.connected,
-  ).length;
-
-  const refreshAll = () => {
-    setSpinning(true);
-    const ids = ["claude", "codex", "opencode", "antigravity", "cursor"];
-    void Promise.all([
-      refresh(),
-      fetchAgents(),
-      fetchClaudeUsage(),
-      fetchOpencodeUsage(),
-      ...ids.map((id) => api.checkAgentLogin(id).catch(() => null)),
-    ]).finally(() => {
-      void fetchAgents();
-      setSpinning(false);
-    });
-  };
-
-  const claudeUsageText = claudeUsage?.fiveHour
-    ? `${roundPercent(claudeUsage.fiveHour)}% used (5-hour limit)`
-    : "Usage unavailable";
-
-  return (
-    <div>
-      <SectionHead
-        title="Accounts"
-        count={connectedCount}
-        sub="The Claude Code, Codex, OpenCode, Antigravity, and Cursor logins on this device. Refresh re-checks each login with the CLI itself, not just whether a credentials file exists."
-        right={
-          <>
-            <button
-              type="button"
-              onClick={refreshAll}
-              className="flex cursor-pointer items-center gap-1.5 text-[13px] text-[var(--muted)] hover:text-[var(--ink)]"
-            >
-              <RefreshCw size={13} strokeWidth={2} className={spinning ? "animate-spin" : ""} />
-              Refresh
-            </button>
-            <DevicePill name={machine} />
-          </>
-        }
-      />
-
-      <AccountGroup
-        id="claude"
-        icon={<ProviderGlyph provider="claude" size={15} />}
-        name="Claude Code"
-        installed={!known || (statusOf("claude")?.installed ?? false)}
-        body={
-          <AccountBody
-            status={statusOf("claude")}
-            empty="Claude Code isn't connected on this device — Add account to sign in."
-            subtitle={claudeUsageText}
-          />
-        }
-      />
-
-      <AccountGroup
-        id="codex"
-        icon={<ProviderGlyph provider="codex" size={15} />}
-        name="Codex"
-        installed={!known || (statusOf("codex")?.installed ?? false)}
-        body={
-          <AccountBody
-            status={statusOf("codex")}
-            empty="Codex isn't connected on this device — Add account to sign in."
-          />
-        }
-      />
-
-      <AccountGroup
-        id="opencode"
-        icon={<ProviderGlyph provider="opencode" size={15} />}
-        name="OpenCode"
-        installed={!known || (statusOf("opencode")?.installed ?? false)}
-        body={
-          <AccountBody
-            status={statusOf("opencode")}
-            empty="OpenCode isn't installed on this device — install it to use its free models, or add a provider account."
-            readySubtitle={
-              opencodeUsage?.freeLimitReached
-                ? "Free tier limit reached — Community models rate-limited"
-                : opencodeUsage
-                ? `${opencodeUsage.totalSessions} sessions • ${opencodeUsage.totalMessages.toLocaleString()} messages • Free tier`
-                : "Free models ready — Add account to sign in to a specific provider"
-            }
-          />
-        }
-      />
-
-      <AccountGroup
-        id="antigravity"
-        icon={<ProviderGlyph provider="antigravity" size={15} />}
-        name="Antigravity"
-        installed={!known || (statusOf("antigravity")?.installed ?? false)}
-        body={
-          <AccountBody
-            status={statusOf("antigravity")}
-            empty={
-              statusOf("antigravity")?.installed
-                ? "Antigravity isn't connected on this device — Add account to sign in with Google."
-                : "Antigravity isn't installed on this device — install the agy CLI, then Add account to sign in with Google."
-            }
-          />
-        }
-      />
-
-      <AccountGroup
-        id="cursor"
-        // No real Cursor mark ships in assets/logos yet — the plain Lucide
-        // glyph stays until one is added, rather than guessing at a brand
-        // asset.
-        icon={<Box size={15} strokeWidth={2} className="text-[var(--muted)]" />}
-        name="Cursor"
-        installed={!known || (statusOf("cursor")?.installed ?? false)}
-        body={
-          <AccountBody
-            status={statusOf("cursor")}
-            empty="Cursor isn't connected on this device — cursor-agent sign-in isn't wired up yet."
-          />
-        }
-      />
-
-      <p className="mt-4 max-w-[700px] text-[12px] leading-relaxed text-[var(--faint)]">
-        Add account runs each CLI&apos;s own sign-in: Claude Code and Codex open a
-        browser tab in the background, OpenCode and Antigravity open a Terminal
-        window for their own sign-in. This device only ever holds one login per agent — Add
-        account replaces whichever one is currently signed in.
-      </p>
-    </div>
-  );
-}
-
-function AccountBody({
-  status,
-  empty,
-  readySubtitle,
-  subtitle,
-}: {
-  status?: AgentStatus;
-  empty: string;
-  /** Overrides the "Logged in" line for an agent with no real login step —
-   * OpenCode is ready off the CLI install alone (its free-tier models need
-   * no provider auth), so "Logged in" would claim a step that never
-   * happened. */
-  readySubtitle?: string;
-  subtitle?: string;
-}) {
-  if (!status?.connected) {
-    return (
-      <div className="px-4 py-6 text-center text-[13px] text-[var(--muted)]">{empty}</div>
-    );
-  }
-  const letter = (status.email?.[0] ?? status.name[0]).toUpperCase();
-  const sub =
-    subtitle ??
-    (status.id === "antigravity"
-      ? (status.email ? "Google account" : "Logged in")
-      : (status.email ? "Logged in" : (readySubtitle ?? "Logged in")));
-  return (
-    <div className="flex items-center gap-3 px-4 py-3.5">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--selected)] text-[12px] font-medium text-[var(--ink)]">
-        {letter}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-semibold text-[var(--ink)]">
-          {status.email ?? `${status.name} connected`}
-        </div>
-        <div className="mt-0.5 text-[12px] text-[var(--faint)]">
-          {sub}
-        </div>
-      </div>
-      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
-        Active
-      </span>
-    </div>
-  );
-}
-
-/** How long "Add account" keeps polling `checkAgentLogin` after a login was
- * started, before giving up and pointing the user at Refresh instead. Long
- * enough for a browser OAuth round trip or a terminal picker, not so long a
- * click-away-and-forget leaves it spinning forever. */
-const CONNECT_POLL_MS = 2_500;
-const CONNECT_TIMEOUT_MS = 120_000;
-
-/** What to tell the user to go look at while a sign-in is under way — each
- * agent's "Add account" opens a different place, so "finish signing in"
- * alone leaves them checking the wrong window. */
-const CONNECT_HINTS: Record<string, string> = {
-  claude: "Check your browser — a Claude Code sign-in tab should have opened.",
-  codex: "Check your browser — a Codex sign-in tab should have opened.",
-  opencode: "Check the Terminal window that just opened and follow its provider picker.",
-  antigravity: "Check the Terminal window that just opened — follow its prompts to sign in with Google.",
-};
-
-function AccountGroup({
-  id,
-  icon,
-  name,
-  installed,
-  body,
-}: {
-  id: string;
-  icon: ReactNode;
-  name: string;
-  installed: boolean;
-  body: ReactNode;
-}) {
-  const fetchAgents = useEgant((s) => s.fetchAgents);
-  const [connecting, setConnecting] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const pollToken = useRef(0);
-
-  useEffect(() => () => {
-    // Invalidate any in-flight poll loop when this row unmounts (settings closed).
-    pollToken.current += 1;
-  }, []);
-
-  const onAdd = async () => {
-    const token = ++pollToken.current;
-    setNote(null);
-    try {
-      await api.connectAgent(id);
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e));
-      return;
-    }
-    setConnecting(true);
-    setNote(CONNECT_HINTS[id] ?? "Finish signing in — this updates on its own once you do.");
-    const deadline = Date.now() + CONNECT_TIMEOUT_MS;
-    const poll = async () => {
-      if (pollToken.current !== token) return; // superseded or unmounted
-      let status: AgentStatus | null = null;
-      try {
-        status = await api.checkAgentLogin(id);
-      } catch {
-        // A transient spawn failure shouldn't end the wait early.
-      }
-      if (pollToken.current !== token) return;
-      if (status?.connected) {
-        setConnecting(false);
-        setNote(null);
-        void fetchAgents();
-        return;
-      }
-      if (Date.now() < deadline) {
-        setTimeout(() => void poll(), CONNECT_POLL_MS);
-      } else {
-        setConnecting(false);
-        setNote("Still not connected — finish signing in, then hit Refresh.");
-      }
-    };
-    setTimeout(() => void poll(), CONNECT_POLL_MS);
-  };
-
-  return (
-    <div className="mb-5">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="flex items-center gap-2 text-[13px] font-semibold text-[var(--ink)]">
-          {icon}
-          {name}
-        </span>
-        <button
-          type="button"
-          title={installed ? `Add ${name} account` : `Install ${name} to connect an account`}
-          disabled={connecting || !installed}
-          onClick={() => void onAdd()}
-          className="flex cursor-pointer items-center gap-1.5 text-[13px] text-[var(--muted)] hover:text-[var(--ink)] disabled:cursor-default disabled:opacity-50 disabled:hover:text-[var(--muted)]"
-        >
-          <CirclePlus size={14} strokeWidth={2} className={connecting ? "animate-pulse" : ""} />
-          {connecting ? "Connecting…" : "Add account"}
-        </button>
-      </div>
-      <Card>{body}</Card>
-      {note && (
-        <div
-          className={`mt-2 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12px] leading-relaxed ${
-            connecting
-              ? "border-[var(--accent)]/25 bg-[var(--accent)]/10 text-[var(--ink)]"
-              : "border-amber-400/25 bg-amber-400/10 text-amber-200"
-          }`}
-        >
-          {connecting ? (
-            <RefreshCw size={13} strokeWidth={2} className="mt-0.5 shrink-0 animate-spin" />
-          ) : (
-            <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
-          )}
-          <span>{note}</span>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Appearance (fully functional)

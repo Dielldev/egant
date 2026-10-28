@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BRAND_COLORS, providerSvg } from "./ProviderLogo";
+import { providerSvg } from "./ProviderLogo";
 
 export const MCP_DOMAINS: Record<string, string> = {
   playwright: "playwright.dev",
@@ -219,14 +219,12 @@ export function SkillLogo({
   if (resolved.vendor) {
     const svg = providerSvg(resolved.vendor);
     if (svg) {
-      const brandColor = BRAND_COLORS[resolved.vendor.toLowerCase()];
       return (
         <span
-          className="flex shrink-0 items-center justify-center rounded-md"
+          className="flex shrink-0 items-center justify-center text-[var(--ink)]"
           style={{
             width: size,
             height: size,
-            color: brandColor ?? "var(--ink)",
           }}
         >
           <span className="provider-logo" dangerouslySetInnerHTML={{ __html: svg }} />

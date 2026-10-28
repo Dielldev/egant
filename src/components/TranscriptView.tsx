@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, FolderOpen, TriangleAlert, Undo2 } from "lucide-react";
+import { Check, ChevronDown, Copy, FolderOpen, Image as ImageIcon, Loader2, TriangleAlert, Undo2 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { modShortcut } from "../lib/platform";
 import {
@@ -784,50 +784,116 @@ function Centered({
 function UserImageThumbnail({ path }: { path: string }) {
   const root = useEgant((s) => workspaceRoot(s.snapshot));
   const openLightbox = useImageLightbox((s) => s.open);
-  const [url, setUrl] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(() => {
+    if (
+      path.startsWith("data:") ||
+      path.startsWith("blob:") ||
+      path.startsWith("http://") ||
+      path.startsWith("https://")
+    ) {
+      return path;
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState(!url);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
+    if (url) return;
     let cancelled = false;
-    resolveImageDataUrl(path, root).then((dataUrl) => {
-      if (!cancelled && dataUrl) setUrl(dataUrl);
-    });
+    setLoading(true);
+    resolveImageDataUrl(path, root)
+      .then((dataUrl) => {
+        if (!cancelled) {
+          if (dataUrl) {
+            setUrl(dataUrl);
+            setError(false);
+          } else {
+            setError(true);
+          }
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError(true);
+          setLoading(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [path, root]);
+  }, [path, root, url]);
 
-  if (!url) return null;
+  const name = basename(path) || "Uploaded image";
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-black/10 px-2.5 py-1.5 text-xs text-[var(--muted)]">
+        <ImageIcon size={14} className="shrink-0" />
+        <span className="truncate max-w-[180px]">{name}</span>
+      </div>
+    );
+  }
+
+  if (loading || !url) {
+    return (
+      <div className="flex h-20 w-28 items-center justify-center rounded-xl border border-[var(--border)] bg-black/10 text-[var(--muted)]">
+        <Loader2 size={16} className="animate-spin text-[var(--muted)]" />
+      </div>
+    );
+  }
 
   return (
     <button
       type="button"
-      title={`Click to view ${basename(path)}`}
+      title={`Click to view ${name}`}
       onClick={() =>
         openLightbox({
           src: url,
           filePath: path.startsWith("data:") ? undefined : path.replace(/^file:\/\//, ""),
-          title: basename(path) || "Screenshot",
+          title: name,
         })
       }
-      className="group relative h-14 w-14 cursor-pointer overflow-hidden rounded-lg border border-[var(--border)] bg-[rgba(0,0,0,0.15)] shadow-sm hover:ring-1 hover:ring-[var(--accent)]"
+      className="group relative block max-w-full cursor-pointer overflow-hidden rounded-xl border border-[var(--border)] bg-black/15 shadow-sm transition hover:ring-2 hover:ring-[var(--accent)]"
     >
-      <img src={url} alt={basename(path)} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+      <img
+        src={url}
+        alt={name}
+        className="max-h-60 max-w-full rounded-xl object-contain transition-transform group-hover:scale-[1.01]"
+      />
     </button>
   );
 }
 
-function UserEntryBubble({ text }: { text: string }) {
-  const imagePaths = useMemo(() => {
-    return extractImagePaths(text).filter((p) => isImage(p));
-  }, [text]);
+function UserEntryBubble({ text, images }: { text: string; images?: string[] }) {
+  const allImages = useMemo(() => {
+    const fromText = extractImagePaths(text).filter((p) => isImage(p));
+    const combined = [...(images ?? []), ...fromText];
+    return Array.from(new Set(combined));
+  }, [text, images]);
+
+  const isDefaultCaption =
+    text.trim() === "Here's an image." ||
+    /^Here are \d+ images\.$/.test(text.trim()) ||
+    text.trim() === "Uploaded image" ||
+    /^Uploaded \d+ images$/.test(text.trim());
+
+  const showText = text.trim() && (!isDefaultCaption || allImages.length === 0);
 
   return (
     <div className="flex w-full justify-end">
       <div className="max-w-[80%] rounded-2xl bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap text-[var(--ink)]">
-        <LinkifiedText text={text} />
-        {imagePaths.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-2">
-            {imagePaths.map((p, i) => (
+        {allImages.length > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-[var(--muted)]">
+            <ImageIcon size={13} strokeWidth={2} />
+            <span>Uploaded image{allImages.length > 1 ? "s" : ""}</span>
+          </div>
+        )}
+        {showText && <LinkifiedText text={text} />}
+        {allImages.length > 0 && (
+          <div className={`${showText ? "mt-2.5" : ""} flex flex-wrap gap-2.5`}>
+            {allImages.map((p, i) => (
               <UserImageThumbnail key={i} path={p} />
             ))}
           </div>
@@ -852,7 +918,7 @@ const RenderEntry = memo(function RenderEntry({
     // the stage. One of the two has to be the ground, and there is far more
     // agent output than user input.
     case "user":
-      return <UserEntryBubble text={entry.text} />;
+      return <UserEntryBubble text={entry.text} images={entry.images} />;
 
     case "assistant":
       return (

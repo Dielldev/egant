@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { CliLaunchDialog } from "./components/CliLaunchDialog";
 import { CliStage } from "./components/CliStage";
 import { ConflictFileView } from "./components/ConflictResolution";
+import { ConnectModelsDialog } from "./components/ConnectModelsDialog";
 import { DiffTabView } from "./components/DiffTabView";
 import { FileView } from "./components/FileView";
 import { ImageLightbox } from "./components/ImageLightbox";
@@ -57,7 +58,7 @@ type Stage = "launch" | "docking" | "thread";
 
 export default function App() {
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--ink)]">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-transparent text-[var(--ink)]">
       {isWindows() && <WindowsChrome />}
       <div className="min-h-0 flex-1">
         <EgantWindow />
@@ -143,7 +144,10 @@ function EgantWindow() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
       const store = useEgant.getState();
-      if (store.settingsOpen) {
+      if (store.connectModelsOpen) {
+        e.preventDefault();
+        store.closeConnectModels();
+      } else if (store.settingsOpen) {
         e.preventDefault();
         store.closeSettings();
       } else if (store.libraryOpen) {
@@ -427,6 +431,8 @@ function EgantWindow() {
     <div className="flex h-full w-full overflow-hidden bg-transparent text-[var(--ink)]">
       {settingsOpen ? (
         <SettingsPage />
+      ) : libraryOpen ? (
+        <LibraryPage />
       ) : (
         <>
           {sidebarShown && <Sidebar />}
@@ -437,22 +443,16 @@ function EgantWindow() {
             fill instead (see `.stage-glass`). The tint stays on underneath
             in every state now — `heroVisible`'s wallpaper dissolves off the
             top of it on dock instead of the stage cutting to it in one frame. */}
-          {/* The Library takes the stage, not the window: the sidebar stays,
-            so a conversation is one click away. */}
-          {libraryOpen ? (
-            <LibraryPage />
-          ) : (
-            <>
-              {/* The stage slides out from under a maximizing panel rather than
-                being squeezed by it: the panel's width animates over 280ms, and
-                without this the transcript would reflow through every width on the
-                way. Fading as it goes is what makes the squeeze invisible. */}
-              <div
-                style={{
-                  transition:
-                    "opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1)",
-                }}
-                className={`stage-glass relative flex h-full flex-1 flex-col overflow-hidden ${
+          {/* The stage slides out from under a maximizing panel rather than
+            being squeezed by it: the panel's width animates over 280ms, and
+            without this the transcript would reflow through every width on the
+            way. Fading as it goes is what makes the squeeze invisible. */}
+          <div
+            style={{
+              transition:
+                "opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+            }}
+            className={`stage-glass relative flex h-full flex-1 flex-col overflow-hidden ${
                   // Only while there is a panel to have taken the room: the
                   // maximized flag outlives closing the panel, and a stage slid
                   // out from under nothing is an empty window.
@@ -501,13 +501,12 @@ function EgantWindow() {
                 </div>
               </div>
               {panelVisible && <WorkspacePanel />}
-            </>
-          )}
         </>
       )}
       {/* Outside the settings branch: the dialog is reachable both from the
         composer's agent picker and from Settings > Agents, and it should
         look the same either way. */}
+      <ConnectModelsDialog />
       <CliLaunchDialog />
       <SearchModal />
       <ImageLightbox />

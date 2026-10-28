@@ -64,7 +64,10 @@ export function WindowsChrome() {
       void win
         .isMaximized()
         .then((value) => {
-          if (!disposed) setMaximized(value);
+          if (!disposed) {
+            setMaximized(value);
+            document.documentElement.dataset.windowMaximized = String(value);
+          }
         })
         .catch(() => {});
     };
@@ -434,7 +437,7 @@ export function WindowsChrome() {
         <div
           role="menu"
           aria-label={openMenu.label}
-          className="menu menu-pop fixed z-[100] max-h-[calc(100vh-44px)] w-[280px] overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)]/95 p-1 text-[12.5px] shadow-2xl backdrop-blur-md"
+          className="menu menu-pop fixed z-[100] max-h-[calc(100vh-44px)] w-[280px] overflow-y-auto rounded-xl p-1 text-[12.5px] shadow-2xl"
           style={{ left: at.left, top: at.top }}
         >
           {openMenu.items.map((item, index) =>

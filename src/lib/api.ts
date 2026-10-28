@@ -14,6 +14,7 @@ import type {
   CatalogSkill,
   CheckoutPlan,
   ClaudeUsage,
+  CodexUsage,
   CloseResult,
   ConflictBlock,
   ConflictSide,
@@ -25,6 +26,7 @@ import type {
   FileContent,
   FileEntry,
   GhStatus,
+  GhUser,
   GitChange,
   HistoryPage,
   McpCatalog,
@@ -297,6 +299,10 @@ export const api = {
    * call — the composer polls it, not the hot render path. */
   claudeUsageLimits: () =>
     traced("claude_usage_limits", "", () => invoke<ClaudeUsage | null>("claude_usage_limits")),
+  /** Codex's plan rate limits, from the ChatGPT backend. `null` when Codex
+   * isn't signed in with a ChatGPT account. Backend-cached like Claude's. */
+  codexUsageLimits: () =>
+    traced("codex_usage_limits", "", () => invoke<CodexUsage | null>("codex_usage_limits")),
   opencodeUsageStats: () =>
     traced("opencode_usage_stats", "", () => invoke<OpencodeUsageStats>("opencode_usage_stats")),
   /** Tokens per agent, model and day, read from the CLIs' own logs. The
@@ -531,6 +537,7 @@ export const api = {
 
   // GitHub, through the user's own `gh`.
   ghStatus: () => traced("gh_status", "", () => invoke<GhStatus>("gh_status")),
+  ghUser: () => traced("gh_user", "", () => invoke<GhUser | null>("gh_user")),
   prList: (root: string) =>
     traced("pr_list", "", () => invoke<PullRequest[]>("pr_list", { root })),
   prDetail: (root: string, number: number) =>

@@ -226,6 +226,8 @@ pub struct AgentStatus {
     pub install_hint: &'static str,
     pub connected: bool,
     pub email: Option<String>,
+    pub account_name: Option<String>,
+    pub plan: Option<String>,
 }
 
 /// Probe every known agent. One login-shell snapshot is shared across the
@@ -255,12 +257,35 @@ fn build_status(id: AgentId) -> AgentStatus {
     // provider login (`opencode auth login`) writes — but its absence no
     // longer means "can't be used."
     //
-    let (connected, email) = if !installed {
-        (false, None)
-    } else if matches!(id, AgentId::Opencode) {
-        (true, None)
+    let (connected, email, account_name, plan) = if !installed {
+        (false, None, None, None)
     } else {
-        login_status(id)
+        match id {
+            AgentId::Claude => {
+                let (email, name, plan) = claude_account_info();
+                let (conn, _) = claude_login();
+                (conn, email, name, plan)
+            }
+            AgentId::Codex => {
+                let (email, name, plan) = codex_account_info();
+                let conn = codex_auth_file().is_some();
+                (conn, email, name, plan)
+            }
+            AgentId::Antigravity => {
+                let (conn, email) = antigravity_login();
+                (conn, email, None, Some("Google Account".to_string()))
+            }
+            AgentId::Opencode => (
+                true,
+                None,
+                Some("Local Instance".to_string()),
+                Some("Free Tier".to_string()),
+            ),
+            _ => {
+                let (conn, email) = login_status(id);
+                (conn, email, None, None)
+            }
+        }
     };
     AgentStatus {
         id,
@@ -271,6 +296,8 @@ fn build_status(id: AgentId) -> AgentStatus {
         install_hint: desc.install_hint,
         connected,
         email,
+        account_name,
+        plan,
     }
 }
 
@@ -354,7 +381,8 @@ fn verify_codex_login() -> Option<(bool, Option<String>)> {
     let output = cmd.output().ok()?;
     let mut text = String::from_utf8_lossy(&output.stdout).to_lowercase();
     text.push_str(&String::from_utf8_lossy(&output.stderr).to_lowercase());
-    Some((output.status.success() && text.contains("logged in"), None))
+    let (email, _, _) = codex_account_info();
+    Some((output.status.success() && text.contains("logged in"), email))
 }
 
 // ---------------------------------------------------------------------------
@@ -942,7 +970,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 fn login_status(id: AgentId) -> (bool, Option<String>) {
     match id {
         AgentId::Claude => claude_login(),
-        AgentId::Codex => (codex_auth_file().is_some(), None),
+        AgentId::Codex => (codex_auth_file().is_some(), codex_account_info().0),
         AgentId::Opencode => (opencode_auth_file().is_some(), None),
         AgentId::Cursor => (cursor_auth_file().is_some(), None),
         AgentId::Antigravity => antigravity_login(),
@@ -997,7 +1025,110 @@ fn claude_email_at(path: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn codex_auth_file() -> Option<PathBuf> {
+fn claude_account_info() -> (Option<String>, Option<String>, Option<String>) {
+    let Some(path) = claude_identity_file() else {
+        return (None, None, None);
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return (None, None, None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (None, None, None);
+    };
+    let oa = match value.get("oauthAccount") {
+        Some(o) => o,
+        None => return (None, None, None),
+    };
+    let email = oa
+        .get("emailAddress")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let name = oa
+        .get("fullName")
+        .or_else(|| oa.get("displayName"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let plan = oa
+        .get("organizationType")
+        .and_then(|v| v.as_str())
+        .map(|org_type| match org_type {
+            "claude_pro" => "Claude Pro".to_string(),
+            "claude_team" => "Claude Team".to_string(),
+            "claude_enterprise" => "Claude Enterprise".to_string(),
+            _ => "Claude Account".to_string(),
+        })
+        .or_else(|| {
+            oa.get("billingType")
+                .and_then(|v| v.as_str())
+                .filter(|b| b.contains("subscription"))
+                .map(|_| "Claude Pro".to_string())
+        });
+    (email, name, plan)
+}
+
+fn codex_account_info() -> (Option<String>, Option<String>, Option<String>) {
+    let Some(file) = codex_auth_file() else {
+        return (None, None, None);
+    };
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return (None, None, None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (None, None, None);
+    };
+    let token = match value
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(|t| t.as_str())
+    {
+        Some(t) => t,
+        None => return (None, None, None),
+    };
+    let payload_b64 = match token.split('.').nth(1) {
+        Some(p) => p,
+        None => return (None, None, None),
+    };
+    use base64::Engine;
+    let bytes = match base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload_b64))
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(payload_b64))
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(payload_b64))
+    {
+        Ok(b) => b,
+        Err(_) => return (None, None, None),
+    };
+    let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return (None, None, None),
+    };
+    let email = payload
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let name = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let plan = payload
+        .get("https://api.openai.com/auth")
+        .and_then(|a| a.get("chatgpt_plan_type"))
+        .and_then(|v| v.as_str())
+        .map(|pt| match pt {
+            "free" => "ChatGPT Free".to_string(),
+            "plus" => "ChatGPT Plus".to_string(),
+            "pro" => "ChatGPT Pro".to_string(),
+            "team" => "ChatGPT Team".to_string(),
+            "enterprise" => "ChatGPT Enterprise".to_string(),
+            _ => format!("ChatGPT {}", pt),
+        });
+    (email, name, plan)
+}
+
+/// The `auth.json` in `$CODEX_HOME` (else `~/.codex`), when it exists. Read
+/// by the usage module for Codex's rate-limit windows; the token itself is
+/// never logged.
+pub(crate) fn codex_auth_file() -> Option<PathBuf> {
     let home = std::env::var_os("CODEX_HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
@@ -1148,6 +1279,14 @@ fn antigravity_email_from_secret(secret: &str) -> Option<String> {
 
     let value: serde_json::Value = serde_json::from_str(&json_str).ok()?;
     if let Some(email) = value.get("email").and_then(serde_json::Value::as_str) {
+        if !email.is_empty() {
+            return Some(email.to_string());
+        }
+    }
+    if let Some(email) = value
+        .get("id_token_email")
+        .and_then(serde_json::Value::as_str)
+    {
         if !email.is_empty() {
             return Some(email.to_string());
         }

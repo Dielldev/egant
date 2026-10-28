@@ -189,6 +189,66 @@ pub async fn gh_status() -> Result<GhStatusDto, String> {
     .map_err(|error| error.to_string())
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhUserDto {
+    pub login: String,
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub avatar_url: String,
+    pub bio: Option<String>,
+    pub blog: Option<String>,
+    pub public_repos: Option<u64>,
+}
+
+/// The currently signed-in GitHub user, via `gh api user`.
+#[tauri::command]
+pub async fn gh_user() -> Result<Option<GhUserDto>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "user"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let output = match cmd.output() {
+            Ok(o) if o.status.success() => o,
+            _ => return Ok(None),
+        };
+        let val: Value = match serde_json::from_slice(&output.stdout) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let login = match val.get("login").and_then(Value::as_str) {
+            Some(l) if !l.is_empty() => l.to_string(),
+            _ => return Ok(None),
+        };
+        let name = val.get("name").and_then(Value::as_str).map(str::to_owned);
+        let email = val.get("email").and_then(Value::as_str).map(str::to_owned);
+        let avatar_url = val
+            .get("avatar_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let bio = val.get("bio").and_then(Value::as_str).map(str::to_owned);
+        let blog = val.get("blog").and_then(Value::as_str).map(str::to_owned);
+        let public_repos = val.get("public_repos").and_then(Value::as_u64);
+
+        Ok(Some(GhUserDto {
+            login,
+            name,
+            email,
+            avatar_url,
+            bio,
+            blog,
+            public_repos,
+        }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Open pull requests for the repository `root` belongs to.
 #[tauri::command]
 pub async fn pr_list(root: String) -> Result<Vec<PullRequestDto>, String> {

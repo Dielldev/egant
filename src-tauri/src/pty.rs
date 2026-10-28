@@ -36,6 +36,16 @@ struct Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if let Some(pid) = self.child.process_id() {
+                let mut cmd = std::process::Command::new("taskkill");
+                cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+                let _ = cmd.output();
+            }
+        }
         let _ = self.child.kill();
     }
 }
@@ -164,6 +174,12 @@ fn open(
     command.env("PWD", &dir);
     command.cwd(dir);
     command.env("PATH", egant_harness::agents::execution_path());
+    if std::env::var_os("BUN_JSC_forceRAMSize").is_none() {
+        command.env("BUN_JSC_forceRAMSize", "268435456");
+    }
+    if std::env::var_os("NODE_OPTIONS").is_none() {
+        command.env("NODE_OPTIONS", "--max-old-space-size=512");
+    }
     // xterm.js speaks full 256-colour/truecolor; say so, or the shell and
     // everything it runs will assume a dumb terminal and drop the colour.
     command.env("TERM", "xterm-256color");

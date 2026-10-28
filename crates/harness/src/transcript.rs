@@ -14,6 +14,8 @@ use std::collections::HashMap;
 pub enum TranscriptEntry {
     User {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
     },
     /// `streaming` stays true while deltas are still arriving, which is what the
     /// view uses to decide whether to draw a cursor.
@@ -232,8 +234,15 @@ impl Transcript {
 
     /// Records a turn the user just sent, before the agent has replied.
     pub fn push_user(&mut self, text: impl Into<String>) {
-        self.entries
-            .push(TranscriptEntry::User { text: text.into() });
+        self.push_user_with_images(text, Vec::new());
+    }
+
+    /// Records a turn the user just sent with optional image paths/URLs.
+    pub fn push_user_with_images(&mut self, text: impl Into<String>, images: Vec<String>) {
+        self.entries.push(TranscriptEntry::User {
+            text: text.into(),
+            images,
+        });
         self.state = TurnState::Running;
     }
 

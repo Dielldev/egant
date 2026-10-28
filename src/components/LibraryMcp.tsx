@@ -3,7 +3,7 @@
 // …) by `crates/harness/src/library/mcp.rs`. The agents' files are the only
 // record — a server added by hand shows up here too.
 
-import { ExternalLink, Eye, EyeOff, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { Compass, ExternalLink, Eye, EyeOff, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { CatalogMcp, InstalledMcp, McpLibrary, McpServer, McpTransport } from "../lib/types";
@@ -26,13 +26,34 @@ import {
 import type { ChecklistAgent } from "./LibraryKit";
 import { Pills, SectionHead } from "./SettingsKit";
 
+type Tab = "installed" | "browse";
+
+export interface McpSectionProps {
+  tab?: Tab;
+  onTabChange?: (tab: Tab) => void;
+  onCountChange?: (count: number) => void;
+}
+
 type SheetState =
   | { kind: "add"; entry: CatalogMcp }
   | { kind: "custom" }
   | { kind: "edit"; server: InstalledMcp };
 
-export function McpSection() {
+export function McpSection({
+  tab: controlledTab,
+  onTabChange,
+  onCountChange,
+}: McpSectionProps = {}) {
   const [lib, setLib] = useState<McpLibrary | null>(null);
+  const [internalTab, setInternalTab] = useState<Tab>("installed");
+  const tab = controlledTab ?? internalTab;
+  const setTab = useCallback(
+    (next: Tab) => {
+      setInternalTab(next);
+      onTabChange?.(next);
+    },
+    [onTabChange],
+  );
   const [catalog, setCatalog] = useState<CatalogMcp[]>([]);
   // null until the first answer: whether Recommended is emdash's live list.
   const [catalogLive, setCatalogLive] = useState<boolean | null>(null);
@@ -45,13 +66,15 @@ export function McpSection() {
     setLoading(true);
     setError(null);
     try {
-      setLib(await api.libraryMcp());
+      const res = await api.libraryMcp();
+      setLib(res);
+      onCountChange?.(res.servers.length);
     } catch (e) {
       setError(errorText(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onCountChange]);
 
   // Separate from `load`: the catalog may wait on GitHub, and the servers
   // already added shouldn't wait with it.
@@ -99,19 +122,66 @@ export function McpSection() {
         }
       />
 
-      <div className="flex items-center gap-3">
-        <SearchBox value={query} onChange={setQuery} placeholder="Search servers…" />
-        <button
-          type="button"
-          title="Re-read every agent's config and recheck which agents are installed"
-          onClick={() => {
-            void load();
-            void loadCatalog(true);
-          }}
-          className="ml-auto flex shrink-0 cursor-pointer items-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-        >
-          <RefreshCw size={14} strokeWidth={2} className={loading ? "animate-spin" : ""} />
-        </button>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setTab("installed")}
+            className={`flex cursor-pointer items-center gap-2 rounded-lg px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+              tab === "installed"
+                ? "bg-[var(--selected)] font-semibold text-[var(--ink)] shadow-xs"
+                : "text-[var(--muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <Server size={14} strokeWidth={2} />
+            <span>Installed</span>
+            {lib && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  tab === "installed"
+                    ? "bg-[var(--bubble)] text-[var(--ink)]"
+                    : "bg-[var(--badge)] text-[var(--faint)]"
+                }`}
+              >
+                {added.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("browse")}
+            className={`flex cursor-pointer items-center gap-2 rounded-lg px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+              tab === "browse"
+                ? "bg-[var(--selected)] font-semibold text-[var(--ink)] shadow-xs"
+                : "text-[var(--muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <Compass size={14} strokeWidth={2} />
+            <span>Browse Catalog</span>
+            <span className="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--accent)]">
+              {recommended.length > 0 ? `${recommended.length} servers` : "Catalog"}
+            </span>
+          </button>
+        </div>
+
+        <div className="flex min-w-[280px] items-center gap-2">
+          <SearchBox
+            value={query}
+            onChange={setQuery}
+            placeholder={tab === "browse" ? "Search recommended catalog…" : "Search installed servers…"}
+          />
+          <button
+            type="button"
+            title="Re-read every agent's config and recheck which agents are installed"
+            onClick={() => {
+              void load();
+              void loadCatalog(true);
+            }}
+            className="flex shrink-0 cursor-pointer items-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          >
+            <RefreshCw size={14} strokeWidth={2} className={loading ? "animate-spin" : ""} />
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -120,87 +190,110 @@ export function McpSection() {
         </div>
       )}
 
-      <GroupTitle title="Added" count={lib ? added.length : undefined} />
-      {added.length > 0 ? (
-        <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
-          {added.map((server) => {
-            const entry = server.catalogId ? catalogById.get(server.catalogId) : undefined;
-            return (
+      {tab === "installed" ? (
+        <>
+          <GroupTitle title="Installed Servers" count={lib ? added.length : undefined} />
+          {added.length > 0 ? (
+            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+              {added.map((server) => {
+                const entry = server.catalogId ? catalogById.get(server.catalogId) : undefined;
+                return (
+                  <LibraryCard
+                    key={server.name}
+                    icon={
+                      <McpLogo
+                        id={server.catalogId}
+                        name={entry?.name ?? server.name}
+                        url={server.url}
+                        docsUrl={entry?.docsUrl}
+                      />
+                    }
+                    title={entry?.name ?? server.name}
+                    tag={<Tag>{server.transport}</Tag>}
+                    description={entry?.description ?? describe(server)}
+                    footer={
+                      <>
+                        <AgentLogos ids={server.agents} />
+                        {server.differs && (
+                          <span
+                            className="text-amber-300"
+                            title="Not every agent has the same config for this server"
+                          >
+                            Differs between agents
+                          </span>
+                        )}
+                      </>
+                    }
+                    onOpen={() => setSheet({ kind: "edit", server })}
+                  />
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-[var(--border)] p-8 text-center">
+              <p className="text-[13px] text-[var(--faint)]">
+                {loading && !lib
+                  ? "Reading agent configs…"
+                  : needle
+                    ? "No installed server matches that search."
+                    : "No MCP servers configured yet."}
+              </p>
+              {!loading && !needle && (
+                <div className="mt-3.5 flex items-center justify-center gap-3">
+                  <GhostButton onClick={() => setTab("browse")}>
+                    <Compass size={14} strokeWidth={2} />
+                    Browse recommended catalog
+                  </GhostButton>
+                  <GhostButton onClick={() => setSheet({ kind: "custom" })}>
+                    <Plus size={14} strokeWidth={2} />
+                    Add custom MCP
+                  </GhostButton>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <GroupTitle title="Recommended Catalog" count={recommended.length} />
+          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+            {recommended.map((entry) => (
               <LibraryCard
-                key={server.name}
+                key={entry.id}
                 icon={
                   <McpLogo
-                    id={server.catalogId}
-                    name={entry?.name ?? server.name}
-                    url={server.url}
-                    docsUrl={entry?.docsUrl}
+                    id={entry.id}
+                    name={entry.name}
+                    url={entry.url}
+                    docsUrl={entry.docsUrl}
                   />
                 }
-                title={entry?.name ?? server.name}
-                tag={<Tag>{server.transport}</Tag>}
-                description={entry?.description ?? describe(server)}
-                footer={
-                  <>
-                    <AgentLogos ids={server.agents} />
-                    {server.differs && (
-                      <span className="text-amber-300" title="Not every agent has the same config for this server">
-                        Differs between agents
-                      </span>
-                    )}
-                  </>
+                title={entry.name}
+                tag={<Tag>{entry.transport}</Tag>}
+                description={entry.description}
+                action={
+                  <span className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-0.5 text-[11.5px] text-[var(--muted)]">
+                    <Plus size={11} strokeWidth={2.5} />
+                    Add
+                  </span>
                 }
-                onOpen={() => setSheet({ kind: "edit", server })}
+                onOpen={() => setSheet({ kind: "add", entry })}
               />
-            );
-          })}
-        </div>
-      ) : (
-        <p className="px-0.5 text-[13px] text-[var(--faint)]">
-          {loading && !lib
-            ? "Reading agent configs…"
-            : needle
-              ? "No added server matches that search."
-              : "No servers yet — add one from the list below, or a custom one."}
-        </p>
-      )}
-
-      <GroupTitle title="Recommended" count={recommended.length} />
-      <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
-        {recommended.map((entry) => (
-          <LibraryCard
-            key={entry.id}
-            icon={
-              <McpLogo
-                id={entry.id}
-                name={entry.name}
-                url={entry.url}
-                docsUrl={entry.docsUrl}
-              />
-            }
-            title={entry.name}
-            tag={<Tag>{entry.transport}</Tag>}
-            description={entry.description}
-            action={
-              <span className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-0.5 text-[11.5px] text-[var(--muted)]">
-                <Plus size={11} strokeWidth={2.5} />
-                Add
-              </span>
-            }
-            onOpen={() => setSheet({ kind: "add", entry })}
-          />
-        ))}
-      </div>
-      {recommended.length === 0 && catalog.length > 0 && (
-        <p className="px-0.5 text-[13px] text-[var(--faint)]">Nothing else matches that search.</p>
-      )}
-      {catalogLive === null ? (
-        <p className="px-0.5 text-[13px] text-[var(--faint)]">Loading the catalog…</p>
-      ) : (
-        <p className="mt-4 px-0.5 text-[12px] text-[var(--faint)]">
-          {catalogLive
-            ? "Recommended servers come from emdash's catalog on GitHub, so new ones appear without an egant update."
-            : "Couldn't reach GitHub, so this is the list built into egant — refresh to try again."}
-        </p>
+            ))}
+          </div>
+          {recommended.length === 0 && catalog.length > 0 && (
+            <p className="px-0.5 text-[13px] text-[var(--faint)]">Nothing else matches that search.</p>
+          )}
+          {catalogLive === null ? (
+            <p className="px-0.5 text-[13px] text-[var(--faint)]">Loading the catalog…</p>
+          ) : (
+            <p className="mt-4 px-0.5 text-[12px] text-[var(--faint)]">
+              {catalogLive
+                ? "Recommended servers come from emdash's catalog on GitHub, so new ones appear without an egant update."
+                : "Couldn't reach GitHub, so this is the list built into egant — refresh to try again."}
+            </p>
+          )}
+        </>
       )}
 
       {sheet && lib && (
@@ -212,6 +305,7 @@ export function McpSection() {
           onClose={() => setSheet(null)}
           onChanged={(next) => {
             setLib(next);
+            onCountChange?.(next.servers.length);
             setSheet(null);
           }}
           onFailed={() => void load()}

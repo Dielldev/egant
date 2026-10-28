@@ -827,6 +827,7 @@ mod tests {
             said("ssh -p 22 localhost:22, or localhost:99999, or localhost:"),
             TranscriptEntry::User {
                 text: "check localhost:4000".into(),
+                images: Vec::new(),
             },
         ];
         // 5432 is a valid port and gets probed later (a database is not a

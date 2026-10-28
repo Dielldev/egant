@@ -208,7 +208,15 @@ impl ClaudeCode {
         cmd.args(&prefix)
             .args(options.to_args())
             .current_dir(&options.cwd)
-            .stdin(Stdio::piped())
+            .env("PATH", crate::agents::execution_path())
+            .envs(crate::agents::login_shell_env().iter().cloned());
+        if std::env::var_os("BUN_JSC_forceRAMSize").is_none() {
+            cmd.env("BUN_JSC_forceRAMSize", "268435456");
+        }
+        if std::env::var_os("NODE_OPTIONS").is_none() {
+            cmd.env("NODE_OPTIONS", "--max-old-space-size=512");
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]
@@ -316,8 +324,13 @@ impl Harness for ClaudeCode {
         // created before grounding existed, and resumes that reuse a recorded
         // prompt, still answer with the directory this process runs in. A
         // slash command goes out as typed: the CLI only acts on one that
-        // opens the message.
-        let text = if is_slash_command(&text) {
+        // opens the message. If the slash command addresses an installed skill,
+        // it is wrapped with the skill's instructions so the agent uses it.
+        let text = if let Some(skill_prompt) =
+            crate::wrap_skill_if_installed(&self.project_name, &self.cwd, &text)
+        {
+            skill_prompt
+        } else if is_slash_command(&text) {
             text
         } else {
             crate::wrap_turn_with_project(&self.project_name, &self.cwd, &text)
@@ -379,6 +392,15 @@ impl Harness for ClaudeCode {
         match self.child.try_status()? {
             Some(_) => Ok(()),
             None => {
+                #[cfg(windows)]
+                {
+                    let pid = self.child.id();
+                    let mut cmd = std::process::Command::new("taskkill");
+                    cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                    let _ = cmd.output();
+                }
                 self.child.kill().ok();
                 self.child.status().await?;
                 Ok(())

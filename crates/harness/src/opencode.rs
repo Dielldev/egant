@@ -62,6 +62,7 @@ impl Default for OpencodeOptions {
 }
 
 pub struct OpencodeRun {
+    program: PathBuf,
     runner: Runner,
     auto: std::sync::Arc<std::sync::Mutex<OpencodeAuto>>,
 }
@@ -83,6 +84,11 @@ impl OpencodeRun {
             options.session.is_some(),
         );
         let program = resolve_program(&options.program)?;
+        // If OpenCode supports standalone mode, terminate any existing orphaned
+        // background service daemon so it doesn't linger consuming hundreds of MBs.
+        if opencode_supports_standalone(&program) {
+            stop_opencode_service(&program);
+        }
         let project_name = options
             .project_name
             .clone()
@@ -92,7 +98,7 @@ impl OpencodeRun {
             once: false,
         }));
         let translator = OpencodeTranslator {
-            program,
+            program: program.clone(),
             cwd: options.cwd,
             project_name,
             model: options.model,
@@ -105,6 +111,7 @@ impl OpencodeRun {
             seen_permission_requests: HashSet::new(),
         };
         Ok(Self {
+            program,
             runner: Runner::spawn(translator),
             auto,
         })
@@ -148,6 +155,74 @@ fn resolve_program(program: &Path) -> Result<PathBuf> {
     } else {
         Ok(program.to_path_buf())
     }
+}
+
+/// Checks whether this OpenCode binary supports `--standalone` (introduced in v2.0).
+/// When supported, running with `--standalone` bypasses the persistent background service daemon,
+/// keeping Bun memory usage at 0 MB when idle and cleanly exiting after the turn.
+pub fn opencode_supports_standalone(program: &Path) -> bool {
+    let name = program.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let is_opencode = name == "opencode"
+        || name.starts_with("opencode.")
+        || name == "opencode-ai"
+        || name.starts_with("opencode-ai.");
+    if !is_opencode {
+        return false;
+    }
+
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, bool>>> =
+        std::sync::Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap();
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if let Some(&supported) = map.get(program) {
+        return supported;
+    }
+
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(&prefix)
+        .args(["run", "--help"])
+        .env("PATH", crate::agents::execution_path())
+        .env("BUN_JSC_forceRAMSize", "134217728")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let supported = cmd
+        .output()
+        .ok()
+        .map(|out| {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.contains("--standalone")
+        })
+        .unwrap_or(false);
+    map.insert(program.to_path_buf(), supported);
+    supported
+}
+
+/// Shuts down any orphaned `opencode serve --service` background daemon that
+/// may have been left running from previous turns or unmanaged invocations,
+/// immediately freeing memory.
+pub fn stop_opencode_service(program: &Path) {
+    let (prog, prefix) = crate::agents::prepare_program_args(program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(&prefix)
+        .args(["service", "stop"])
+        .env("PATH", crate::agents::execution_path())
+        .env("BUN_JSC_forceRAMSize", "134217728")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let _ = cmd.output();
 }
 
 #[async_trait]
@@ -222,6 +297,14 @@ impl Harness for OpencodeRun {
     async fn shutdown(&mut self) -> Result<()> {
         log::info!("opencode shutdown");
         self.runner.shutdown();
+        let program = self.program.clone();
+        if opencode_supports_standalone(&program) {
+            let _ = std::thread::Builder::new()
+                .name("opencode-service-stop".into())
+                .spawn(move || {
+                    stop_opencode_service(&program);
+                });
+        }
         Ok(())
     }
 }
@@ -252,11 +335,16 @@ struct OpencodeTranslator {
 
 impl TurnTranslator for OpencodeTranslator {
     fn build(&mut self, text: &str, images: &[PathBuf]) -> TurnRequest {
-        let mut args = vec![
-            "run".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
+        let mut args = vec!["run".to_string()];
+        // Running in standalone mode keeps OpenCode self-contained: it spins up a private
+        // ephemeral server rather than hooking into or launching the persistent background
+        // daemon (`opencode serve --service`). This ensures Bun memory is immediately
+        // freed after the turn settles, avoiding lingering ~500 MB Bun processes.
+        if opencode_supports_standalone(&self.program) {
+            args.push("--standalone".to_string());
+        }
+        args.push("--format".to_string());
+        args.push("json".to_string());
         // `--auto` approves permissions not explicitly denied. Set for the
         // retry after an "Allow" answer, or persistently after "Allow always".
         let auto = self.auto.lock().map(|mut auto| {

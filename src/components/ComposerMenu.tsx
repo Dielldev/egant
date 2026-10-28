@@ -1,8 +1,14 @@
 import { useEffect, useRef } from "react";
+import { Sparkles } from "lucide-react";
 import type { CommandItem } from "../lib/composerMenu";
+import type { InstalledSkill } from "../lib/types";
 import { FileIcon } from "./FileIcon";
+import { SkillLogo } from "./LibraryItemLogo";
 
-export type MenuItem = { kind: "command"; command: CommandItem } | { kind: "file"; path: string };
+export type MenuItem =
+  | { kind: "skill"; skill: InstalledSkill }
+  | { kind: "command"; command: CommandItem }
+  | { kind: "file"; path: string };
 
 /** The list the composer's `/` and `@` open above it. Keyboard-driven from the
  * text box — arrows move, Enter or Tab picks, Esc closes — so this only
@@ -41,7 +47,12 @@ export function ComposerMenu({
       )}
       {items.map((item, i) => {
         const active = i === index;
-        const key = item.kind === "command" ? `/${item.command.name}` : item.path;
+        const key =
+          item.kind === "skill"
+            ? `skill:/${item.skill.id}`
+            : item.kind === "command"
+              ? `cmd:/${item.command.name}`
+              : item.path;
         return (
           <div
             key={key}
@@ -57,11 +68,39 @@ export function ComposerMenu({
               active ? "bg-[var(--hover)]" : ""
             }`}
           >
-            {item.kind === "command" ? <CommandRow command={item.command} /> : <FileRow path={item.path} />}
+            {item.kind === "skill" ? (
+              <SkillRow skill={item.skill} />
+            ) : item.kind === "command" ? (
+              <CommandRow command={item.command} />
+            ) : (
+              <FileRow path={item.path} />
+            )}
           </div>
         );
       })}
     </div>
+  );
+}
+
+function SkillRow({ skill }: { skill: InstalledSkill }) {
+  const logo = (
+    <SkillLogo source={skill.source} name={skill.name} agents={skill.agents} size={15} />
+  );
+  return (
+    <>
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--accent)]">
+        {logo || <Sparkles size={13} strokeWidth={2} />}
+      </span>
+      <span className="shrink-0 whitespace-nowrap font-medium text-[var(--ink)]">
+        /{skill.id}
+      </span>
+      <span className="shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider bg-[var(--card)] border border-[var(--border)] text-[var(--faint)]">
+        skill
+      </span>
+      {skill.description && (
+        <span className="min-w-0 truncate text-[var(--muted)]">{skill.description}</span>
+      )}
+    </>
   );
 }
 

@@ -25,12 +25,14 @@ import type {
   AgentStatus,
   CheckoutPlan,
   ClaudeUsage,
+  CodexUsage,
   OpencodeUsageStats,
   DecisionRequest,
   DecisionResponse,
   DiffScope,
   GitChange,
   GitChangeStatus,
+  InstalledSkill,
   PermissionDecision,
   PermissionReply,
   RepoRef,
@@ -48,7 +50,8 @@ import type {
   WorktreeRenamedPayload,
 } from "./lib/types";
 
-export type LibrarySection = "mcp" | "skills";
+export type LibrarySection = "skills" | "mcp";
+export type LibraryTab = "installed" | "browse";
 
 export type SettingsSection =
   | "devices"
@@ -631,6 +634,8 @@ interface EgantStore {
    * composer is showing — see `Composer`'s effect. */
   claudeUsage: ClaudeUsage | null;
   fetchClaudeUsage: () => Promise<void>;
+  codexUsage: CodexUsage | null;
+  fetchCodexUsage: () => Promise<void>;
 
   /** OpenCode lifetime tokens, messages, session counts, and rate limit status. */
   opencodeUsage: OpencodeUsageStats | null;
@@ -687,13 +692,18 @@ interface EgantStore {
   closeSettings: () => void;
   setSettingsSection: (section: SettingsSection) => void;
 
-  /** Library (MCP servers and skills): takes the stage beside the sidebar,
+  /** Library (Skills and MCP servers): dedicated view with its own sidebar,
    * never open at the same time as Settings. Going to a conversation —
    * picking one, starting one, stepping through them — closes it. */
   libraryOpen: boolean;
   librarySection: LibrarySection;
-  openLibrary: (section?: LibrarySection) => void;
+  libraryTab: LibraryTab;
+  openLibrary: (section?: LibrarySection, tab?: LibraryTab) => void;
   closeLibrary: () => void;
+  setLibrarySection: (section: LibrarySection) => void;
+  setLibraryTab: (tab: LibraryTab) => void;
+  installedSkills: InstalledSkill[];
+  fetchSkills: () => Promise<void>;
 
   /** Appearance (Settings > Appearance). Persisted to localStorage and
    * painted onto the document by `applyAppearance`. */
@@ -709,6 +719,10 @@ interface EgantStore {
   searchOpen: boolean;
   openSearch: () => void;
   closeSearch: () => void;
+  connectModelsOpen: boolean;
+  connectModelsTarget: string | null;
+  openConnectModels: (target?: string | null) => void;
+  closeConnectModels: () => void;
   requestFocusComposer: () => void;
   requestPicker: (sessionId: number, kind: "model" | "mode") => void;
   requestJump: (sessionId: number, kind: string, ordinal: number) => void;
@@ -818,13 +832,38 @@ function saveString(key: string, value: string | null): void {
 }
 
 /** Agent id the next session starts with: the composer's pick, else the
- * saved backend default. */
+ * saved backend default if available/installed, otherwise the first
+ * connected/installed harnessed agent, falling back to configured or "claude". */
 export function selectNextAgent(
   snapshot: WindowState | null,
   composerAgent: string | null,
+  agents?: AgentStatus[],
 ): string {
   if (composerAgent) return composerAgent;
-  return snapshot?.settings.defaultAgent || "claude";
+  const configured = snapshot?.settings.defaultAgent;
+  if (agents && agents.length > 0) {
+    if (configured) {
+      const configuredStatus = agents.find((a) => a.id === configured);
+      if (configuredStatus?.installed && configuredStatus?.connected) {
+        return configured;
+      }
+    }
+    const firstConnected = agents.find(
+      (a) => HARNESSED.includes(a.id) && a.installed && a.connected,
+    );
+    if (firstConnected) return firstConnected.id;
+    if (configured) {
+      const configuredStatus = agents.find((a) => a.id === configured);
+      if (configuredStatus?.installed) {
+        return configured;
+      }
+    }
+    const firstInstalled = agents.find(
+      (a) => HARNESSED.includes(a.id) && a.installed,
+    );
+    if (firstInstalled) return firstInstalled.id;
+  }
+  return configured || "claude";
 }
 
 function loadBool(key: string, fallback: boolean): boolean {
@@ -1369,7 +1408,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       case "user_message":
         log.info("session-sync", `session ${id}: a message sent from another device`);
         if (prev) {
-          set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, envelope.payload.text) } });
+          set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, envelope.payload.text, envelope.payload.images) } });
         }
         patchSession(id, { busy: true, state: "running" });
         break;
@@ -1512,6 +1551,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     filter: "",
     filterOpen: false,
     searchOpen: false,
+    connectModelsOpen: false,
+    connectModelsTarget: null,
     sidebarOrganize: (() => {
       const saved = loadString("egant.sidebarOrganize") as SidebarOrganize | null;
       return saved && SIDEBAR_ORGANIZE.includes(saved) ? saved : "byDevice";
@@ -1943,13 +1984,26 @@ export const useEgant = create<EgantStore>()((set, get) => {
     claudeUsage: null,
     // Silent on failure: an expired token or a network blip shouldn't pop
     // the same error toast a failed send would. The pill just stays hidden.
+    // The last reading is kept rather than nulled — a stale number from the
+    // endpoint beats dropping real data for a fallback row of guesses.
     fetchClaudeUsage: async () => {
       try {
         const usage = await api.claudeUsageLimits();
         log.debug("store", usage ? "claude usage refreshed" : "claude usage unavailable");
         set({ claudeUsage: usage });
       } catch {
-        set({ claudeUsage: null });
+        // Keep whatever was last known.
+      }
+    },
+
+    codexUsage: null,
+    fetchCodexUsage: async () => {
+      try {
+        const usage = await api.codexUsageLimits();
+        log.debug("store", usage ? "codex usage refreshed" : "codex usage unavailable");
+        set({ codexUsage: usage });
+      } catch {
+        // Keep whatever was last known.
       }
     },
 
@@ -2101,14 +2155,27 @@ export const useEgant = create<EgantStore>()((set, get) => {
     setSettingsSection: (settingsSection) => set({ settingsSection }),
 
     libraryOpen: false,
-    librarySection: "mcp",
-    openLibrary: (section) =>
+    librarySection: "skills",
+    libraryTab: "installed",
+    openLibrary: (section, tab) =>
       set((s) => ({
         libraryOpen: true,
         settingsOpen: false,
         librarySection: section ?? s.librarySection,
+        libraryTab: tab ?? s.libraryTab,
       })),
     closeLibrary: () => set({ libraryOpen: false }),
+    setLibrarySection: (librarySection) => set({ librarySection }),
+    setLibraryTab: (libraryTab) => set({ libraryTab }),
+    installedSkills: [],
+    fetchSkills: async () => {
+      try {
+        const lib = await api.librarySkills();
+        set({ installedSkills: lib.installed });
+      } catch (error) {
+        log.warn("store", `couldn't load installed skills: ${String(error)}`);
+      }
+    },
 
     appearance: loadAppearance(),
     setAppearance: (patch) => {
@@ -2131,6 +2198,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
     closeFilter: () => set({ filterOpen: false, filter: "" }),
     openSearch: () => set({ searchOpen: true }),
     closeSearch: () => set({ searchOpen: false }),
+    openConnectModels: (target = null) =>
+      set({ connectModelsOpen: true, connectModelsTarget: target }),
+    closeConnectModels: () => set({ connectModelsOpen: false, connectModelsTarget: null }),
     requestFocusComposer: () => set((s) => ({ focusComposerToken: s.focusComposerToken + 1 })),
     requestJump: (sessionId, kind, ordinal) =>
       set((s) => ({ jumpTo: { sessionId, kind, ordinal, token: (s.jumpTo?.token ?? 0) + 1 } })),
@@ -2223,6 +2293,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       // session sits in the sidebar labelled `goose` until something else
       // happens to open the agent picker.
       void get().fetchCatalog();
+      void get().fetchSkills();
       const unlistenEvents = await listen<SessionEventPayload>("session-event", (e) =>
         onSessionEvent(e.payload),
       );
@@ -2289,7 +2360,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       });
       if (!path) return;
       try {
-        const agent = selectNextAgent(get().snapshot, get().composerAgent);
+        const agent = selectNextAgent(get().snapshot, get().composerAgent, get().agents);
         const model =
           selectNextModel(get().composerModel, get().defaultModels, agent) || null;
         const variant =
@@ -2551,7 +2622,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
               return null;
             });
             if (!path) return;
-            const agent = selectNextAgent(get().snapshot, get().composerAgent);
+            const agent = selectNextAgent(get().snapshot, get().composerAgent, get().agents);
             const model =
               selectNextModel(get().composerModel, get().defaultModels, agent) || null;
             const variant =
@@ -2567,7 +2638,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
             // what omitting the plan asks the backend for.
             applySnapshot(await api.addProject(path, agent, model, variant, context));
           } else {
-            const agent = selectNextAgent(get().snapshot, get().composerAgent);
+            const agent = selectNextAgent(get().snapshot, get().composerAgent, get().agents);
             const model =
               selectNextModel(get().composerModel, get().defaultModels, agent) || null;
             const variant =
@@ -2638,7 +2709,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const prev = get().transcripts[id] ?? emptyTranscript();
       const busy = prev.state !== "idle";
       if (!busy) {
-        set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, echoText) } });
+        set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, echoText, images) } });
         patchSession(id, { busy: true, state: "running" });
       }
       try {

@@ -116,10 +116,17 @@ export function fromDto(dto: TranscriptDto): TranscriptState {
 /** Records a turn the user just sent, before the agent has replied. The
  * backend applies the same echo, and both folds are deterministic, so they
  * agree — this is what makes the message appear on keypress. */
-export function pushUser(prev: TranscriptState, text: string): TranscriptState {
+export function pushUser(prev: TranscriptState, text: string, images?: string[]): TranscriptState {
   return {
     ...prev,
-    entries: [...prev.entries, { kind: "user", text }],
+    entries: [
+      ...prev.entries,
+      {
+        kind: "user",
+        text,
+        ...(images && images.length > 0 ? { images } : {}),
+      },
+    ],
     state: "running",
     // The turn starts on keypress, not on the agent's first byte — that gap is
     // exactly the part of the wait the status line exists to account for.

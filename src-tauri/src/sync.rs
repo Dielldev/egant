@@ -278,9 +278,14 @@ pub fn utf8_prefix(text: &str, limit: usize) -> &str {
 }
 
 /// A user turn landed in a session's transcript.
-pub fn user_message(app: &AppHandle, id: u64, text: &str, origin: &Origin) {
+pub fn user_message(app: &AppHandle, id: u64, text: &str, images: &[String], origin: &Origin) {
     let Some(hub) = hub(app) else { return };
-    hub.publish("user_message", Some(id), origin, json!({ "text": text }));
+    hub.publish(
+        "user_message",
+        Some(id),
+        origin,
+        json!({ "text": text, "images": images }),
+    );
 }
 
 /// Publishes whatever a command appended to a transcript outside the event
@@ -296,8 +301,8 @@ pub fn transcript_grew(app: &AppHandle, state: &AppState, id: u64, before: usize
         return;
     }
     if entries.len() == before + 1 {
-        if let Some(TranscriptEntry::User { text }) = entries.last() {
-            user_message(app, id, text, origin);
+        if let Some(TranscriptEntry::User { text, images }) = entries.last() {
+            user_message(app, id, text, images, origin);
             return;
         }
     }

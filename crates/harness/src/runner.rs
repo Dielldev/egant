@@ -227,7 +227,16 @@ async fn run_turn<T: TurnTranslator>(
         .args(&request.args)
         .current_dir(&request.cwd)
         .env("PATH", crate::agents::execution_path())
-        .envs(crate::agents::login_shell_env().iter().cloned())
+        .envs(crate::agents::login_shell_env().iter().cloned());
+    if std::env::var_os("BUN_JSC_forceRAMSize").is_none() {
+        // Enforce a memory budget on JavaScriptCore (used by Bun), ensuring frequent GC
+        // and heap trimming so Bun doesn't expand to hundreds of megabytes on high-RAM systems.
+        cmd.env("BUN_JSC_forceRAMSize", "268435456");
+    }
+    if std::env::var_os("NODE_OPTIONS").is_none() {
+        cmd.env("NODE_OPTIONS", "--max-old-space-size=512");
+    }
+    cmd
         // The prompt travels on the command line; an open stdin only invites
         // a CLI to wait on it.
         .stdin(Stdio::null())

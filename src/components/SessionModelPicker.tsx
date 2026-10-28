@@ -377,12 +377,11 @@ export function SessionModelPicker({
                 >
                   <ChevronLeft size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
                   {effortModelRow ? (
-                    <ProviderLogo provider={effortModelRow.provider} size={22} />
+                    <ProviderLogo provider={effortModelRow.provider} size={20} />
                   ) : (
                     <ProviderGlyph
                       provider={AGENT_PROVIDER[agent] ?? agent}
                       size={20}
-                      color={AGENT_ACCENT[agent]}
                     />
                   )}
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
@@ -444,7 +443,6 @@ export function SessionModelPicker({
                   <ProviderGlyph
                     provider={AGENT_PROVIDER[agent] ?? agent}
                     size={14}
-                    color={AGENT_ACCENT[agent]}
                   />
                   <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--faint)]">
                     Switch model · {agentDisplay}
@@ -496,12 +494,11 @@ export function SessionModelPicker({
                         >
                           <span className="flex w-6 shrink-0 items-center justify-center">
                             {row.kind === "model" ? (
-                              <ProviderLogo provider={row.model.provider} size={22} />
+                              <ProviderLogo provider={row.model.provider} size={20} />
                             ) : (
                               <ProviderGlyph
                                 provider={AGENT_PROVIDER[agent] ?? agent}
                                 size={18}
-                                color={AGENT_ACCENT[agent]}
                               />
                             )}
                           </span>

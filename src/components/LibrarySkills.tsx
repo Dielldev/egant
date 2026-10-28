@@ -4,7 +4,7 @@
 // skills folder; browsed from skills.sh's search and the official Anthropic
 // and OpenAI skill repos. See `crates/harness/src/library/skills.rs`.
 
-import { ArrowLeft, Download, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Compass, Download, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type {
@@ -33,22 +33,42 @@ import {
 import type { ChecklistAgent } from "./LibraryKit";
 import { Markdown } from "./Markdown";
 import { SectionHead } from "./SettingsKit";
+import { useEgant } from "../store";
 
 type Tab = "installed" | "browse";
+
+export interface SkillsSectionProps {
+  tab?: Tab;
+  onTabChange?: (tab: Tab) => void;
+  onCountChange?: (count: number) => void;
+}
 
 type SheetState =
   | { kind: "installed"; id: string }
   | { kind: "catalog"; skill: CatalogSkill }
   | { kind: "new" };
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "installed", label: "Installed" },
-  { id: "browse", label: "Browse" },
-];
-
-export function SkillsSection() {
+export function SkillsSection({
+  tab: controlledTab,
+  onTabChange,
+  onCountChange,
+}: SkillsSectionProps = {}) {
   const [lib, setLib] = useState<SkillsLibrary | null>(null);
-  const [tab, setTab] = useState<Tab>("installed");
+
+  useEffect(() => {
+    if (lib) {
+      useEgant.setState({ installedSkills: lib.installed });
+    }
+  }, [lib]);
+  const [internalTab, setInternalTab] = useState<Tab>("installed");
+  const tab = controlledTab ?? internalTab;
+  const setTab = useCallback(
+    (next: Tab) => {
+      setInternalTab(next);
+      onTabChange?.(next);
+    },
+    [onTabChange],
+  );
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +89,7 @@ export function SkillsSection() {
     try {
       const next = await api.librarySkills();
       setLib(next);
+      onCountChange?.(next.installed.length);
       // Nothing installed yet: the catalog is the useful first view.
       if (first && next.installed.length === 0) setTab("browse");
     } catch (e) {
@@ -76,7 +97,7 @@ export function SkillsSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onCountChange, setTab]);
 
   const loadFeatured = useCallback(async (refresh: boolean) => {
     setFeaturedError(null);
@@ -242,41 +263,67 @@ export function SkillsSection() {
         }
       />
 
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-0.5">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`cursor-pointer rounded-md px-3 py-1 text-[12px] whitespace-nowrap ${
-                t.id === tab
-                  ? "bg-[var(--selected)] font-medium text-[var(--ink)]"
-                  : "text-[var(--muted)] hover:text-[var(--ink)]"
-              }`}
-            >
-              {t.label}
-              {t.id === "installed" && lib ? ` (${lib.installed.length})` : ""}
-            </button>
-          ))}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setTab("installed")}
+            className={`flex cursor-pointer items-center gap-2 rounded-lg px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+              tab === "installed"
+                ? "bg-[var(--selected)] font-semibold text-[var(--ink)] shadow-xs"
+                : "text-[var(--muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <Download size={14} strokeWidth={2} />
+            <span>Installed</span>
+            {lib && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  tab === "installed"
+                    ? "bg-[var(--bubble)] text-[var(--ink)]"
+                    : "bg-[var(--badge)] text-[var(--faint)]"
+                }`}
+              >
+                {lib.installed.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("browse")}
+            className={`flex cursor-pointer items-center gap-2 rounded-lg px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+              tab === "browse"
+                ? "bg-[var(--selected)] font-semibold text-[var(--ink)] shadow-xs"
+                : "text-[var(--muted)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <Compass size={14} strokeWidth={2} />
+            <span>Browse</span>
+            <span className="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--accent)]">
+              skills.sh
+            </span>
+          </button>
         </div>
-        <SearchBox
-          value={query}
-          onChange={setQuery}
-          placeholder={tab === "browse" ? "Search skills.sh…" : "Search installed skills…"}
-        />
-        <button
-          type="button"
-          title="Re-read skills folders and the catalog"
-          onClick={refresh}
-          className="ml-auto flex shrink-0 cursor-pointer items-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-        >
-          <RefreshCw
-            size={14}
-            strokeWidth={2}
-            className={loading || searching ? "animate-spin" : ""}
+
+        <div className="flex min-w-[280px] items-center gap-2">
+          <SearchBox
+            value={query}
+            onChange={setQuery}
+            placeholder={tab === "browse" ? "Search skills.sh catalog…" : "Search installed skills…"}
           />
-        </button>
+          <button
+            type="button"
+            title="Re-read skills folders and the catalog"
+            onClick={refresh}
+            className="flex shrink-0 cursor-pointer items-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+          >
+            <RefreshCw
+              size={14}
+              strokeWidth={2}
+              className={loading || searching ? "animate-spin" : ""}
+            />
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -320,13 +367,27 @@ export function SkillsSection() {
               ))}
             </div>
           ) : (
-            <p className="px-0.5 text-[13px] text-[var(--faint)]">
-              {loading && !lib
-                ? "Reading skills folders…"
-                : lower
-                  ? "No installed skill matches that search."
-                  : "No skills installed yet — browse the catalog, or write one with New skill."}
-            </p>
+            <div className="rounded-xl border border-dashed border-[var(--border)] p-8 text-center">
+              <p className="text-[13px] text-[var(--faint)]">
+                {loading && !lib
+                  ? "Reading skills folders…"
+                  : lower
+                    ? "No installed skill matches that search."
+                    : "No skills installed yet."}
+              </p>
+              {!loading && !lower && (
+                <div className="mt-3.5 flex items-center justify-center gap-3">
+                  <GhostButton onClick={() => setTab("browse")}>
+                    <Compass size={14} strokeWidth={2} />
+                    Browse skills.sh catalog
+                  </GhostButton>
+                  <GhostButton onClick={() => setSheet({ kind: "new" })}>
+                    <Plus size={14} strokeWidth={2} />
+                    New skill
+                  </GhostButton>
+                </div>
+              )}
+            </div>
           )}
         </>
       ) : results !== null ? (
@@ -387,6 +448,7 @@ export function SkillsSection() {
           onClose={() => setSheet(null)}
           onInstalled={(next, id) => {
             setLib(next);
+            onCountChange?.(next.installed.length);
             if (next.installed.some((s) => s.id === id)) setSheet({ kind: "installed", id });
           }}
         />
@@ -400,9 +462,13 @@ export function SkillsSection() {
           updating={updating}
           onUpdate={() => void runUpdate([openInstalled.id])}
           onClose={() => setSheet(null)}
-          onChanged={setLib}
+          onChanged={(next) => {
+            setLib(next);
+            onCountChange?.(next.installed.length);
+          }}
           onRemoved={(next) => {
             setLib(next);
+            onCountChange?.(next.installed.length);
             setSheet(null);
           }}
         />
@@ -413,6 +479,7 @@ export function SkillsSection() {
           onClose={() => setSheet(null)}
           onCreated={(next, id) => {
             setLib(next);
+            onCountChange?.(next.installed.length);
             setTab("installed");
             setSheet({ kind: "installed", id });
           }}

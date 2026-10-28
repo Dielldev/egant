@@ -276,9 +276,9 @@ function Badge({
   children: ReactNode;
 }) {
   const tones = {
-    info: "border-sky-400/25 bg-sky-500/15 text-sky-300",
+    info: "border-[var(--border)] bg-[var(--card)] text-[var(--muted)]",
     warn: "border-amber-400/25 bg-amber-500/15 text-amber-300",
-    good: "border-emerald-400/25 bg-emerald-500/12 text-emerald-300",
+    good: "border-[var(--border)] bg-[var(--card)] text-[var(--muted)]",
     idle: "border-[var(--border)] bg-[var(--hover)] text-[var(--faint)]",
   } as const;
   return (
@@ -403,7 +403,7 @@ function AgentSheet({
               <span
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
                   entry.installed
-                    ? "bg-emerald-500/15 text-emerald-300"
+                    ? "bg-[var(--selected)] text-[var(--ink)]"
                     : "bg-[var(--hover)] text-[var(--faint)]"
                 }`}
               >
@@ -564,7 +564,7 @@ function AgentSheet({
             <div className="-mt-3">
               <div
                 className={`mb-1 flex items-center gap-1.5 text-[12px] ${
-                  failed ? "text-amber-300" : "text-emerald-300"
+                  failed ? "text-amber-300" : "text-[var(--ink)]"
                 }`}
               >
                 {failed ? (
@@ -723,7 +723,7 @@ function ChatUiSettings({
                 {error ? (
                   <span className="text-amber-300">{error}</span>
                 ) : status?.connected ? (
-                  <span className="text-emerald-300/90">{status.email ?? "Signed in"}</span>
+                  <span className="text-[var(--ink)]">{status.email ?? "Signed in"}</span>
                 ) : (
                   "Not signed in on this device."
                 )}
