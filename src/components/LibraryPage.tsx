@@ -1,23 +1,15 @@
 // The Library: Skills and MCP servers, shared across every coding agent on
-// this machine. Modeled on native desktop suites with a dedicated left rail
-// sidebar and prominent, high-craft Browse and Installed views.
-// Closed with the Back button, X, or `Esc`.
+// this machine. Appears in the chat stage beside the sidebar sessions list.
+// Closed with the Close button, the sidebar button, or `Esc`.
 
-import {
-  ChevronLeft as BackChevron,
-  Compass,
-  Download,
-  Library as LibraryIcon,
-  Plug,
-  Server,
-  Sparkles,
-  X,
-} from "lucide-react";
-import { useState } from "react";
-import { windowBarPadClass } from "../lib/platform";
+import { Blocks, Plug, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { api } from "../lib/api";
+import { useColumnLayout } from "../lib/layout";
 import { useEgant } from "../store";
 import { McpSection } from "./LibraryMcp";
 import { SkillsSection } from "./LibrarySkills";
+import { WindowBar } from "./WindowBar";
 
 export function LibraryPage() {
   const section = useEgant((s) => s.librarySection);
@@ -25,161 +17,88 @@ export function LibraryPage() {
   const setSection = useEgant((s) => s.setLibrarySection);
   const setTab = useEgant((s) => s.setLibraryTab);
   const closeLibrary = useEgant((s) => s.closeLibrary);
+  const { sidebarShown } = useColumnLayout();
 
   const [skillsCount, setSkillsCount] = useState<number | null>(null);
   const [mcpCount, setMcpCount] = useState<number | null>(null);
 
+  useEffect(() => {
+    void api.librarySkills().then((lib) => setSkillsCount(lib.installed.length)).catch(() => {});
+    void api.libraryMcp().then((lib) => setMcpCount(lib.servers.length)).catch(() => {});
+  }, []);
+
   return (
-    <div className="stage-glass flex h-full w-full overflow-hidden text-[var(--ink)]">
-      {/* Dedicated Library Sidebar Rail on the left */}
-      <aside className="flex h-full w-[220px] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--sidebar)] pt-3 text-[var(--ink)]">
-        {/* Window controls / Drag region */}
-        <div
-          data-tauri-drag-region
-          className={`flex h-9 shrink-0 items-center justify-between border-b border-[var(--border)] px-3 pb-3 ${windowBarPadClass()}`}
-        >
+    <div className="flex h-full w-full flex-col overflow-hidden text-[var(--ink)]">
+      {!sidebarShown && <WindowBar />}
+
+      {/* Top Header Bar */}
+      <div
+        data-tauri-drag-region
+        className="flex h-[38px] w-full shrink-0 items-center justify-between border-b border-[var(--border)] px-4"
+      >
+        <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="flex h-5 w-5 items-center justify-center rounded-md bg-[var(--selected)] text-[var(--ink)]">
-              <LibraryIcon size={13} strokeWidth={2.2} />
+              <Blocks size={13} strokeWidth={2.2} />
             </span>
-            <span className="text-[13px] font-semibold text-[var(--ink)]">Library</span>
+            <span className="text-[13px] font-semibold text-[var(--ink)]">Skills & MCP</span>
           </div>
-          <button
-            type="button"
-            title="Close Library · Esc"
-            onClick={() => closeLibrary()}
-            className="cursor-pointer rounded-md p-1.5 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-          >
-            <X size={14} strokeWidth={2} />
-          </button>
-        </div>
 
-        {/* Navigation list */}
-        <nav className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 py-3.5">
-          {/* SKILLS SECTION */}
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-1.5 px-2.5 text-[10.5px] font-semibold uppercase tracking-wider text-[var(--faint)]">
-              <Sparkles size={11} strokeWidth={2.5} className="text-[var(--accent)]" />
+          <div className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--bubble)] p-0.5">
+            <button
+              type="button"
+              onClick={() => setSection("skills")}
+              className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-0.5 text-[12px] font-medium transition-colors ${
+                section === "skills"
+                  ? "bg-[var(--selected)] font-semibold text-[var(--ink)] shadow-xs"
+                  : "text-[var(--muted)] hover:text-[var(--ink)]"
+              }`}
+            >
               <span>Skills</span>
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setSection("skills");
-                  setTab("installed");
-                }}
-                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-[7px] text-left text-[13px] transition-colors ${
-                  section === "skills" && tab === "installed"
-                    ? "bg-[var(--selected)] font-semibold text-[var(--ink)]"
-                    : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Download size={14} strokeWidth={2} className="shrink-0" />
-                  <span>Installed</span>
-                </div>
-                {skillsCount !== null && (
-                  <span className="rounded-full bg-[var(--badge)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--faint)]">
-                    {skillsCount}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setSection("skills");
-                  setTab("browse");
-                }}
-                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-[7px] text-left text-[13px] transition-colors ${
-                  section === "skills" && tab === "browse"
-                    ? "bg-[var(--selected)] font-semibold text-[var(--ink)]"
-                    : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Compass size={14} strokeWidth={2} className="shrink-0" />
-                  <span>Browse</span>
-                </div>
-                <span className="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">
-                  skills.sh
+              {skillsCount !== null && (
+                <span className="rounded-full bg-[var(--badge)] px-1.5 py-0.2 text-[10px] font-medium text-[var(--faint)]">
+                  {skillsCount}
                 </span>
-              </button>
-            </div>
-          </div>
-
-          {/* MCP SERVERS SECTION */}
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-1.5 px-2.5 text-[10.5px] font-semibold uppercase tracking-wider text-[var(--faint)]">
-              <Plug size={11} strokeWidth={2.5} className="text-[var(--accent)]" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSection("mcp")}
+              className={`flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-0.5 text-[12px] font-medium transition-colors ${
+                section === "mcp"
+                  ? "bg-[var(--selected)] font-semibold text-[var(--ink)] shadow-xs"
+                  : "text-[var(--muted)] hover:text-[var(--ink)]"
+              }`}
+            >
+              <Plug
+                size={12}
+                strokeWidth={2.2}
+                className={section === "mcp" ? "text-[var(--accent)]" : "text-[var(--muted)]"}
+              />
               <span>MCP Servers</span>
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setSection("mcp");
-                  setTab("installed");
-                }}
-                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-[7px] text-left text-[13px] transition-colors ${
-                  section === "mcp" && tab === "installed"
-                    ? "bg-[var(--selected)] font-semibold text-[var(--ink)]"
-                    : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Server size={14} strokeWidth={2} className="shrink-0" />
-                  <span>Installed</span>
-                </div>
-                {mcpCount !== null && (
-                  <span className="rounded-full bg-[var(--badge)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--faint)]">
-                    {mcpCount}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setSection("mcp");
-                  setTab("browse");
-                }}
-                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-[7px] text-left text-[13px] transition-colors ${
-                  section === "mcp" && tab === "browse"
-                    ? "bg-[var(--selected)] font-semibold text-[var(--ink)]"
-                    : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Compass size={14} strokeWidth={2} className="shrink-0" />
-                  <span>Browse Catalog</span>
-                </div>
-                <span className="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">
-                  Catalog
+              {mcpCount !== null && (
+                <span className="rounded-full bg-[var(--badge)] px-1.5 py-0.2 text-[10px] font-medium text-[var(--faint)]">
+                  {mcpCount}
                 </span>
-              </button>
-            </div>
+              )}
+            </button>
           </div>
-        </nav>
-
-        {/* Footer: Back to chat */}
-        <div className="shrink-0 border-t border-[var(--border)] px-1.5 py-3">
-          <button
-            type="button"
-            title="Back to conversation · Esc"
-            onClick={() => closeLibrary()}
-            className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
-          >
-            <BackChevron size={14} strokeWidth={2} />
-            <span>Back to chat</span>
-          </button>
         </div>
-      </aside>
+
+        <button
+          type="button"
+          title="Close · Esc"
+          onClick={() => closeLibrary()}
+          className="flex cursor-pointer items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-2 py-1 text-[11.5px] font-medium text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+        >
+          <X size={13} strokeWidth={2} />
+          <span>Close</span>
+        </button>
+      </div>
 
       {/* Main content pane */}
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[980px] px-8 pt-7 pb-16">
+        <div className="mx-auto w-full max-w-[980px] px-8 pt-6 pb-16">
           {section === "mcp" ? (
             <McpSection
               tab={tab}

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Check, Copy, HelpCircle } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Check, Copy } from "lucide-react";
 import { QUICKSTART } from "../content";
 import { prefersReducedMotion, useInView } from "../useReveal";
 import { Reveal } from "./Reveal";
@@ -75,31 +74,6 @@ export function Quickstart() {
             </div>
           )}
         </div>
-      </Reveal>
-      <Reveal delay={150} className="quickstart-help glass">
-        <div className="quickstart-help-main">
-          <div className="quickstart-help-badge">
-            <HelpCircle size={15} />
-            <span>Having common issues?</span>
-          </div>
-          <p className="quickstart-help-desc">
-            Blocked by Windows SmartScreen, macOS Gatekeeper, or need help connecting an agent CLI?
-          </p>
-          <div className="quickstart-help-links">
-            <Link to="/guides#windows-smartscreen" className="quickstart-help-chip">
-              Windows SmartScreen
-            </Link>
-            <Link to="/guides#macos-gatekeeper" className="quickstart-help-chip">
-              macOS Gatekeeper
-            </Link>
-            <Link to="/guides#connect-agent-cli" className="quickstart-help-chip">
-              Install agent CLI
-            </Link>
-          </div>
-        </div>
-        <Link to="/guides" className="btn btn-primary btn-sm quickstart-help-btn">
-          View guides <ArrowRight size={14} />
-        </Link>
       </Reveal>
     </section>
   );

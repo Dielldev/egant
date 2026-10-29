@@ -110,6 +110,10 @@ const TARGETS: &[SkillTarget] = &[
     },
 ];
 
+/// Extra directories that hold agent skills (e.g. builtin skills for agents).
+const ADDITIONAL_SKILL_DIRS: &[(&str, &str)] =
+    &[("antigravity", ".gemini/antigravity-cli/builtin/skills")];
+
 /// Where the skills CLI keeps the one real copy every agent links to. Some
 /// agents (Cline, Pi) read this folder directly, so for them "installed"
 /// and "the canonical copy exists" are the same thing.
@@ -230,6 +234,24 @@ fn library_at(home: &Path, installed: impl Fn(&str) -> bool) -> SkillsLibrary {
                 }
             });
             skill.agents.push(t.id);
+        }
+    }
+    for (agent_id, dir) in ADDITIONAL_SKILL_DIRS {
+        for (id, path) in skill_dirs(&home.join(dir)) {
+            let skill = skills.entry(id.clone()).or_insert_with(|| {
+                let (name, description) = read_frontmatter(&path.join("SKILL.md"));
+                InstalledSkill {
+                    name: name.unwrap_or_else(|| id.clone()),
+                    description: description.unwrap_or_default(),
+                    agents: Vec::new(),
+                    source: lock.get(&id).map(|e| e.source.clone()),
+                    path: path.display().to_string(),
+                    id: id.clone(),
+                }
+            });
+            if !skill.agents.contains(agent_id) {
+                skill.agents.push(agent_id);
+            }
         }
     }
     let mut installed: Vec<_> = skills.into_values().collect();
@@ -362,6 +384,7 @@ pub fn find_installed_skill_path(id: &str) -> Option<PathBuf> {
         if let Ok(home) = home_dir() {
             if let Some(path) = std::iter::once(home.join(CANONICAL_DIR))
                 .chain(TARGETS.iter().map(|t| home.join(t.dir)))
+                .chain(ADDITIONAL_SKILL_DIRS.iter().map(|(_, dir)| home.join(dir)))
                 .map(|dir| dir.join(id).join("SKILL.md"))
                 .find(|p| p.is_file())
             {
@@ -533,21 +556,21 @@ fn skill_md(name: &str, description: &str, body: &str) -> String {
     format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n")
 }
 
-/// Skill folder names: lowercase letters, digits and single hyphens — the
+/// Skill folder names: lowercase letters, digits, single hyphens and underscores — the
 /// Agent Skills spec's rule, and what keeps an id safe to join onto a path.
 fn check_id(id: &str) -> Result<(), String> {
     let ok = !id.is_empty()
         && id.len() <= 64
         && id
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
         && !id.starts_with('-')
         && !id.ends_with('-')
         && !id.contains("--");
     if ok {
         Ok(())
     } else {
-        Err("Skill names use lowercase letters, numbers and single hyphens.".into())
+        Err("Skill names use lowercase letters, numbers, hyphens and underscores.".into())
     }
 }
 

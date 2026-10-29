@@ -9,8 +9,6 @@ import {
   Loader2,
   Paperclip,
   Pencil,
-  Plug,
-  Sparkles,
   Square,
   TerminalSquare,
   TriangleAlert,
@@ -38,7 +36,7 @@ import { UsageMeter } from "./UsageMeter";
 const COMPACT_OFFER_AT = 0.8;
 
 /** How many rows a `/` or `@` menu offers at most. */
-const MENU_LIMIT = 50;
+const MENU_LIMIT = 150;
 
 /** How long a folder's file list serves the `@` menu before it is fetched
  * again — long enough for one message, short enough to see a file the agent
@@ -137,8 +135,8 @@ export function Composer({
   }, [autoFocus]);
 
   useEffect(() => {
-    if (installedSkills.length === 0) void fetchSkills();
-  }, [installedSkills.length, fetchSkills]);
+    void fetchSkills();
+  }, [fetchSkills]);
 
   // The lightbox is the only thing Esc needs to close here — the textarea
   // itself has no escape behavior to conflict with.
@@ -199,6 +197,29 @@ export function Composer({
   const trigger = findTrigger(text, caret);
   const triggerKey = trigger ? `${trigger.kind}:${trigger.start}` : null;
   const menuOpen = trigger != null && triggerKey !== dismissed;
+
+  const activeSkill = useMemo(() => {
+    if (!text.includes("/")) return null;
+    const startMatch = text.trimStart().match(/^\/([a-zA-Z0-9_-]+)/);
+    if (startMatch) {
+      const skill = installedSkills.find((s) => s.id.toLowerCase() === startMatch[1].toLowerCase());
+      if (skill) return skill;
+    }
+    for (const word of text.split(/\s+/)) {
+      if (word.startsWith("/")) {
+        const candidate = word.slice(1).replace(/[^a-zA-Z0-9_-]/g, "");
+        const skill = installedSkills.find((s) => s.id.toLowerCase() === candidate.toLowerCase());
+        if (skill) return skill;
+      }
+    }
+    return null;
+  }, [text, installedSkills]);
+
+  useEffect(() => {
+    if (trigger?.kind === "command" && installedSkills.length === 0) {
+      void fetchSkills();
+    }
+  }, [trigger?.kind, installedSkills.length, fetchSkills]);
   const cwd = session?.cwd ?? null;
   const commands = useMemo(
     () => (session ? commandItems(session.agent, transcript?.commands) : commandItems("claude", undefined)),
@@ -280,10 +301,11 @@ export function Composer({
 
   /** Puts `replacement` where the trigger's word is, and the caret after it. */
   const replaceTrigger = (replacement: string) => {
-    if (!trigger) return;
-    const rest = text.slice(trigger.end);
-    const next = text.slice(0, trigger.start) + replacement + (replacement === "" ? rest.trimStart() : rest);
-    const at = trigger.start + replacement.length;
+    const tr = trigger ?? findTrigger(text, caret);
+    if (!tr) return;
+    const rest = text.slice(tr.end);
+    const next = text.slice(0, tr.start) + replacement + (replacement === "" ? rest.trimStart() : rest);
+    const at = tr.start + replacement.length;
     setText(next);
     setCaret(at);
     requestAnimationFrame(() => {
@@ -329,7 +351,7 @@ export function Composer({
   // The agent is fixed when the session starts; the model and effort under
   // it are what the badge switches.
   const agents = useEgant((s) => s.agents);
-  const openConnectModels = useEgant((s) => s.openConnectModels);
+  const openSettings = useEgant((s) => s.openSettings);
   const agent = session?.agent ?? null;
   const mode = session?.permissionMode ?? "auto";
 
@@ -342,9 +364,6 @@ export function Composer({
   const nextAgentStatus = nextAgentId ? agents.find((a) => a.id === nextAgentId) : undefined;
   const currentAgentStatus = agent ? agents.find((a) => a.id === agent) : undefined;
 
-  const hasAnyInstalledModel = agents.some(
-    (a) => HARNESSED.includes(a.id) && a.installed,
-  );
   const hasAnyConnectedModel = agents.some(
     (a) => HARNESSED.includes(a.id) && a.installed && a.connected,
   );
@@ -411,12 +430,12 @@ export function Composer({
       askCliLaunch(cliAgent);
       return;
     }
-    // If no models are connected on launch, open connect models dialog instead of failing
+    // If no models are connected on launch, redirect to agent tab instead of failing
     if (
       (hero || sessionId == null) &&
       (!hasAnyConnectedModel || (nextAgentStatus && !nextAgentStatus.installed))
     ) {
-      openConnectModels(nextAgentId);
+      openSettings("agents", nextAgentId ?? undefined);
       return;
     }
     if (!hasContent || ended || imagesSaving) return;
@@ -574,13 +593,17 @@ export function Composer({
         }
       }}
       placeholder={
-        !hasAnyConnectedModel && (hero || sessionId == null)
-          ? "Connect a model to start chatting…"
-          : cliAgent
-            ? `${cliAgentName} runs in its own terminal`
-            : busy
-              ? "Queue a message…"
-              : "Do anything…"
+        activeSkill
+          ? `Instruct ${activeSkill.name || activeSkill.id}…`
+          : trigger?.kind === "command"
+            ? "Type skill name or select from list…"
+            : !hasAnyConnectedModel && (hero || sessionId == null)
+              ? "Connect a model to start chatting…"
+              : cliAgent
+                ? `${cliAgentName} runs in its own terminal`
+                : busy
+                  ? "Queue a message…"
+                  : "Do anything…"
       }
       className="block max-h-[240px] w-full resize-none bg-transparent text-[15px] leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--muted)] disabled:opacity-50"
     />
@@ -721,6 +744,34 @@ export function Composer({
       )
     : null;
 
+  const activeSkillRow = activeSkill ? (
+    <div className="mb-2 flex flex-wrap items-center gap-2 px-1">
+      <div className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)]/15 border border-[var(--accent)]/30 px-2.5 py-1 text-xs font-medium text-[var(--ink)] shadow-xs">
+        <span className="text-[var(--muted)]">Skill:</span>
+        <strong className="text-[var(--accent)] font-semibold">/{activeSkill.id}</strong>
+        <button
+          type="button"
+          title="Remove skill"
+          onClick={() => {
+            const pattern = new RegExp(`(^|\\s)\\/` + activeSkill.id.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + `(\\s|$)`, "i");
+            const next = text.replace(pattern, " ").trim();
+            setText(next);
+            setCaret(0);
+            areaRef.current?.focus();
+          }}
+          className="ml-1 -mr-0.5 flex h-3.5 w-3.5 cursor-pointer items-center justify-center rounded-full hover:bg-[var(--hover)] text-[var(--muted)] hover:text-[var(--ink)]"
+        >
+          <X size={10} strokeWidth={2.5} />
+        </button>
+      </div>
+      {activeSkill.description && (
+        <span className="truncate text-[11.5px] text-[var(--muted)] max-w-[340px]" title={activeSkill.description}>
+          {activeSkill.description}
+        </span>
+      )}
+    </div>
+  ) : null;
+
   const attachButton = (
     <button
       type="button"
@@ -764,60 +815,53 @@ export function Composer({
 
   if (hero || sessionId == null) {
     return (
-      <div
-        ref={wrapRef}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        className="composer w-full rounded-2xl px-5 py-4"
-      >
-        {!hasAnyConnectedModel ? (
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3.5 py-2.5 text-[12px] text-[var(--ink)] shadow-sm">
-            <span className="flex min-w-0 items-center gap-2">
-              <Sparkles size={14} strokeWidth={2} className="shrink-0 text-[var(--accent)]" />
-              <span className="truncate">
-                {!hasAnyInstalledModel
-                  ? "No models installed — connect OpenCode, Claude, Codex, or another provider to get started."
-                  : "No models connected — sign in or connect OpenCode, Claude, or Codex to start chatting."}
+      <div className="relative w-full min-w-0">
+        {menuOpen && !(trigger?.kind === "command" && menuItems.length === 0) && (
+          <ComposerMenu
+            items={menuItems}
+            index={Math.min(menuIndex, Math.max(0, menuItems.length - 1))}
+            status={menuStatus}
+            onHover={setMenuIndex}
+            onPick={pick}
+          />
+        )}
+        <div
+          ref={wrapRef}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          className="composer w-full rounded-2xl px-5 py-4"
+        >
+          {hasAnyConnectedModel && connectionNotice ? (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <TriangleAlert size={13} strokeWidth={2} className="shrink-0" />
+                <span className="truncate">{connectionNotice}</span>
               </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => openConnectModels(nextAgentId)}
-              className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[11px] font-semibold text-white shadow hover:opacity-90 transition-opacity"
-            >
-              <Plug size={12} strokeWidth={2.5} />
-              Connect models
-            </button>
+              <button
+                type="button"
+                onClick={() => openSettings("agents", nextAgentId ?? undefined)}
+                className="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:text-amber-100"
+              >
+                Connect models
+              </button>
+            </div>
+          ) : null}
+          {activeSkillRow}
+          {imageRow}
+          {area}
+          {/* Picker left, actions right — the launch picker chooses what the
+            next session starts with (agent, model, effort). */}
+          <div className="mt-3 flex min-w-0 items-center justify-between gap-2.5">
+            <div className="min-w-0">
+              <AgentPicker />
+            </div>
+            <div className="flex shrink-0 items-center gap-2.5">
+              {attachButton}
+              {sendButton}
+            </div>
           </div>
-        ) : connectionNotice ? (
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <TriangleAlert size={13} strokeWidth={2} className="shrink-0" />
-              <span className="truncate">{connectionNotice}</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => openConnectModels(nextAgentId)}
-              className="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:text-amber-100"
-            >
-              Connect models
-            </button>
-          </div>
-        ) : null}
-        {imageRow}
-        {area}
-        {/* Picker left, actions right — the launch picker chooses what the
-          next session starts with (agent, model, effort). */}
-        <div className="mt-3 flex min-w-0 items-center justify-between gap-2.5">
-          <div className="min-w-0">
-            <AgentPicker />
-          </div>
-          <div className="flex shrink-0 items-center gap-2.5">
-            {attachButton}
-            {sendButton}
-          </div>
+          {lightbox}
         </div>
-        {lightbox}
       </div>
     );
   }
@@ -838,7 +882,7 @@ export function Composer({
           </span>
           <button
             type="button"
-            onClick={() => openConnectModels(agent)}
+            onClick={() => openSettings("agents", agent ?? undefined)}
             className="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:text-amber-100"
           >
             Connect models
@@ -868,6 +912,7 @@ export function Composer({
             narrow ? "gap-y-1" : ""
           }`}
         >
+          {activeSkillRow && <div className="order-first basis-full px-2 pt-1">{activeSkillRow}</div>}
           {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
           <div className={narrow ? "order-2" : "order-1"}>{attachButton}</div>
           <div

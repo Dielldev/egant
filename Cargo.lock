@@ -1109,7 +1109,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "egant"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "egant-harness"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "egant-vcs"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "dirs",

@@ -791,6 +791,10 @@ interface EgantStore {
    * This window's own reading, kept in localStorage (`egant.unread`); the
    * sidebar draws a dot for each. */
   unread: Record<number, true>;
+  /** Sessions that completed a run. Kept in localStorage (`egant.doneSessions`);
+   * the sidebar draws a "Done" tag for each and keeps them visible even when
+   * groups are collapsed. */
+  doneSessions: Record<number, boolean>;
   answerDecision: (
     sessionId: number,
     decision: DecisionRequest,
@@ -999,6 +1003,32 @@ function loadUnread(): Record<number, true> {
 function saveUnread(unread: Record<number, true>): void {
   try {
     localStorage.setItem(UNREAD_KEY, JSON.stringify(Object.keys(unread).map(Number)));
+  } catch {
+    // keep the in-memory copy
+  }
+}
+
+const DONE_SESSIONS_KEY = "egant.doneSessions";
+
+function loadDoneSessions(): Record<number, boolean> {
+  try {
+    const raw = localStorage.getItem(DONE_SESSIONS_KEY);
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(ids)) return {};
+    const done: Record<number, boolean> = {};
+    for (const id of ids) if (typeof id === "number") done[id] = true;
+    return done;
+  } catch {
+    return {};
+  }
+}
+
+function saveDoneSessions(done: Record<number, boolean>): void {
+  try {
+    const ids = Object.entries(done)
+      .filter(([, v]) => v)
+      .map(([k]) => Number(k));
+    localStorage.setItem(DONE_SESSIONS_KEY, JSON.stringify(ids));
   } catch {
     // keep the in-memory copy
   }
@@ -1528,6 +1558,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       saveUnread(unread);
     }
     if (event.type === "exited") patch.ended = true;
+    if (patch.busy && get().doneSessions[sessionId]) {
+      const { [sessionId]: _, ...rest } = get().doneSessions;
+      set({ doneSessions: rest });
+      saveDoneSessions(rest);
+    }
     // The agent's own word on its mode — after an approved plan, or Claude
     // entering plan mode by itself — so the chip never names a stale one.
     if (event.type === "mode_changed") patch.permissionMode = event.mode;
@@ -1536,6 +1571,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // is now out of date. Cheaper and steadier than watching the filesystem,
     // and it lands exactly when the user looks back at the panel.
     if (event.type === "turn_ended") {
+      const doneSessions = { ...get().doneSessions, [sessionId]: true };
+      set({ doneSessions });
+      saveDoneSessions(doneSessions);
       get().refreshChanges();
       // Only a Claude turn moves Claude's own usage windows.
       const session = get().snapshot?.sessions.find((s) => s.id === sessionId);
@@ -2126,6 +2164,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
     decisionResponses: loadDecisionResponses(),
     unread: loadUnread(),
+    doneSessions: loadDoneSessions(),
     starredModels: loadStarred(),
     toggleStarred: (agent, modelId) => {
       const key = starKey(agent, modelId);
@@ -2199,7 +2238,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
     openSearch: () => set({ searchOpen: true }),
     closeSearch: () => set({ searchOpen: false }),
     openConnectModels: (target = null) =>
-      set({ connectModelsOpen: true, connectModelsTarget: target }),
+      get().openSettings("agents", target ?? undefined),
     closeConnectModels: () => set({ connectModelsOpen: false, connectModelsTarget: null }),
     requestFocusComposer: () => set((s) => ({ focusComposerToken: s.focusComposerToken + 1 })),
     requestJump: (sessionId, kind, ordinal) =>
@@ -2519,6 +2558,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       const title = get().snapshot?.sessions.find((s) => s.id === id)?.title ?? "conversation";
       try {
         applySnapshot(await api.archiveSession(id));
+        if (get().doneSessions[id]) {
+          const { [id]: _, ...rest } = get().doneSessions;
+          set({ doneSessions: rest });
+          saveDoneSessions(rest);
+        }
         set({ notice: { text: `Archived “${title}”`, worktree: null, undo: { sessionId: id } } });
       } catch (error) {
         fail(set, error);
@@ -2711,6 +2755,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       if (!busy) {
         set({ transcripts: { ...get().transcripts, [id]: pushUser(prev, echoText, images) } });
         patchSession(id, { busy: true, state: "running" });
+      }
+      if (get().doneSessions[id]) {
+        const { [id]: _, ...rest } = get().doneSessions;
+        set({ doneSessions: rest });
+        saveDoneSessions(rest);
       }
       try {
         const result = await api.sendMessage(id, text, images);

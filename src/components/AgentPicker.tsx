@@ -8,7 +8,6 @@ import {
   Search,
   ShieldCheck,
   ShieldOff,
-  Sparkles,
   Star,
   TerminalSquare,
   TriangleAlert,
@@ -99,7 +98,6 @@ let lastVerified = 0;
 export function AgentPicker() {
   const agents = useEgant((s) => s.agents);
   const snapshot = useEgant((s) => s.snapshot);
-  const openConnectModels = useEgant((s) => s.openConnectModels);
   const composerAgent = useEgant((s) => s.composerAgent);
   const composerModel = useEgant((s) => s.composerModel);
   const composerVariant = useEgant((s) => s.composerVariant);
@@ -573,9 +571,15 @@ export function AgentPicker() {
     <div ref={rootRef} className="relative isolate shrink-0">
       <button
         type="button"
-        title={pickedTitle}
+        title={!hasAnyConnectedModel ? "Connect models in Settings > Agents" : pickedTitle}
         aria-expanded={open}
-        onClick={toggleMenu}
+        onClick={() => {
+          if (!hasAnyConnectedModel) {
+            openSettings("agents");
+            return;
+          }
+          toggleMenu();
+        }}
         className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs transition-colors duration-150 ${
           open
             ? "bg-[var(--hover)] text-[var(--ink)]"
@@ -586,15 +590,11 @@ export function AgentPicker() {
           key={`${effective}:${effectiveModelId}:${effectiveVariant}`}
           className="model-switch flex min-w-0 items-center gap-2"
         >
-          {!hasAnyConnectedModel ? (
-            <Sparkles size={16} strokeWidth={2} className="shrink-0 text-[var(--accent)]" />
-          ) : (
-            <ProviderGlyph
-              provider={AGENT_PROVIDER[effective] ?? effective}
-              size={16}
-              color={AGENT_ACCENT[effective]}
-            />
-          )}
+          <ProviderGlyph
+            provider={AGENT_PROVIDER[effective] ?? effective}
+            size={16}
+            color={AGENT_ACCENT[effective]}
+          />
           <span className="truncate text-[14px] font-semibold whitespace-nowrap text-[var(--ink)]">
             {/* A CLI agent's model is its own business, so the trigger names
               the agent instead of a model egant didn't choose. */}
@@ -845,7 +845,7 @@ export function AgentPicker() {
               type="button"
               onClick={() => {
                 setOpen(false);
-                openConnectModels(effective);
+                openSettings("agents", effective);
               }}
               className="mt-1.5 flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-left text-[11px] text-amber-200 hover:bg-amber-400/15"
             >
@@ -863,11 +863,10 @@ export function AgentPicker() {
                 type="button"
                 onClick={() => {
                   setOpen(false);
-                  openConnectModels();
+                  openSettings("agents");
                 }}
                 className="flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
               >
-                <Sparkles size={11} strokeWidth={2} className="text-[var(--accent)]" />
                 Connect models & providers…
               </button>
             </div>

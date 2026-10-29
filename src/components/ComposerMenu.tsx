@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { Sparkles } from "lucide-react";
 import type { CommandItem } from "../lib/composerMenu";
 import type { InstalledSkill } from "../lib/types";
 import { FileIcon } from "./FileIcon";
@@ -53,28 +52,46 @@ export function ComposerMenu({
             : item.kind === "command"
               ? `cmd:/${item.command.name}`
               : item.path;
+
+        const showSkillHeader = item.kind === "skill" && (i === 0 || items[i - 1]?.kind !== "skill");
+        const showCmdHeader = item.kind === "command" && (i === 0 || items[i - 1]?.kind !== "command");
+
         return (
-          <div
-            key={key}
-            data-row={i}
-            role="option"
-            aria-selected={active}
-            onMouseEnter={() => onHover(i)}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onPick(item);
-            }}
-            className={`flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 ${
-              active ? "bg-[var(--hover)]" : ""
-            }`}
-          >
-            {item.kind === "skill" ? (
-              <SkillRow skill={item.skill} />
-            ) : item.kind === "command" ? (
-              <CommandRow command={item.command} />
-            ) : (
-              <FileRow path={item.path} />
+          <div key={key}>
+            {showSkillHeader && (
+              <div className="flex items-center justify-between px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)] tracking-wide uppercase">
+                <span>Skills</span>
+                <span className="text-[10px] text-[var(--faint)] font-normal normal-case">
+                  select a skill to apply
+                </span>
+              </div>
             )}
+            {showCmdHeader && (
+              <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-1 text-[10px] font-semibold text-[var(--faint)] tracking-wide uppercase border-t border-[var(--border)] mt-1">
+                <span>Commands</span>
+              </div>
+            )}
+            <div
+              data-row={i}
+              role="option"
+              aria-selected={active}
+              onMouseEnter={() => onHover(i)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onPick(item);
+              }}
+              className={`flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 ${
+                active ? "bg-[var(--hover)]" : ""
+              }`}
+            >
+              {item.kind === "skill" ? (
+                <SkillRow skill={item.skill} />
+              ) : item.kind === "command" ? (
+                <CommandRow command={item.command} />
+              ) : (
+                <FileRow path={item.path} />
+              )}
+            </div>
           </div>
         );
       })}
@@ -88,13 +105,15 @@ function SkillRow({ skill }: { skill: InstalledSkill }) {
   );
   return (
     <>
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--accent)]">
-        {logo || <Sparkles size={13} strokeWidth={2} />}
-      </span>
+      {logo && (
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--accent)]">
+          {logo}
+        </span>
+      )}
       <span className="shrink-0 whitespace-nowrap font-medium text-[var(--ink)]">
         /{skill.id}
       </span>
-      <span className="shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider bg-[var(--card)] border border-[var(--border)] text-[var(--faint)]">
+      <span className="shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider bg-[var(--accent)]/10 border border-[var(--accent)]/25 text-[var(--accent)]">
         skill
       </span>
       {skill.description && (

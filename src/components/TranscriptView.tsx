@@ -867,6 +867,17 @@ function UserImageThumbnail({ path }: { path: string }) {
 }
 
 function UserEntryBubble({ text, images }: { text: string; images?: string[] }) {
+  const installedSkills = useEgant((s) => s.installedSkills);
+  const skillMatch = useMemo(() => {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("/")) return null;
+    const m = trimmed.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
+    if (!m) return null;
+    const skillId = m[1];
+    const skill = installedSkills.find((s) => s.id.toLowerCase() === skillId.toLowerCase());
+    return skill ? { skill, instruction: m[2] || "" } : null;
+  }, [text, installedSkills]);
+
   const allImages = useMemo(() => {
     const fromText = extractImagePaths(text).filter((p) => isImage(p));
     const combined = [...(images ?? []), ...fromText];
@@ -890,7 +901,22 @@ function UserEntryBubble({ text, images }: { text: string; images?: string[] }) 
             <span>Uploaded image{allImages.length > 1 ? "s" : ""}</span>
           </div>
         )}
-        {showText && <LinkifiedText text={text} />}
+        {showText &&
+          (skillMatch ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-xs font-medium text-[var(--ink)] shadow-xs">
+                  <span className="font-semibold">/{skillMatch.skill.id}</span>
+                  <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--faint)] font-bold">
+                    skill
+                  </span>
+                </span>
+              </div>
+              {skillMatch.instruction && <LinkifiedText text={skillMatch.instruction} />}
+            </div>
+          ) : (
+            <LinkifiedText text={text} />
+          ))}
         {allImages.length > 0 && (
           <div className={`${showText ? "mt-2.5" : ""} flex flex-wrap gap-2.5`}>
             {allImages.map((p, i) => (

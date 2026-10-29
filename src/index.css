@@ -935,12 +935,37 @@ input {
   animation: text-wave 2.6s ease-in-out infinite alternate;
 }
 
+/* Running session in the sidebar: rides the same wave band and 2.6s beat as
+ * the logo and status line, glowing along the card's border. */
+.session-running-wave {
+  position: relative;
+  box-shadow: 0 0 12px -2px color-mix(in srgb, var(--busy) 35%, transparent);
+}
+.session-running-wave::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--wave-band);
+  background-size: 260% 100%;
+  animation: text-wave 2.6s ease-in-out infinite alternate;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
 /* Unmasked, the gradient would paint as a bare rectangle across the stage —
  * worse than no mark at all, so it paints nothing instead. */
 @supports not ((-webkit-mask-image: url(x)) or (mask-image: url(x))) {
   .logo-wave {
     background-image: none;
     animation: none;
+  }
+  .session-running-wave::before {
+    display: none;
   }
 }
 
@@ -982,6 +1007,15 @@ input {
     animation: none;
     background-image: none;
     background-color: var(--muted);
+  }
+
+  .session-running-wave {
+    box-shadow: none;
+  }
+  .session-running-wave::before {
+    animation: none;
+    background-image: none;
+    background-color: var(--border);
   }
 }
 

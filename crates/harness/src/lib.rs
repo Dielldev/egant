@@ -560,25 +560,35 @@ pub fn project_system_prompt(project_name: &str, cwd: &std::path::Path) -> Strin
     )
 }
 
-/// If `text` begins with a skill invocation (e.g. `/<skill-id>` or `/<skill-id> <instruction>`),
-/// resolves the installed skill's `SKILL.md` and wraps the prompt with the skill's instructions
-/// so that any agent (Claude, Antigravity, OpenCode, Codex, etc.) reads and applies the skill.
-pub fn wrap_skill_if_installed(
+fn find_skill_path_in_project_or_installed(
+    cwd: &std::path::Path,
+    skill_id: &str,
+) -> Option<std::path::PathBuf> {
+    let project_candidates = [
+        cwd.join(".claude/skills").join(skill_id).join("SKILL.md"),
+        cwd.join(".claude/skills").join(skill_id).join("skill.md"),
+        cwd.join(".agents/skills").join(skill_id).join("SKILL.md"),
+        cwd.join(".agents/skills").join(skill_id).join("skill.md"),
+        cwd.join(".skills").join(skill_id).join("SKILL.md"),
+        cwd.join(".skills").join(skill_id).join("skill.md"),
+    ];
+    for p in project_candidates {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    library::skills::find_installed_skill_path(skill_id)
+}
+
+fn format_skill_prompt(
     project_name: &str,
     cwd: &std::path::Path,
-    text: &str,
-) -> Option<String> {
-    let stripped = text.strip_prefix('/')?;
-    let mut parts = stripped.splitn(2, char::is_whitespace);
-    let skill_id = parts.next()?.trim();
-    if skill_id.is_empty() {
-        return None;
-    }
-    let skill_path = library::skills::find_installed_skill_path(skill_id)?;
-    let skill_content = std::fs::read_to_string(&skill_path).ok()?;
-    let user_instruction = parts.next().map(str::trim).unwrap_or("");
-
-    let prompt = if user_instruction.is_empty() {
+    skill_id: &str,
+    skill_path: &std::path::Path,
+    skill_content: &str,
+    user_instruction: &str,
+) -> String {
+    if user_instruction.is_empty() {
         format!(
             "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n\
             [Skill: {skill_id} | Path: {skill_file}]\n\
@@ -601,8 +611,67 @@ pub fn wrap_skill_if_installed(
             path = cwd.display(),
             skill_file = skill_path.display(),
         )
-    };
-    Some(prompt)
+    }
+}
+
+/// If `text` begins with or references an installed skill (e.g. `/<skill-id>` or `/<skill-id> <instruction>`),
+/// resolves the installed skill's `SKILL.md` and wraps the prompt with the skill's instructions
+/// so that any agent (Claude, Antigravity, OpenCode, Codex, etc.) reads and applies the skill.
+pub fn wrap_skill_if_installed(
+    project_name: &str,
+    cwd: &std::path::Path,
+    text: &str,
+) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // 1. Direct slash command: e.g. "/frontend-design make a button"
+    if let Some(stripped) = trimmed.strip_prefix('/') {
+        let mut parts = stripped.splitn(2, char::is_whitespace);
+        let skill_id = parts.next()?.trim();
+        if !skill_id.is_empty() {
+            if let Some(skill_path) = find_skill_path_in_project_or_installed(cwd, skill_id) {
+                if let Ok(skill_content) = std::fs::read_to_string(&skill_path) {
+                    let user_instruction = parts.next().map(str::trim).unwrap_or("");
+                    return Some(format_skill_prompt(
+                        project_name,
+                        cwd,
+                        skill_id,
+                        &skill_path,
+                        &skill_content,
+                        user_instruction,
+                    ));
+                }
+            }
+        }
+    }
+
+    // 2. Mentioned in prompt: e.g. "Use /frontend-design to fix layout"
+    for word in trimmed.split_whitespace() {
+        if let Some(candidate) = word.strip_prefix('/') {
+            let candidate_id =
+                candidate.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            if !candidate_id.is_empty() {
+                if let Some(skill_path) = find_skill_path_in_project_or_installed(cwd, candidate_id)
+                {
+                    if let Ok(skill_content) = std::fs::read_to_string(&skill_path) {
+                        return Some(format_skill_prompt(
+                            project_name,
+                            cwd,
+                            candidate_id,
+                            &skill_path,
+                            &skill_content,
+                            trimmed,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Per-turn envelope carrying the same fact as [`project_system_prompt`].

@@ -1,6 +1,7 @@
 import {
   Archive,
   ArrowDownToLine,
+  Blocks,
   Bot,
   Calendar,
   Check,
@@ -15,12 +16,10 @@ import {
   ListFilter,
   MapPin,
   Pencil,
-  Plug,
   Plus,
   Search,
   Settings,
   Smartphone,
-  Sparkles,
   TerminalSquare,
   X,
 } from "lucide-react";
@@ -77,6 +76,7 @@ export function Sidebar() {
   const archiveSession = useEgant((s) => s.archiveSession);
   const renameSession = useEgant((s) => s.renameSession);
   const unread = useEgant((s) => s.unread);
+  const doneSessions = useEgant((s) => s.doneSessions);
   const createSession = useEgant((s) => s.createSession);
   const openSettings = useEgant((s) => s.openSettings);
   const closeSettings = useEgant((s) => s.closeSettings);
@@ -84,7 +84,6 @@ export function Sidebar() {
   const openLibrary = useEgant((s) => s.openLibrary);
   const closeLibrary = useEgant((s) => s.closeLibrary);
   const libraryOpen = useEgant((s) => s.libraryOpen);
-  const librarySection = useEgant((s) => s.librarySection);
   const sidebarWidth = useEgant((s) => s.sidebarWidth);
   const setSidebarWidth = useEgant((s) => s.setSidebarWidth);
 
@@ -275,6 +274,9 @@ export function Sidebar() {
     const branch = sidebarShowBranch ? (session.worktree?.branch ?? session.branch) : null;
     const harness =
       catalog.find((c) => c.id === session.agent)?.name ?? agentName(agents, session.agent);
+    const isDone =
+      (doneSessions[session.id] === true || (unread[session.id] === true && !session.busy)) &&
+      !session.busy;
     return {
       title: session.title,
       tooltip: `${session.title} — ${project} @ ${session.device ?? machine}${session.branch ? ` · ${session.branch}` : ""} · ${harness}`,
@@ -283,6 +285,7 @@ export function Sidebar() {
       now,
       selected: session.id === snapshot?.activeSession,
       busy: session.busy,
+      done: isDone,
       // opencode's denials arrive after its turn has already ended, so a
       // waiting row counts as much as the state does (the phone's "Needs you"
       // group reads the same count).
@@ -457,6 +460,8 @@ export function Sidebar() {
               ? group.sessions.filter(
                   (s) =>
                     s.busy ||
+                    doneSessions[s.id] ||
+                    (unread[s.id] && !s.busy) ||
                     s.state === "awaiting_permission" ||
                     (s.pendingCount ?? 0) > 0 ||
                     s.id === activeSessionId,
@@ -557,24 +562,14 @@ export function Sidebar() {
             onClick={() => openSearch()}
           />
           <NavRow
-            icon={Sparkles}
-            label="Skills"
+            icon={Blocks}
+            label="Skills & MCP Servers"
             chord="⇧L"
-            title="Browse and manage agent skills"
-            active={libraryOpen && librarySection === "skills"}
+            title="Browse and manage agent skills and MCP servers"
+            active={libraryOpen}
             onClick={() => {
-              if (libraryOpen && librarySection === "skills") closeLibrary();
-              else openLibrary("skills");
-            }}
-          />
-          <NavRow
-            icon={Plug}
-            label="MCP Servers"
-            title="Tools and integrations for every agent"
-            active={libraryOpen && librarySection === "mcp"}
-            onClick={() => {
-              if (libraryOpen && librarySection === "mcp") closeLibrary();
-              else openLibrary("mcp");
+              if (libraryOpen) closeLibrary();
+              else openLibrary();
             }}
           />
         </div>
@@ -771,6 +766,7 @@ function SessionRow({
   now,
   selected,
   busy,
+  done,
   awaiting,
   unread,
   agent,
@@ -791,6 +787,7 @@ function SessionRow({
   now: number;
   selected: boolean;
   busy: boolean;
+  done?: boolean;
   /** Blocked on the user — a permission, a question, a plan. Wins over
    * `busy`, which is also set while it waits. */
   awaiting?: boolean;
@@ -829,9 +826,16 @@ function SessionRow({
             <span className="text-[var(--attention)]">Needs you</span>
           </>
         ) : busy ? (
+          <span className="text-[var(--busy)]">Working</span>
+        ) : done ? (
           <>
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--busy)]" />
-            <span className="text-[var(--busy)]">Working</span>
+            {unread && (
+              <span
+                title="New since you last looked"
+                className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
+              />
+            )}
+            <span className="text-[var(--diff-add-fg)]">Done</span>
           </>
         ) : (
           <>
@@ -879,9 +883,9 @@ function SessionRow({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
-      className={`group flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left ${
+      className={`group flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
         selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"
-      }`}
+      } ${busy ? "session-running-wave" : ""}`}
     >
       {menuAt && (
         <RowMenu
@@ -912,11 +916,12 @@ function SessionRow({
       )}
       <div className="flex w-full items-center gap-2">
         {showHarness && (
-          <span className="shrink-0 opacity-80">
+          <span className={`shrink-0 ${busy ? "opacity-100" : "opacity-80"}`}>
             <ProviderGlyph
               provider={AGENT_PROVIDER[agent] ?? agent}
               size={13}
               color={AGENT_ACCENT[agent]}
+              wave={busy}
             />
           </span>
         )}

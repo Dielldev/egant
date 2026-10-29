@@ -126,21 +126,37 @@ export function ProviderGlyph({
   size = 16,
   color,
   className,
+  wave,
 }: {
   provider: string;
   size?: number;
   color?: string;
   className?: string;
+  wave?: boolean;
 }) {
   const svg = providerSvg(provider);
   if (!svg) {
     return (
       <span
-        className={`flex items-center justify-center font-bold text-[var(--ink)] ${className ?? ""}`}
+        className={`flex items-center justify-center font-bold text-[var(--ink)] ${wave ? "shimmer" : ""} ${className ?? ""}`}
         style={{ width: size, height: size, color: color ?? "var(--ink)", fontSize: size - 2 }}
       >
         {provider.slice(0, 1).toUpperCase()}
       </span>
+    );
+  }
+  if (wave) {
+    const dataUri = `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+    return (
+      <span
+        className={`logo-wave inline-block shrink-0 ${className ?? ""}`}
+        style={{
+          width: size,
+          height: size,
+          WebkitMaskImage: dataUri,
+          maskImage: dataUri,
+        }}
+      />
     );
   }
   return (

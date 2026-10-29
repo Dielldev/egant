@@ -12,7 +12,7 @@ export interface MenuTrigger {
   query: string;
 }
 
-const SPACE = /\s/;
+export const SPACE = /\s/;
 
 /** The menu the caret is in, if any. A `/` counts at the start of the message,
  * at the start of any line, or at the start of any word. An `@` counts at the
@@ -21,10 +21,19 @@ export function findTrigger(text: string, caret: number): MenuTrigger | null {
   // Check `/` command or skill trigger
   let cmdStart = caret;
   while (cmdStart > 0 && !SPACE.test(text[cmdStart - 1]!)) cmdStart--;
-  if (cmdStart < text.length && text[cmdStart] === "/" && caret > cmdStart) {
-    let end = caret;
+  if (
+    cmdStart < text.length &&
+    text[cmdStart] === "/" &&
+    (caret > cmdStart || (caret === cmdStart && (cmdStart === 0 || SPACE.test(text[cmdStart - 1]!))))
+  ) {
+    let end = Math.max(caret, cmdStart + 1);
     while (end < text.length && !SPACE.test(text[end]!)) end++;
-    return { kind: "command", start: cmdStart, end, query: text.slice(cmdStart + 1, caret) };
+    return {
+      kind: "command",
+      start: cmdStart,
+      end,
+      query: text.slice(cmdStart + 1, Math.max(cmdStart + 1, caret)),
+    };
   }
 
   // Check `@` file mention

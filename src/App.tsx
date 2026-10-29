@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { CliLaunchDialog } from "./components/CliLaunchDialog";
 import { CliStage } from "./components/CliStage";
 import { ConflictFileView } from "./components/ConflictResolution";
-import { ConnectModelsDialog } from "./components/ConnectModelsDialog";
 import { DiffTabView } from "./components/DiffTabView";
 import { FileView } from "./components/FileView";
 import { ImageLightbox } from "./components/ImageLightbox";
@@ -144,10 +143,7 @@ function EgantWindow() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
       const store = useEgant.getState();
-      if (store.connectModelsOpen) {
-        e.preventDefault();
-        store.closeConnectModels();
-      } else if (store.settingsOpen) {
+      if (store.settingsOpen) {
         e.preventDefault();
         store.closeSettings();
       } else if (store.libraryOpen) {
@@ -431,8 +427,6 @@ function EgantWindow() {
     <div className="flex h-full w-full overflow-hidden bg-transparent text-[var(--ink)]">
       {settingsOpen ? (
         <SettingsPage />
-      ) : libraryOpen ? (
-        <LibraryPage />
       ) : (
         <>
           {sidebarShown && <Sidebar />}
@@ -461,52 +455,54 @@ function EgantWindow() {
                     : "min-w-0 translate-x-0 opacity-100"
                 }`}
               >
-                {heroVisible && <Wallpaper launch exiting={docking} />}
-                {/* Outside the stage's own states: closing the last conversation
-                  is exactly when there is something to say about its worktree,
-                  and by then the transcript it would have sat above is gone. */}
                 <NoticeToast />
-                <div className="relative z-10 flex h-full flex-col">
-                  <SessionHeader bare={stage !== "thread"} />
-                  <StageTabs sessionKey={stageKey} />
-                  {openTab?.kind === "diff" && openTab.status === "conflicted" ? (
-                    <ConflictFileView tab={openTab} />
-                  ) : openTab?.kind === "diff" ? (
-                    <DiffTabView tab={openTab} />
-                  ) : openTab ? (
-                    <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
-                  ) : cli ? (
-                    <CliStage session={cli} />
-                  ) : (
-                    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-                      {threadVisible &&
-                        (loading ? (
-                          // Transcript still crossing the IPC boundary — one blank
-                          // frame, never a flash of the wrong screen.
-                          <div className="min-h-0 flex-1" />
-                        ) : (
-                          <div className="flex min-h-0 flex-1 overflow-hidden">
-                            <TranscriptView />
-                          </div>
-                        ))}
-                      {/* Absolutely stacked over the thread beneath it so the two
-                        overlap for the `docking` beat instead of stacking in flow. */}
-                      {heroVisible && (
-                        <div className="absolute inset-0 flex flex-col">
-                          <LaunchScreen exiting={docking} />
+                {libraryOpen ? (
+                  <LibraryPage />
+                ) : (
+                  <>
+                    {heroVisible && <Wallpaper launch exiting={docking} />}
+                    {/* Outside the stage's own states: closing the last conversation
+                      is exactly when there is something to say about its worktree,
+                      and by then the transcript it would have sat above is gone. */}
+                    <div className="relative z-10 flex h-full flex-col">
+                      <SessionHeader bare={stage !== "thread"} />
+                      <StageTabs sessionKey={stageKey} />
+                      {openTab?.kind === "diff" && openTab.status === "conflicted" ? (
+                        <ConflictFileView tab={openTab} />
+                      ) : openTab?.kind === "diff" ? (
+                        <DiffTabView tab={openTab} />
+                      ) : openTab ? (
+                        <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
+                      ) : cli ? (
+                        <CliStage session={cli} />
+                      ) : (
+                        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                          {threadVisible &&
+                            (loading ? (
+                              // Transcript still crossing the IPC boundary — one blank
+                              // frame, never a flash of the wrong screen.
+                              <div className="min-h-0 flex-1" />
+                            ) : (
+                              <div className="flex min-h-0 flex-1 overflow-hidden">
+                                <TranscriptView />
+                              </div>
+                            ))}
+                          {/* Absolutely stacked over the thread beneath it so the two
+                            overlap for the `docking` beat instead of stacking in flow. */}
+                          {heroVisible && (
+                            <div className="absolute inset-0 flex flex-col">
+                              <LaunchScreen exiting={docking} />
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
-              {panelVisible && <WorkspacePanel />}
+              {panelVisible && !libraryOpen && <WorkspacePanel />}
         </>
       )}
-      {/* Outside the settings branch: the dialog is reachable both from the
-        composer's agent picker and from Settings > Agents, and it should
-        look the same either way. */}
-      <ConnectModelsDialog />
       <CliLaunchDialog />
       <SearchModal />
       <ImageLightbox />
