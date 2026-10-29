@@ -15,6 +15,7 @@ export function Footer() {
   const downloads = [DOWNLOADS[os], ...Object.values(DOWNLOADS)].filter(
     (download, i, all) => all.indexOf(download) === i,
   );
+  const primary = DOWNLOADS[os];
 
   return (
     <>
@@ -27,9 +28,9 @@ export function Footer() {
             <span className="dim">Start running agents.</span>
           </h2>
           <div className="closing-cta">
-            {downloads.map((download, i) => (
+            {downloads.map((download) => (
               <a
-                className={`btn ${i === 0 ? "btn-primary" : "btn-glass"}`}
+                className="btn btn-primary"
                 href={download.url}
                 key={download.os}
               >
@@ -37,6 +38,12 @@ export function Footer() {
               </a>
             ))}
           </div>
+          <p className="hero-note" style={{ marginTop: "22px" }}>
+            {primary.detail} · {primary.note} ·{" "}
+            <Link to={primary.guide} className="text-link">
+              {primary.guideLabel}
+            </Link>
+          </p>
         </Reveal>
       </section>
       <footer className="footer">
