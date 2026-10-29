@@ -1,7 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { DOWNLOADS, HERO_SHOT, REPO, detectOs } from "../content";
+import { DOWNLOADS, HERO_SHOT, REPO, detectOs, type DownloadOs } from "../content";
 import { prefersReducedMotion } from "../useReveal";
 import { GithubIcon } from "./GithubIcon";
 import { Mark } from "./Mark";
@@ -9,10 +9,17 @@ import { Mark } from "./Mark";
 const HEADLINE = ["Every", "coding", "agent.", "One", "window."];
 
 export function Hero() {
+  const [os, setOs] = useState<DownloadOs>(() => detectOs());
+
+  useEffect(() => {
+    setOs(detectOs());
+  }, []);
+
   // The visitor's own OS first.
-  const downloads = [DOWNLOADS[detectOs()], ...Object.values(DOWNLOADS)].filter(
+  const downloads = [DOWNLOADS[os], ...Object.values(DOWNLOADS)].filter(
     (download, i, all) => all.indexOf(download) === i,
   );
+  const primary = DOWNLOADS[os];
   const frame = useRef<HTMLDivElement>(null);
 
   // The screenshot starts tipped back and settles flat as you scroll into it.
@@ -71,10 +78,9 @@ export function Hero() {
       </div>
 
       <p className="hero-note intro" style={{ animationDelay: "900ms" }}>
-        {DOWNLOADS.mac.detail} · macOS first launch: System Settings →
-        Privacy &amp; Security → Open Anyway ·{" "}
-        <Link to="/guides#macos-gatekeeper" className="text-link">
-          Gatekeeper guide →
+        {primary.detail} · {primary.note} ·{" "}
+        <Link to={primary.guide} className="text-link">
+          {primary.guideLabel}
         </Link>
       </p>
 

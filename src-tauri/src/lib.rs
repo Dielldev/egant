@@ -72,7 +72,10 @@ pub fn run() {
     {
         // Prevent WebView2 from flashing white before HTML/CSS loads:
         // Sets the default background color of WebView2 to fully transparent.
-        std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "0x00000000");
+        // SAFETY: Called early during main thread startup before worker threads run.
+        unsafe {
+            std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "0x00000000");
+        }
     }
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

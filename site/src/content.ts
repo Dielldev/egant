@@ -12,21 +12,51 @@ import runShot from "./assets/shots/run-website.jpg";
 
 export const REPO = "https://github.com/Dielldev/egant";
 
+export type DownloadInfo = {
+  os: string;
+  url: string;
+  label: string;
+  detail: string;
+  note: string;
+  guide: string;
+  guideLabel: string;
+};
+
 /** The release assets keep version-less names so these links never go stale. */
-export const DOWNLOADS = {
+export const DOWNLOADS: Record<"mac" | "windows", DownloadInfo> = {
   mac: {
     os: "macOS",
     url: `${REPO}/releases/latest/download/egant-macos-arm64.dmg`,
     label: "Download for macOS",
     detail: "Apple Silicon · 10 MB",
     note: "first launch: System Settings → Privacy & Security → Open Anyway",
+    guide: "/guides#macos-gatekeeper",
+    guideLabel: "Gatekeeper guide →",
+  },
+  windows: {
+    os: "Windows",
+    url: `${REPO}/releases/latest/download/egant-setup-x64.exe`,
+    label: "Download for Windows",
+    detail: "x64 installer · 8 MB",
+    note: "first run: Windows protected your PC → More info → Run anyway",
+    guide: "/guides#windows-smartscreen",
+    guideLabel: "SmartScreen guide →",
   },
 } as const;
 
 export type DownloadOs = keyof typeof DOWNLOADS;
 
-/** The visitor's desktop OS; macOS is the primary supported release. */
+/** The visitor's desktop OS; detects Windows vs macOS. */
 export function detectOs(): DownloadOs {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return "mac";
+  }
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = (nav.userAgentData?.platform || nav.platform || "").toLowerCase();
+  const ua = (nav.userAgent || "").toLowerCase();
+  if (platform.startsWith("win") || ua.includes("windows")) {
+    return "windows";
+  }
   return "mac";
 }
 
