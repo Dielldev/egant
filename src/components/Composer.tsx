@@ -1,6 +1,9 @@
 import {
   ArrowUp,
+  Check,
   Clock,
+  Copy,
+  FileText,
   Folder,
   FoldVertical,
   FolderTree,
@@ -9,6 +12,7 @@ import {
   Loader2,
   Paperclip,
   Pencil,
+  Sparkles,
   Square,
   TerminalSquare,
   TriangleAlert,
@@ -25,11 +29,14 @@ import { fuzzyFilter, fuzzyScore } from "../lib/fuzzy";
 import { contextFraction } from "../lib/transcript";
 import { modelWindowFor } from "../lib/types";
 import { HARNESSED, selectNextAgent, useEgant, usesChatUi } from "../store";
-import { AgentPicker, agentName } from "./AgentPicker";
+import { AgentPicker, agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ComposerMenu, type MenuItem } from "./ComposerMenu";
+import { Markdown } from "./Markdown";
 import { ModeInfo } from "./ModeInfo";
+import { ProviderGlyph } from "./ProviderLogo";
 import { SessionModelPicker } from "./SessionModelPicker";
 import { UsageMeter } from "./UsageMeter";
+import { formatModelTitle } from "./UsageSettings";
 
 /** How full the context window gets before the footer offers to compact it —
  * about where Claude's own CLI starts warning that it will. */
@@ -90,8 +97,18 @@ export function Composer({
   const queue = useEgant((s) => (sessionId == null ? undefined : s.queues[sessionId]));
   const unqueueMessage = useEgant((s) => s.unqueueMessage);
   const sendQueuedNow = useEgant((s) => s.sendQueuedNow);
+  const attachedContext = useEgant((s) => s.attachedContext);
+  const attachedContextLoading = useEgant((s) => s.attachedContextLoading);
+  const attachedContextSource = useEgant((s) => s.attachedContextSource);
+  const attachContextFromSession = useEgant((s) => s.attachContextFromSession);
+  const clearAttachedContext = useEgant((s) => s.clearAttachedContext);
+  const draggingSession = useEgant((s) => s.draggingSession);
 
   const [text, setText] = useState("");
+  const [isDragOverSession, setIsDragOverSession] = useState(false);
+  const [isHoveringDrop, setIsHoveringDrop] = useState(false);
+  const dragCountRef = useRef(0);
+  const [showContextPreview, setShowContextPreview] = useState(false);
   // Where the caret sits, for the `/` and `@` menus: what it is in decides
   // which one (if either) is open.
   const [caret, setCaret] = useState(0);
@@ -422,7 +439,8 @@ export function Composer({
   // disk; one still saving blocks the send rather than going out without it.
   const imagesSaving = pastedImages.some((img) => img.path == null && !img.error);
   const readyImages = pastedImages.filter((img) => img.path != null);
-  const hasContent = hasText || pastedImages.length > 0;
+  const hasContext = attachedContext != null || attachedContextSource != null;
+  const hasContent = hasText || pastedImages.length > 0 || hasContext;
 
   const submit = () => {
     // In CLI mode the button is the way into the terminal, not a send.
@@ -438,7 +456,7 @@ export function Composer({
       openSettings("agents", nextAgentId ?? undefined);
       return;
     }
-    if (!hasContent || ended || imagesSaving) return;
+    if (!hasContent || ended || imagesSaving || attachedContextLoading) return;
     const paths = readyImages.map((img) => img.path as string);
     if (hero || sessionId == null) void sendOnLaunch(text, paths);
     else void send(sessionId, text, paths);
@@ -528,25 +546,132 @@ export function Composer({
   };
 
   const handleDrop = (e: React.DragEvent) => {
+    dragCountRef.current = 0;
+    setIsDragOverSession(false);
+    setIsHoveringDrop(false);
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dragging = useEgant.getState().draggingSession;
+    if (dragging) {
+      useEgant.getState().setDraggingSession(null);
+      void attachContextFromSession(dragging);
+      return;
+    }
+
+    const sessionData =
+      e.dataTransfer.getData("application/x-egant-session") ||
+      e.dataTransfer.getData("text/plain");
+    if (sessionData) {
+      try {
+        const parsed = JSON.parse(sessionData);
+        if (parsed && typeof parsed.id === "number") {
+          void attachContextFromSession({
+            id: parsed.id,
+            title: parsed.title,
+            agent: parsed.agent,
+            model: parsed.model ?? null,
+          });
+          return;
+        }
+      } catch (err) {
+        log.error("composer", `invalid session drop: ${String(err)}`, err);
+      }
+    }
+
     const files = Array.from(e.dataTransfer?.files ?? []);
     const imageFiles = files.filter(
       (file) => file.type.startsWith("image/") || isImage(file.name),
     );
     if (imageFiles.length > 0) {
-      e.preventDefault();
-      e.stopPropagation();
       for (const file of imageFiles) {
         addPastedImage(file);
       }
     }
   };
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    dragCountRef.current++;
+    const dragging = useEgant.getState().draggingSession;
+    if (
+      dragging ||
+      e.dataTransfer?.types?.includes("application/x-egant-session") ||
+      e.dataTransfer?.types?.includes("text/plain")
+    ) {
+      e.preventDefault();
+      setIsDragOverSession(true);
+    }
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
+    const dragging = useEgant.getState().draggingSession;
+    if (
+      dragging ||
+      e.dataTransfer?.types?.includes("application/x-egant-session") ||
+      e.dataTransfer?.types?.includes("text/plain")
+    ) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      if (!isDragOverSession) setIsDragOverSession(true);
+      return;
+    }
     if (e.dataTransfer?.types?.includes("Files")) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
   };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    dragCountRef.current--;
+    if (dragCountRef.current <= 0) {
+      dragCountRef.current = 0;
+      setIsDragOverSession(false);
+      setIsHoveringDrop(false);
+    }
+  };
+
+  const showDropTarget = Boolean(draggingSession || isDragOverSession);
+
+  const dropOverlay = showDropTarget ? (
+    <div
+      onDragEnter={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsHoveringDrop(true);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "copy";
+        if (!isHoveringDrop) setIsHoveringDrop(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsHoveringDrop(false);
+      }}
+      onDrop={(e) => {
+        setIsHoveringDrop(false);
+        handleDrop(e);
+      }}
+      className={`pointer-events-auto absolute inset-0 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed transition-all cursor-copy ${
+        isHoveringDrop
+          ? "border-[var(--accent)] bg-[var(--card)]/95 shadow-xl scale-[1.01]"
+          : "border-[var(--accent)]/70 bg-[var(--card)]/85"
+      } backdrop-blur-xs`}
+    >
+      <div className="flex items-center gap-2.5 px-4 text-sm font-medium text-[var(--accent)] select-none">
+        <Sparkles size={18} className="shrink-0 animate-pulse" />
+        <span className="truncate">
+          {draggingSession
+            ? `Drop to attach context from "${draggingSession.title}"`
+            : "Drop to attach context handover"}
+        </span>
+      </div>
+    </div>
+  ) : null;
 
   const area = (
     <textarea
@@ -554,14 +679,13 @@ export function Composer({
       value={text}
       rows={hero ? 3 : 1}
       disabled={ended || cliAgent != null}
+      style={{ pointerEvents: showDropTarget ? "none" : undefined }}
       onChange={(e) => {
         setText(e.target.value);
         setCaret(e.target.selectionStart ?? e.target.value.length);
       }}
       onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
       onPaste={handlePaste}
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
       onKeyDown={(e) => {
         // An open menu has the keys first: arrows walk it, Enter or Tab take
         // the highlighted row, Esc closes it and leaves the text alone.
@@ -772,6 +896,122 @@ export function Composer({
     </div>
   ) : null;
 
+  const sourceAgent = attachedContext?.agent || attachedContextSource?.agent || "claude";
+  const sourceModel = attachedContext?.model || attachedContextSource?.model || sourceAgent;
+  const sourceTitle = attachedContext?.title || attachedContextSource?.title || "Previous Chat";
+
+  const attachedContextRow = (attachedContextSource || attachedContext) ? (
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)]/90 px-3 py-1.5 text-xs shadow-xs backdrop-blur-md">
+      <div className="flex min-w-0 items-center gap-2">
+        <ProviderGlyph
+          provider={AGENT_PROVIDER[sourceAgent] ?? sourceAgent}
+          size={16}
+          color={AGENT_ACCENT[sourceAgent]}
+        />
+        <div className="flex min-w-0 items-center gap-1.5 truncate">
+          <span className="font-semibold text-[var(--ink)]">
+            {formatModelTitle(sourceModel)}
+          </span>
+          <span className="text-[var(--faint)]">•</span>
+          <span
+            className="truncate text-[var(--muted)]"
+            title={sourceTitle}
+          >
+            Context from "{sourceTitle}"
+          </span>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-2">
+        {attachedContextLoading ? (
+          <span className="flex items-center gap-1.5 font-medium text-amber-400">
+            <Loader2 size={12} className="animate-spin" />
+            <span>AI Synthesizing context.md...</span>
+          </span>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1 font-medium text-[var(--diff-add-fg)]">
+              <Check size={12} strokeWidth={2.5} />
+              <span>context.md ready</span>
+            </span>
+            {attachedContext?.markdown && (
+              <button
+                type="button"
+                onClick={() => setShowContextPreview(true)}
+                className="flex cursor-pointer items-center gap-1 rounded-md bg-[var(--hover)] px-2 py-0.5 text-[11px] font-medium text-[var(--ink)] hover:bg-[var(--selected)]"
+              >
+                <FileText size={11} />
+                Preview
+              </button>
+            )}
+          </div>
+        )}
+        <button
+          type="button"
+          title="Remove attached context"
+          onClick={clearAttachedContext}
+          className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+        >
+          <X size={12} strokeWidth={2.5} />
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  const contextPreviewModal =
+    showContextPreview && attachedContext
+      ? createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm"
+            onClick={() => setShowContextPreview(false)}
+          >
+            <div
+              className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-4 flex items-center justify-between border-b border-[var(--border)] pb-3">
+                <div className="flex items-center gap-2.5">
+                  <ProviderGlyph
+                    provider={AGENT_PROVIDER[attachedContext.agent] ?? attachedContext.agent}
+                    size={20}
+                    color={AGENT_ACCENT[attachedContext.agent]}
+                  />
+                  <div>
+                    <h3 className="text-sm font-semibold text-[var(--ink)]">
+                      Context Handover · {formatModelTitle(attachedContext.model || attachedContext.agent)}
+                    </h3>
+                    <p className="text-xs text-[var(--muted)]">Source session: {attachedContext.title}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowContextPreview(false)}
+                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto pr-1 text-sm text-[var(--ink)] leading-relaxed">
+                <Markdown text={attachedContext.markdown} />
+              </div>
+              <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-3 text-xs text-[var(--muted)]">
+                <span className="truncate max-w-[420px]">
+                  {attachedContext.filePath ? `File: ${attachedContext.filePath}` : "In-memory handover"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard?.writeText(attachedContext.markdown)}
+                  className="flex cursor-pointer items-center gap-1.5 rounded-md bg-[var(--hover)] px-2.5 py-1 text-xs text-[var(--ink)] hover:bg-[var(--selected)]"
+                >
+                  <Copy size={12} /> Copy Markdown
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
   const attachButton = (
     <button
       type="button"
@@ -827,10 +1067,15 @@ export function Composer({
         )}
         <div
           ref={wrapRef}
-          onDrop={handleDrop}
+          onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
-          className="composer w-full rounded-2xl px-5 py-4"
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`composer relative w-full rounded-2xl px-5 py-4 ${
+            showDropTarget ? "ring-2 ring-[var(--accent)] bg-[var(--card)]" : ""
+          }`}
         >
+          {dropOverlay}
           {hasAnyConnectedModel && connectionNotice ? (
             <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
               <span className="flex min-w-0 items-center gap-1.5">
@@ -846,6 +1091,7 @@ export function Composer({
               </button>
             </div>
           ) : null}
+          {attachedContextRow}
           {activeSkillRow}
           {imageRow}
           {area}
@@ -861,6 +1107,7 @@ export function Composer({
             </div>
           </div>
           {lightbox}
+          {contextPreviewModal}
         </div>
       </div>
     );
@@ -906,12 +1153,18 @@ export function Composer({
           />
         )}
         <div
-          onDrop={handleDrop}
+          onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
-          className={`composer flex w-full flex-wrap items-end gap-x-2 rounded-[26px] py-2 pr-2 pl-2 ${
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`composer relative flex w-full flex-wrap items-end gap-x-2 rounded-[26px] py-2 pr-2 pl-2 ${
             narrow ? "gap-y-1" : ""
-          }`}
+          } ${showDropTarget ? "ring-2 ring-[var(--accent)]" : ""}`}
         >
+          {dropOverlay}
+          {attachedContextRow && (
+            <div className="order-first basis-full px-2 pt-1">{attachedContextRow}</div>
+          )}
           {activeSkillRow && <div className="order-first basis-full px-2 pt-1">{activeSkillRow}</div>}
           {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
           <div className={narrow ? "order-2" : "order-1"}>{attachButton}</div>
@@ -987,6 +1240,7 @@ export function Composer({
         </div>
       </div>
       {lightbox}
+      {contextPreviewModal}
     </div>
   );
 }

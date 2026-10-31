@@ -126,6 +126,20 @@ function EgantWindow() {
     return () => media.removeEventListener("change", onChange);
   }, []);
 
+  useEffect(() => {
+    const cancelDrag = () => {
+      if (useEgant.getState().draggingSession) {
+        useEgant.getState().setDraggingSession(null);
+      }
+    };
+    window.addEventListener("dragend", cancelDrag);
+    window.addEventListener("drop", cancelDrag);
+    return () => {
+      window.removeEventListener("dragend", cancelDrag);
+      window.removeEventListener("drop", cancelDrag);
+    };
+  }, []);
+
   // Runs the splash out to `SPLASH_MS` regardless of how fast the snapshot
   // arrives. One shot on mount: there is no second boot to cover.
   const [splashHeld, setSplashHeld] = useState(SPLASH_MS <= 0);
@@ -476,7 +490,46 @@ function EgantWindow() {
                       ) : cli ? (
                         <CliStage session={cli} />
                       ) : (
-                        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                        <div
+                          onDragOver={(e) => {
+                            const dragging = useEgant.getState().draggingSession;
+                            if (
+                              dragging ||
+                              e.dataTransfer?.types?.includes("application/x-egant-session") ||
+                              e.dataTransfer?.types?.includes("text/plain")
+                            ) {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "copy";
+                            }
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const dragging = useEgant.getState().draggingSession;
+                            if (dragging) {
+                              useEgant.getState().setDraggingSession(null);
+                              void useEgant.getState().attachContextFromSession(dragging);
+                              return;
+                            }
+                            const sessionData =
+                              e.dataTransfer.getData("application/x-egant-session") ||
+                              e.dataTransfer.getData("text/plain");
+                            if (sessionData) {
+                              try {
+                                const parsed = JSON.parse(sessionData);
+                                if (parsed && typeof parsed.id === "number") {
+                                  void useEgant.getState().attachContextFromSession({
+                                    id: parsed.id,
+                                    title: parsed.title,
+                                    agent: parsed.agent,
+                                    model: parsed.model ?? null,
+                                  });
+                                }
+                              } catch {}
+                            }
+                          }}
+                          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                        >
                           {threadVisible &&
                             (loading ? (
                               // Transcript still crossing the IPC boundary — one blank

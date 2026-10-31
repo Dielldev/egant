@@ -10,6 +10,7 @@ import {
   Copy,
   FolderGit2,
   Folder,
+  FoldVertical,
   GitBranch,
   Laptop,
   List,
@@ -278,7 +279,9 @@ export function Sidebar() {
       (doneSessions[session.id] === true || (unread[session.id] === true && !session.busy)) &&
       !session.busy;
     return {
+      id: session.id,
       title: session.title,
+      model: session.modelOverride || session.model,
       tooltip: `${session.title} — ${project} @ ${session.device ?? machine}${session.branch ? ` · ${session.branch}` : ""} · ${harness}`,
       location: sidebarShowLocation ? locationOf(session, project) : null,
       startedUnixMs: session.startedUnixMs,
@@ -759,7 +762,9 @@ function OptionRow({
  * is doing — a working dot, or how long ago it started — and turns into a
  * Close button under the pointer. */
 function SessionRow({
+  id,
   title,
+  model,
   tooltip,
   location,
   startedUnixMs,
@@ -779,7 +784,9 @@ function SessionRow({
   onArchive,
   onRename,
 }: {
+  id: number;
   title: string;
+  model?: string | null;
   tooltip: string;
   /** `project @ machine`, or `null` when Location is switched off. */
   location: string | null;
@@ -812,6 +819,29 @@ function SessionRow({
   // Share…), which has nothing to say about a conversation.
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const [editSignal, setEditSignal] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragStart = (e: React.DragEvent) => {
+    setIsDragging(true);
+    const payload = {
+      id,
+      title,
+      agent,
+      model: model ?? null,
+    };
+    useEgant.getState().setDraggingSession(payload);
+    const json = JSON.stringify(payload);
+    try {
+      e.dataTransfer.setData("application/x-egant-session", json);
+      e.dataTransfer.setData("text/plain", json);
+    } catch {}
+    e.dataTransfer.effectAllowed = "copy";
+  };
+
+  const handleDragEnd = () => {
+    setIsDragging(false);
+    useEgant.getState().setDraggingSession(null);
+  };
 
   // The corner: what's happening now, swapped for Archive while the pointer
   // is on the card. Same slot either way, so nothing on the card shifts. A
@@ -826,7 +856,7 @@ function SessionRow({
             <span className="text-[var(--attention)]">Needs you</span>
           </>
         ) : busy ? (
-          <span className="text-[var(--busy)]">Working</span>
+          <span className="shimmer">Working</span>
         ) : done ? (
           <>
             {unread && (
@@ -874,8 +904,12 @@ function SessionRow({
     <div
       role="button"
       tabIndex={0}
-      title={tooltip}
+      title={`${tooltip} — drag to a new chat to attach context`}
+      draggable={true}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       onClick={onClick}
+      style={{ WebkitUserDrag: "element" } as React.CSSProperties}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenuAt({ x: e.clientX, y: e.clientY });
@@ -883,15 +917,24 @@ function SessionRow({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
-      className={`group flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
+      className={`draggable-row group flex w-full cursor-grab active:cursor-grabbing flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-all ${
         selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"
-      } ${busy ? "session-running-wave" : ""}`}
+      } ${isDragging ? "opacity-40 scale-[0.98]" : ""}`}
     >
       {menuAt && (
         <RowMenu
           at={menuAt}
           onClose={() => setMenuAt(null)}
           items={[
+            {
+              icon: FoldVertical,
+              label: "Pass context to new chat",
+              run: async () => {
+                const store = useEgant.getState();
+                await store.createSession();
+                void store.attachContextFromSession({ id, title, agent, model: model ?? null });
+              },
+            },
             {
               icon: Pencil,
               label: "Rename",

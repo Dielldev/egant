@@ -14,6 +14,7 @@ pub mod antigravity;
 pub mod catalog;
 pub mod claude;
 pub mod codex;
+pub mod context;
 pub mod library;
 pub mod models;
 pub mod opencode;
@@ -33,6 +34,7 @@ pub use antigravity::{AntigravityOptions, AntigravityRun};
 pub use catalog::{CatalogStatus, InstallOutcome, UpdateInfo};
 pub use claude::{ClaudeCode, ClaudeOptions};
 pub use codex::{CodexExec, CodexOptions};
+pub use context::{generate_context_summary, SessionContextSummary};
 pub use models::{AgentModel, is_known_model, list_models};
 pub use opencode::{OpencodeOptions, OpencodeRun};
 pub use transcript::{

@@ -1,4 +1,5 @@
 import { ImagePlus, Monitor } from "lucide-react";
+import { useRef, useState } from "react";
 import { useEgant } from "../store";
 import { ActivityPanel } from "./ActivityPanel";
 import { Composer } from "./Composer";
@@ -13,6 +14,75 @@ import { CheckoutChips } from "./Worktree";
 export function LaunchScreen({ exiting }: { exiting?: boolean }) {
   const machine = useEgant((s) => s.snapshot?.machineName ?? "");
   const chooseWallpaper = useEgant((s) => s.chooseWallpaper);
+  const attachContextFromSession = useEgant((s) => s.attachContextFromSession);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    dragCounterRef.current++;
+    const dragging = useEgant.getState().draggingSession;
+    if (
+      dragging ||
+      e.dataTransfer?.types?.includes("application/x-egant-session") ||
+      e.dataTransfer?.types?.includes("text/plain")
+    ) {
+      e.preventDefault();
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    const dragging = useEgant.getState().draggingSession;
+    if (
+      dragging ||
+      e.dataTransfer?.types?.includes("application/x-egant-session") ||
+      e.dataTransfer?.types?.includes("text/plain")
+    ) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      if (!isDragOver) setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = () => {
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dragging = useEgant.getState().draggingSession;
+    if (dragging) {
+      useEgant.getState().setDraggingSession(null);
+      void attachContextFromSession(dragging);
+      return;
+    }
+
+    const sessionData =
+      e.dataTransfer.getData("application/x-egant-session") ||
+      e.dataTransfer.getData("text/plain");
+    if (sessionData) {
+      try {
+        const parsed = JSON.parse(sessionData);
+        if (parsed && typeof parsed.id === "number") {
+          void attachContextFromSession({
+            id: parsed.id,
+            title: parsed.title,
+            agent: parsed.agent,
+            model: parsed.model ?? null,
+          });
+        }
+      } catch {}
+    }
+  };
+
   // The launch screen is the only place the wallpaper is ever seen, so this is
   // where the empty state lives. Read the setting rather than `wallpaperUrl`:
   // the image crosses the IPC boundary a beat after launch, and keying off it
@@ -39,7 +109,11 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
         </button>
       )}
       <div
-        className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-8"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className="relative flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-8"
         style={{ paddingTop: "32vh" }}
       >
         <div className={`w-full max-w-[735px] ${exiting ? "dock-exit" : "rise"}`}>

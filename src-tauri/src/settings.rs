@@ -91,6 +91,20 @@ impl Settings {
             }
         };
 
+        // If no wallpaper is configured, or if the configured path doesn't exist,
+        // check whether egant already preserved a valid wallpaper in its wallpaper directory.
+        // This ensures the chosen wallpaper is never lost if settings.json was reset,
+        // deserialized with null, or saved without the path.
+        let need_recovery = match &settings.wallpaper {
+            Some(path) => !path.is_file(),
+            None => true,
+        };
+        if need_recovery
+            && let Some(preserved) = find_preserved_wallpaper() {
+            settings.wallpaper = Some(preserved);
+            settings.save();
+        }
+
         // The wallpaper is kept in egant's own folder (see `keep_wallpaper`), so
         // it can't vanish with the original. One saved before that — a path to
         // a file somewhere else — is moved in now, while the original is still
@@ -248,6 +262,40 @@ fn wallpaper_dir() -> Option<PathBuf> {
     Some(config_dir()?.join("wallpaper"))
 }
 
+/// Finds the latest preserved wallpaper image in egant's wallpaper directory,
+/// if one exists. This is the safety net behind `Settings::load`: the picture
+/// is copied here when it is picked (see `keep_wallpaper`), so even a settings
+/// file that lost the path can be pointed back at it.
+pub(crate) fn find_preserved_wallpaper() -> Option<PathBuf> {
+    find_preserved_wallpaper_in(&wallpaper_dir()?)
+}
+
+/// The recovery scan itself, over `dir` — one timestamped folder per pick, or
+/// a bare image left by an older version. The newest name wins: folder names
+/// are pick timestamps in milliseconds, so lexical order is age order.
+fn find_preserved_wallpaper_in(dir: &Path) -> Option<PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Ok(sub) = std::fs::read_dir(&path) {
+                entries.extend(
+                    sub.flatten()
+                        .map(|entry| entry.path())
+                        .filter(|path| path.is_file() && is_supported_image(path)),
+                );
+            }
+        } else if path.is_file() && is_supported_image(&path) {
+            entries.push(path);
+        }
+    }
+    entries.sort();
+    entries.pop()
+}
+
 /// Copies `source` into `dir` and returns the copy's path, so the wallpaper
 /// survives the original being moved, deleted, on an unmounted drive, or behind
 /// a folder permission macOS only grants some launches.
@@ -303,7 +351,10 @@ pub fn is_supported_image(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_DIM, Settings, clamp_dim, is_supported_image, keep_wallpaper};
+    use super::{
+        DEFAULT_DIM, Settings, clamp_dim, find_preserved_wallpaper_in, is_supported_image,
+        keep_wallpaper,
+    };
     use std::path::{Path, PathBuf};
 
     /// A scratch folder of its own, so these tests never touch the real
@@ -402,5 +453,26 @@ mod tests {
     fn an_empty_object_is_the_default() {
         let settings: Settings = serde_json::from_str("{}").expect("deserializes");
         assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn preserved_wallpaper_is_recovered_when_settings_has_none() {
+        let root = scratch("recovery");
+        let dir = root.join("wallpaper");
+        let older = dir.join("1000");
+        let newer = dir.join("2000");
+        std::fs::create_dir_all(&older).expect("creates");
+        std::fs::create_dir_all(&newer).expect("creates");
+        std::fs::write(older.join("old.png"), b"png bytes").expect("writes");
+        std::fs::write(newer.join("new.jpg"), b"jpeg bytes").expect("writes");
+        // A stray non-image beside the picks must not be mistaken for one.
+        std::fs::write(newer.join("notes.txt"), b"not a picture").expect("writes");
+
+        assert_eq!(
+            find_preserved_wallpaper_in(&dir),
+            Some(newer.join("new.jpg"))
+        );
+        assert_eq!(find_preserved_wallpaper_in(&root.join("missing")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

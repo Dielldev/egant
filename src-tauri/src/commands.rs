@@ -13,8 +13,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::dto::{
     ArchivedSessionDto, ChangeDto, ClaudeUsageDto, CloseResultDto, CodexUsageDto, CommitDto,
     CommitRefDto, ConflictBlockDto, ConflictStatusDto, DiffHunkDto, DiffLineDto, HistoryPageDto,
-    OpencodeUsageDto, RepoRefDto, RepoStatusDto, SendResultDto, StateDto, TranscriptDto,
-    UnmergedFileDto, WorktreeDto,
+    OpencodeUsageDto, RepoRefDto, RepoStatusDto, SendResultDto, SessionContextSummaryDto, StateDto,
+    TranscriptDto, UnmergedFileDto, WorktreeDto,
 };
 use crate::service::{self, DecisionOutcome};
 use crate::sessions;
@@ -835,6 +835,51 @@ fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, Str
     Ok(dto)
 }
 
+#[tauri::command]
+async fn summarize_session_context(
+    state: BackendState<'_>,
+    id: u64,
+) -> Result<SessionContextSummaryDto, String> {
+    log::info!("summarize_session_context for session {id}");
+    let (session_id, title, agent, model, transcript, cwd) = {
+        let guard = state.lock().unwrap();
+        if let Some(session) = guard.sessions.get(&id) {
+            (
+                id,
+                session.meta.title.clone(),
+                session.meta.agent,
+                session.meta.model.clone(),
+                session.transcript.clone(),
+                session.meta.cwd.clone(),
+            )
+        } else if let Some(persisted) = crate::persist::load_session(id) {
+            (
+                id,
+                persisted.meta.title,
+                persisted.meta.agent,
+                persisted.meta.model,
+                persisted.transcript,
+                persisted.meta.cwd,
+            )
+        } else {
+            return Err("unknown session".to_string());
+        }
+    };
+
+    tokio::task::spawn_blocking(move || {
+        egant_harness::generate_context_summary(
+            session_id,
+            &title,
+            agent,
+            model.as_deref(),
+            &transcript,
+            &cwd,
+        )
+    })
+    .await
+    .map_err(|e| format!("summarize task failed: {e}"))
+}
+
 /// Answers a decision prompt from the window: records the answer and sends
 /// `text` as the turn the agent reads. Returns the session's new title when
 /// the reply named it, like `send_message`. An answer another device already
@@ -1146,15 +1191,21 @@ async fn opencode_usage_stats() -> Result<OpencodeUsageDto, String> {
 /// the one image the user picked.
 #[tauri::command]
 fn wallpaper_data_url(state: BackendState<'_>) -> Result<Option<String>, String> {
-    let guard = state.lock().unwrap();
-    let Some(path) = guard.settings.wallpaper.clone() else {
-        return Ok(None);
+    let mut guard = state.lock().unwrap();
+    let path = match guard.settings.wallpaper.clone() {
+        Some(p) if p.is_file() => p,
+        _ => {
+            if let Some(preserved) = crate::settings::find_preserved_wallpaper() {
+                guard.settings.wallpaper = Some(preserved.clone());
+                guard.settings.save();
+                preserved
+            } else {
+                return Ok(None);
+            }
+        }
     };
     drop(guard);
 
-    if !path.is_file() {
-        return Ok(None);
-    }
     let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
     Ok(Some(format!(
         "data:{};base64,{}",
@@ -1899,6 +1950,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         set_permission_mode,
         set_session_model,
         get_transcript,
+        summarize_session_context,
         answer_decision,
         import_decision_responses,
         crate::mobile::mobile_status,

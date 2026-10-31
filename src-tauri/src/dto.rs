@@ -4,7 +4,9 @@
 //! the frontend renders gets a DTO here. Field names are camelCase to match
 //! TypeScript conventions; see `src/lib/types.ts` for the mirror.
 
-use egant_harness::{HarnessEvent, PermissionMode, Transcript, TranscriptEntry, TurnState};
+use egant_harness::{
+    HarnessEvent, PermissionMode, SessionContextSummary, Transcript, TranscriptEntry, TurnState,
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -14,6 +16,8 @@ use crate::settings::SettingsDto;
 // ---------------------------------------------------------------------------
 // Transcript
 // ---------------------------------------------------------------------------
+
+pub type SessionContextSummaryDto = SessionContextSummary;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

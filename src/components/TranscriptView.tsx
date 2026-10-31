@@ -1,4 +1,14 @@
-import { Check, ChevronDown, Copy, FolderOpen, Image as ImageIcon, Loader2, TriangleAlert, Undo2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  FolderOpen,
+  Image as ImageIcon,
+  Loader2,
+  TriangleAlert,
+  Undo2,
+} from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { modShortcut } from "../lib/platform";
 import {
@@ -18,6 +28,7 @@ import {
 import type { AgentRequest, Entry, PendingPermission, PermissionReply } from "../lib/types";
 import { useEgant, workspaceRoot } from "../store";
 import { extractImagePaths, isImage, resolveImageDataUrl, useImageLightbox } from "../lib/images";
+import { AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { AgentCard } from "./AgentCard";
 import { CompactionDivider } from "./CompactionDivider";
 import { Composer } from "./Composer";
@@ -25,12 +36,14 @@ import { DecisionPrompt } from "./DecisionPrompt";
 import { LinkifiedText } from "./ChatLink";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
+import { ProviderGlyph } from "./ProviderLogo";
 import { QuestionCard } from "./QuestionCard";
 import { RevertTurnDialog } from "./RevertTurnDialog";
 import { RunPill } from "./RunPill";
 import { SettledRequest } from "./SettledRequest";
 import { StatusLine } from "./StatusLine";
 import { ToolActivityGroup, ToolCard } from "./ToolCards";
+import { formatModelTitle } from "./UsageSettings";
 
 // ---------------------------------------------------------------------------
 // Chat outline — a port of zeron's MessageRail (`crates/ui/src/rail.rs`,
@@ -203,6 +216,77 @@ export function TranscriptView() {
   const glideRef = useRef<number | null>(null);
   /** The turn whose revert is being asked about, by message from 0. */
   const [reverting, setReverting] = useState<number | null>(null);
+  const attachContextFromSession = useEgant((s) => s.attachContextFromSession);
+  const [isDragOverStage, setIsDragOverStage] = useState(false);
+  const stageDragCounterRef = useRef(0);
+
+  const handleStageDragEnter = (e: React.DragEvent) => {
+    stageDragCounterRef.current++;
+    const dragging = useEgant.getState().draggingSession;
+    if (
+      dragging ||
+      e.dataTransfer?.types?.includes("application/x-egant-session") ||
+      e.dataTransfer?.types?.includes("text/plain")
+    ) {
+      e.preventDefault();
+      setIsDragOverStage(true);
+    }
+  };
+
+  const handleStageDragOver = (e: React.DragEvent) => {
+    const dragging = useEgant.getState().draggingSession;
+    if (
+      dragging ||
+      e.dataTransfer?.types?.includes("application/x-egant-session") ||
+      e.dataTransfer?.types?.includes("text/plain")
+    ) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      if (!isDragOverStage) setIsDragOverStage(true);
+    }
+  };
+
+  const handleStageDragLeave = () => {
+    stageDragCounterRef.current--;
+    if (stageDragCounterRef.current <= 0) {
+      stageDragCounterRef.current = 0;
+      setIsDragOverStage(false);
+    }
+  };
+
+  const handleStageDrop = (e: React.DragEvent) => {
+    stageDragCounterRef.current = 0;
+    setIsDragOverStage(false);
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dragging = useEgant.getState().draggingSession;
+    if (dragging) {
+      useEgant.getState().setDraggingSession(null);
+      void attachContextFromSession(dragging);
+      return;
+    }
+
+    const sessionData =
+      e.dataTransfer.getData("application/x-egant-session") ||
+      e.dataTransfer.getData("text/plain");
+    if (sessionData) {
+      try {
+        const parsed = JSON.parse(sessionData);
+        if (parsed && typeof parsed.id === "number") {
+          void attachContextFromSession({
+            id: parsed.id,
+            title: parsed.title,
+            agent: parsed.agent,
+            model: parsed.model ?? null,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to parse dropped session:", err);
+      }
+    }
+  };
+
   // A revert asked about in one conversation doesn't follow you to another.
   useEffect(() => setReverting(null), [activeId]);
 
@@ -431,7 +515,13 @@ export function TranscriptView() {
   }
 
   return (
-    <div className="relative @container flex size-full flex-col">
+    <div
+      onDragEnter={handleStageDragEnter}
+      onDragOver={handleStageDragOver}
+      onDragLeave={handleStageDragLeave}
+      onDrop={handleStageDrop}
+      className="relative @container flex size-full flex-col"
+    >
       <div
         ref={scrollRef}
         onScroll={(e) => {
@@ -868,33 +958,119 @@ function UserImageThumbnail({ path }: { path: string }) {
 
 function UserEntryBubble({ text, images }: { text: string; images?: string[] }) {
   const installedSkills = useEgant((s) => s.installedSkills);
+  const [contextExpanded, setContextExpanded] = useState(false);
+
+  const contextHandover = useMemo(() => {
+    const match = text.match(/^<!--\s*egant:context:(.*?)\s*-->/s);
+    if (!match) return null;
+    try {
+      const meta = JSON.parse(match[1]) as {
+        sessionId: number;
+        title: string;
+        agent: string;
+        model: string | null;
+      };
+      const startMarker = "--- START CONTEXT HANDOVER (context.md) ---\n";
+      const endMarker = "--- END CONTEXT HANDOVER ---\n\n";
+      const startIndex = text.indexOf(startMarker);
+      const endIndex = text.indexOf(endMarker);
+      const markdown =
+        startIndex !== -1 && endIndex !== -1
+          ? text.slice(startIndex + startMarker.length, endIndex).trim()
+          : "";
+      const cleanUserText =
+        endIndex !== -1
+          ? text.slice(endIndex + endMarker.length).trim()
+          : text.replace(/^<!--\s*egant:context:.*?\s*-->\s*/s, "").trim();
+
+      return { meta, markdown, cleanUserText };
+    } catch {
+      return null;
+    }
+  }, [text]);
+
+  const effectiveText = contextHandover ? contextHandover.cleanUserText : text;
+
   const skillMatch = useMemo(() => {
-    const trimmed = text.trim();
+    const trimmed = effectiveText.trim();
     if (!trimmed.startsWith("/")) return null;
     const m = trimmed.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
     if (!m) return null;
     const skillId = m[1];
     const skill = installedSkills.find((s) => s.id.toLowerCase() === skillId.toLowerCase());
     return skill ? { skill, instruction: m[2] || "" } : null;
-  }, [text, installedSkills]);
+  }, [effectiveText, installedSkills]);
 
   const allImages = useMemo(() => {
-    const fromText = extractImagePaths(text).filter((p) => isImage(p));
+    const fromText = extractImagePaths(effectiveText).filter((p) => isImage(p));
     const combined = [...(images ?? []), ...fromText];
     return Array.from(new Set(combined));
-  }, [text, images]);
+  }, [effectiveText, images]);
 
   const isDefaultCaption =
-    text.trim() === "Here's an image." ||
-    /^Here are \d+ images\.$/.test(text.trim()) ||
-    text.trim() === "Uploaded image" ||
-    /^Uploaded \d+ images$/.test(text.trim());
+    effectiveText.trim() === "Here's an image." ||
+    /^Here are \d+ images\.$/.test(effectiveText.trim()) ||
+    effectiveText.trim() === "Uploaded image" ||
+    /^Uploaded \d+ images$/.test(effectiveText.trim());
 
-  const showText = text.trim() && (!isDefaultCaption || allImages.length === 0);
+  const showText = effectiveText.trim() && (!isDefaultCaption || allImages.length === 0);
 
   return (
     <div className="flex w-full justify-end">
       <div className="max-w-[80%] rounded-2xl bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap text-[var(--ink)]">
+        {contextHandover && (
+          <div className="mb-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-xs shadow-xs">
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setContextExpanded(!contextExpanded)}
+              className="flex cursor-pointer select-none items-center justify-between gap-2 px-3 py-2 hover:bg-[var(--hover)] transition-colors"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <ProviderGlyph
+                  provider={AGENT_PROVIDER[contextHandover.meta.agent] ?? contextHandover.meta.agent}
+                  size={15}
+                  color={AGENT_ACCENT[contextHandover.meta.agent]}
+                />
+                <span className="font-semibold text-[var(--ink)]">
+                  {formatModelTitle(contextHandover.meta.model || contextHandover.meta.agent)}
+                </span>
+                <span className="text-[var(--faint)]">•</span>
+                <span className="truncate text-[var(--muted)]" title={contextHandover.meta.title}>
+                  Context from "{contextHandover.meta.title}"
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5 text-[var(--muted)]">
+                <span className="rounded bg-[var(--hover)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--accent)] font-bold">
+                  context.md
+                </span>
+                {contextExpanded ? (
+                  <ChevronUp size={13} strokeWidth={2} />
+                ) : (
+                  <ChevronDown size={13} strokeWidth={2} />
+                )}
+              </div>
+            </div>
+            {contextExpanded && (
+              <div className="border-t border-[var(--border)] bg-[var(--surface)] p-3.5 text-left text-[13px] leading-relaxed max-h-96 overflow-y-auto">
+                <div className="mb-2 flex items-center justify-between text-[11px] text-[var(--muted)]">
+                  <span className="font-medium">Synthesized Handover Context</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void navigator.clipboard?.writeText(contextHandover.markdown);
+                    }}
+                    className="flex cursor-pointer items-center gap-1 hover:text-[var(--ink)]"
+                  >
+                    <Copy size={11} /> Copy markdown
+                  </button>
+                </div>
+                <Markdown text={contextHandover.markdown} />
+              </div>
+            )}
+          </div>
+        )}
         {allImages.length > 0 && (
           <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-[var(--muted)]">
             <ImageIcon size={13} strokeWidth={2} />
@@ -915,7 +1091,7 @@ function UserEntryBubble({ text, images }: { text: string; images?: string[] }) 
               {skillMatch.instruction && <LinkifiedText text={skillMatch.instruction} />}
             </div>
           ) : (
-            <LinkifiedText text={text} />
+            <LinkifiedText text={effectiveText} />
           ))}
         {allImages.length > 0 && (
           <div className={`${showText ? "mt-2.5" : ""} flex flex-wrap gap-2.5`}>

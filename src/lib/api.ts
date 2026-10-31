@@ -38,6 +38,7 @@ import type {
   PermissionReply,
   PrDetail,
   SendResult,
+  SessionContextSummary,
   PullRequest,
   RevertPlan,
   SearchHit,
@@ -200,6 +201,10 @@ export const api = {
     ),
   getTranscript: (id: number) =>
     traced("get_transcript", `id=${id}`, () => invoke<TranscriptDto>("get_transcript", { id })),
+  summarizeSessionContext: (id: number) =>
+    traced("summarize_session_context", `id=${id}`, () =>
+      invoke<SessionContextSummary>("summarize_session_context", { id }),
+    ),
   /** Records a decision answer and sends `text` (the reply the agent reads)
    * as the next turn. Resolves to the session's new title when the reply
    * named it. An answer a paired phone already gave wins: nothing is sent. */

@@ -37,6 +37,7 @@ import type {
   PermissionReply,
   RepoRef,
   SessionEventPayload,
+  SessionContextSummary,
   QueuedMessage,
   SessionInfo,
   SessionQueuePayload,
@@ -767,6 +768,17 @@ interface EgantStore {
   deleteArchivedSession: (id: number) => Promise<boolean>;
   selectPrevSession: () => Promise<void>;
   selectNextSession: () => Promise<void>;
+
+  /** Attached context handover from a previous session (via drag-and-drop). */
+  attachedContext: SessionContextSummary | null;
+  attachedContextLoading: boolean;
+  attachedContextSource: { sessionId: number; title: string; agent: string; model: string | null } | null;
+  attachContextFromSession: (session: { id: number; title: string; agent: string; model: string | null }) => Promise<void>;
+  clearAttachedContext: () => void;
+  /** Active session being dragged across the window (HTML5 drag & drop bridge). */
+  draggingSession: { id: number; title: string; agent: string; model: string | null } | null;
+  setDraggingSession: (session: { id: number; title: string; agent: string; model: string | null } | null) => void;
+
   /** Send from the launch screen: opens a folder / session first if needed,
    * then delivers the text into the resulting session. */
   sendOnLaunch: (text: string, images?: string[]) => Promise<void>;
@@ -1371,7 +1383,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
         if (open && open.projectId !== filtered) get().setSidebarProject(open.projectId);
       }
     }
-    if (prev?.settings.wallpaper !== snapshot.settings.wallpaper) {
+    if (
+      prev?.settings.wallpaper !== snapshot.settings.wallpaper ||
+      (!get().wallpaperUrl && snapshot.settings.wallpaper)
+    ) {
       void syncWallpaper(snapshot.settings.wallpaper);
     }
   }
@@ -1913,6 +1928,12 @@ export const useEgant = create<EgantStore>()((set, get) => {
     refsLoading: false,
     startingNewSession: false,
     startingNewSessionWorktree: null,
+
+    attachedContext: null,
+    attachedContextLoading: false,
+    attachedContextSource: null,
+    draggingSession: null,
+    setDraggingSession: (draggingSession) => set({ draggingSession }),
 
     agents: [],
     composerAgent: loadString("egant.composerAgent"),
@@ -2640,6 +2661,47 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
     },
 
+    attachContextFromSession: async (session) => {
+      log.info("store", `attaching context from session ${session.id} (${session.title})`);
+      set({
+        attachedContextSource: {
+          sessionId: session.id,
+          title: session.title,
+          agent: session.agent,
+          model: session.model,
+        },
+        attachedContext: null,
+        attachedContextLoading: true,
+      });
+      try {
+        const summary = await api.summarizeSessionContext(session.id);
+        set({
+          attachedContext: summary,
+          attachedContextLoading: false,
+        });
+      } catch (error) {
+        log.error("store", `failed to summarize session ${session.id}: ${String(error)}`, error);
+        set({
+          attachedContext: {
+            sessionId: session.id,
+            title: session.title,
+            agent: session.agent,
+            model: session.model,
+            markdown: `# Context Handover: ${session.title}\n\n- Context imported from previous chat.\n- Model: ${session.model || session.agent}`,
+          },
+          attachedContextLoading: false,
+        });
+      }
+    },
+
+    clearAttachedContext: () => {
+      set({
+        attachedContext: null,
+        attachedContextLoading: false,
+        attachedContextSource: null,
+      });
+    },
+
     sendOnLaunch: async (text, images) => {
       if (!text.trim() && !images?.length) return;
       log.info("store", `send on launch: ${preview(text)}`);
@@ -2742,11 +2804,38 @@ export const useEgant = create<EgantStore>()((set, get) => {
           return;
         }
       }
+
+      let messageText = text;
+      const attached = get().attachedContext;
+      const source = get().attachedContextSource;
+      if (attached || source) {
+        const sourceSessionId = attached?.sessionId ?? source?.sessionId ?? 0;
+        const sourceTitle = attached?.title ?? source?.title ?? "";
+        const sourceAgent = attached?.agent ?? source?.agent ?? "";
+        const sourceModel = attached?.model ?? source?.model ?? null;
+        const md =
+          attached?.markdown ??
+          `# Context Handover: ${sourceTitle}\n\n- Context imported from previous chat.\n- Model: ${sourceModel || sourceAgent}`;
+
+        const metaComment = `<!-- egant:context:${JSON.stringify({
+          sessionId: sourceSessionId,
+          title: sourceTitle,
+          agent: sourceAgent,
+          model: sourceModel,
+        })} -->`;
+        const contextHeader = `[Attached Context Handover from previous session "${sourceTitle}" (Model: ${sourceModel || sourceAgent})]`;
+        const contextBlock = `--- START CONTEXT HANDOVER (context.md) ---\n${md}\n--- END CONTEXT HANDOVER ---`;
+
+        messageText = `${metaComment}\n${contextHeader}\n\n${contextBlock}\n\n${text}`;
+        get().clearAttachedContext();
+      }
+
       // An image-only turn still needs something in the bubble — matches the
       // caption the backend synthesizes for the same case, so the optimistic
       // echo below never flashes empty before the real transcript arrives.
       const echoText =
-        text.trim() || (images?.length === 1 ? "Here's an image." : `Here are ${images?.length ?? 0} images.`);
+        messageText.trim() ||
+        (images?.length === 1 ? "Here's an image." : `Here are ${images?.length ?? 0} images.`);
       // Echo immediately so the message appears on keypress — unless the
       // agent is busy, when the backend queues it rather than dropping the
       // bubble into the middle of the reply still streaming.
@@ -2762,7 +2851,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
         saveDoneSessions(rest);
       }
       try {
-        const result = await api.sendMessage(id, text, images);
+        const result = await api.sendMessage(id, messageText, images);
         if (result.title) patchSession(id, { title: result.title });
         if (result.queued) {
           set({ queues: { ...get().queues, [id]: result.queue } });
