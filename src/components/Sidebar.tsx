@@ -167,28 +167,6 @@ export function Sidebar() {
 
   const pairedDevices = usePairedDevices();
 
-  // A session that appears in a collapsed group — a new chat started in it, or
-  // one opened from Search — expands the group, otherwise the active session
-  // is nowhere in the list. Keyed on the active session alone so collapsing
-  // its group by hand afterwards sticks.
-  const activeSessionId = snapshot?.activeSession ?? null;
-  // The session already open at launch keeps whatever collapse state was saved.
-  const lastActive = useRef(activeSessionId);
-  useEffect(() => {
-    if (lastActive.current === activeSessionId) return;
-    lastActive.current = activeSessionId;
-    if (activeSessionId == null || sidebarOrganize === "flat") return;
-    const active = useEgant.getState().snapshot?.sessions.find((s) => s.id === activeSessionId);
-    if (!active) return;
-    const key =
-      sidebarOrganize === "byProject"
-        ? `project:${active.projectId}`
-        : `device:${active.device ?? machine}`;
-    if (useEgant.getState().collapsedGroups[key]) toggleGroupCollapsed(key);
-    // `machine` and the setters are stable for a session's lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId]);
-
   // Grouping preserves the sort order above — a group's position is wherever
   // its first (by that order) session lands, so switching sort still moves the
   // groups sensibly instead of relying on project-list order. By device is the
@@ -309,6 +287,8 @@ export function Sidebar() {
 
   const newSessionInProject = (projectId: number) => {
     const run = async () => {
+      const key = `project:${projectId}`;
+      if (useEgant.getState().collapsedGroups[key]) toggleGroupCollapsed(key);
       if (snapshot?.activeProject !== projectId) await selectProject(projectId);
       await createSession();
     };
@@ -466,8 +446,7 @@ export function Sidebar() {
                     doneSessions[s.id] ||
                     (unread[s.id] && !s.busy) ||
                     s.state === "awaiting_permission" ||
-                    (s.pendingCount ?? 0) > 0 ||
-                    s.id === activeSessionId,
+                    (s.pendingCount ?? 0) > 0,
                 )
               : group.sessions;
             return (
@@ -820,8 +799,10 @@ function SessionRow({
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const [editSignal, setEditSignal] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const didDragRef = useRef(false);
 
   const handleDragStart = (e: React.DragEvent) => {
+    didDragRef.current = true;
     setIsDragging(true);
     const payload = {
       id,
@@ -840,7 +821,10 @@ function SessionRow({
 
   const handleDragEnd = () => {
     setIsDragging(false);
-    useEgant.getState().setDraggingSession(null);
+    setTimeout(() => {
+      didDragRef.current = false;
+      useEgant.getState().setDraggingSession(null);
+    }, 150);
   };
 
   // The corner: what's happening now, swapped for Archive while the pointer
@@ -908,7 +892,13 @@ function SessionRow({
       draggable={true}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onClick={onClick}
+      onClick={() => {
+        if (didDragRef.current) {
+          didDragRef.current = false;
+          return;
+        }
+        onClick();
+      }}
       style={{ WebkitUserDrag: "element" } as React.CSSProperties}
       onContextMenu={(e) => {
         e.preventDefault();

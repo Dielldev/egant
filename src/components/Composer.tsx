@@ -109,6 +109,32 @@ export function Composer({
   const [isHoveringDrop, setIsHoveringDrop] = useState(false);
   const dragCountRef = useRef(0);
   const [showContextPreview, setShowContextPreview] = useState(false);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+  const sessionPickerRef = useRef<HTMLDivElement>(null);
+
+  const allSessions = useEgant((s) => s.snapshot?.sessions ?? []);
+  const availableHandoverSessions = useMemo(
+    () => allSessions.filter((s) => s.id !== sessionId),
+    [allSessions, sessionId],
+  );
+
+  useEffect(() => {
+    if (!sessionPickerOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (sessionPickerRef.current && !sessionPickerRef.current.contains(e.target as Node)) {
+        setSessionPickerOpen(false);
+      }
+    };
+    const handleKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setSessionPickerOpen(false);
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [sessionPickerOpen]);
   // Where the caret sits, for the `/` and `@` menus: what it is in decides
   // which one (if either) is open.
   const [caret, setCaret] = useState(0);
@@ -553,31 +579,32 @@ export function Composer({
     e.preventDefault();
     e.stopPropagation();
 
-    const dragging = useEgant.getState().draggingSession;
+    let dragging = useEgant.getState().draggingSession;
+    if (!dragging) {
+      const sessionData =
+        e.dataTransfer.getData("application/x-egant-session") ||
+        e.dataTransfer.getData("text/plain");
+      if (sessionData) {
+        try {
+          const parsed = JSON.parse(sessionData);
+          if (parsed && typeof parsed.id === "number") {
+            dragging = {
+              id: parsed.id,
+              title: parsed.title,
+              agent: parsed.agent,
+              model: parsed.model ?? null,
+            };
+          }
+        } catch (err) {
+          log.error("composer", `invalid session drop data: ${String(err)}`, err);
+        }
+      }
+    }
+
     if (dragging) {
       useEgant.getState().setDraggingSession(null);
       void attachContextFromSession(dragging);
       return;
-    }
-
-    const sessionData =
-      e.dataTransfer.getData("application/x-egant-session") ||
-      e.dataTransfer.getData("text/plain");
-    if (sessionData) {
-      try {
-        const parsed = JSON.parse(sessionData);
-        if (parsed && typeof parsed.id === "number") {
-          void attachContextFromSession({
-            id: parsed.id,
-            title: parsed.title,
-            agent: parsed.agent,
-            model: parsed.model ?? null,
-          });
-          return;
-        }
-      } catch (err) {
-        log.error("composer", `invalid session drop: ${String(err)}`, err);
-      }
     }
 
     const files = Array.from(e.dataTransfer?.files ?? []);
@@ -1023,6 +1050,62 @@ export function Composer({
     </button>
   );
 
+  const contextButton = availableHandoverSessions.length > 0 ? (
+    <div className="relative" ref={sessionPickerRef}>
+      <button
+        type="button"
+        title="Pass context from previous chat"
+        onClick={() => setSessionPickerOpen(!sessionPickerOpen)}
+        className={`flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors ${
+          sessionPickerOpen || hasContext
+            ? "bg-[var(--hover)] text-[var(--accent)]"
+            : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+        }`}
+      >
+        <FoldVertical size={16} strokeWidth={2} />
+      </button>
+      {sessionPickerOpen && (
+        <div className="absolute bottom-full right-0 mb-2 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)] p-1.5 shadow-xl">
+          <div className="px-2.5 py-1.5 text-[11px] font-semibold text-[var(--muted)] uppercase tracking-wider">
+            Pass context from previous chat
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {availableHandoverSessions.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => {
+                  setSessionPickerOpen(false);
+                  void attachContextFromSession({
+                    id: s.id,
+                    title: s.title,
+                    agent: s.agent,
+                    model: s.modelOverride || s.model || null,
+                  });
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--hover)] transition-colors cursor-pointer group"
+              >
+                <ProviderGlyph
+                  provider={AGENT_PROVIDER[s.agent] ?? s.agent}
+                  size={15}
+                  color={AGENT_ACCENT[s.agent]}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-[var(--ink)] group-hover:text-[var(--accent)]">
+                    {s.title}
+                  </div>
+                  <div className="text-[10px] text-[var(--muted)] truncate">
+                    {formatModelTitle(s.modelOverride || s.model || s.agent)}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  ) : null;
+
   const sendButton = busy ? (
     <button
       type="button"
@@ -1094,6 +1177,18 @@ export function Composer({
           {attachedContextRow}
           {activeSkillRow}
           {imageRow}
+          {!hasContext && availableHandoverSessions.length > 0 && (
+            <div className="mb-2">
+              <button
+                type="button"
+                onClick={() => setSessionPickerOpen(true)}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[11px] text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--ink)]"
+              >
+                <FoldVertical size={12} className="text-[var(--accent)]" />
+                <span>Pass context from previous chat...</span>
+              </button>
+            </div>
+          )}
           {area}
           {/* Picker left, actions right — the launch picker chooses what the
             next session starts with (agent, model, effort). */}
@@ -1101,7 +1196,8 @@ export function Composer({
             <div className="min-w-0">
               <AgentPicker />
             </div>
-            <div className="flex shrink-0 items-center gap-2.5">
+            <div className="flex shrink-0 items-center gap-2">
+              {contextButton}
               {attachButton}
               {sendButton}
             </div>
@@ -1167,7 +1263,10 @@ export function Composer({
           )}
           {activeSkillRow && <div className="order-first basis-full px-2 pt-1">{activeSkillRow}</div>}
           {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
-          <div className={narrow ? "order-2" : "order-1"}>{attachButton}</div>
+          <div className={narrow ? "order-2 flex items-center gap-1" : "order-1 flex items-center gap-1"}>
+            {contextButton}
+            {attachButton}
+          </div>
           <div
             className={`order-1 min-w-0 py-1 ${narrow ? "w-full basis-full px-2.5" : "flex-1 pr-1"}`}
           >

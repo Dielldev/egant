@@ -127,14 +127,19 @@ function EgantWindow() {
   }, []);
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const cancelDrag = () => {
-      if (useEgant.getState().draggingSession) {
-        useEgant.getState().setDraggingSession(null);
-      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (useEgant.getState().draggingSession) {
+          useEgant.getState().setDraggingSession(null);
+        }
+      }, 150);
     };
     window.addEventListener("dragend", cancelDrag);
     window.addEventListener("drop", cancelDrag);
     return () => {
+      if (timer) clearTimeout(timer);
       window.removeEventListener("dragend", cancelDrag);
       window.removeEventListener("drop", cancelDrag);
     };

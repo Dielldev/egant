@@ -1367,6 +1367,16 @@ export const useEgant = create<EgantStore>()((set, get) => {
       set({ unread: next });
       saveUnread(next);
     }
+    const doneSessions = get().doneSessions;
+    const staleDone = Object.keys(doneSessions)
+      .map(Number)
+      .filter((id) => id === snapshot.activeSession || !alive.has(id));
+    if (staleDone.length > 0) {
+      const nextDone = { ...doneSessions };
+      for (const id of staleDone) delete nextDone[id];
+      set({ doneSessions: nextDone });
+      saveDoneSessions(nextDone);
+    }
     // "All projects" stays as it is; an explicit project filter follows a
     // folder that was just added, so the first send lands in a list that shows
     // it instead of a filter that hides the new session.
@@ -1586,9 +1596,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // is now out of date. Cheaper and steadier than watching the filesystem,
     // and it lands exactly when the user looks back at the panel.
     if (event.type === "turn_ended") {
-      const doneSessions = { ...get().doneSessions, [sessionId]: true };
-      set({ doneSessions });
-      saveDoneSessions(doneSessions);
+      if (sessionId !== get().snapshot?.activeSession) {
+        const doneSessions = { ...get().doneSessions, [sessionId]: true };
+        set({ doneSessions });
+        saveDoneSessions(doneSessions);
+      }
       get().refreshChanges();
       // Only a Claude turn moves Claude's own usage windows.
       const session = get().snapshot?.sessions.find((s) => s.id === sessionId);
@@ -2492,6 +2504,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     selectSession: async (id) => {
       set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
+      if (get().doneSessions[id]) {
+        const { [id]: _, ...rest } = get().doneSessions;
+        set({ doneSessions: rest });
+        saveDoneSessions(rest);
+      }
       try {
         const snapshot = await api.selectSession(id);
         applySnapshot(snapshot);
@@ -2703,7 +2720,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     sendOnLaunch: async (text, images) => {
-      if (!text.trim() && !images?.length) return;
+      const hasContext = get().attachedContext != null || get().attachedContextSource != null;
+      if (!text.trim() && !images?.length && !hasContext) return;
       log.info("store", `send on launch: ${preview(text)}`);
       try {
         const forceNew = get().startingNewSession;
@@ -2782,7 +2800,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     },
 
     send: async (id, text, images) => {
-      if (!text.trim() && !images?.length) return;
+      const hasContext = get().attachedContext != null || get().attachedContextSource != null;
+      if (!text.trim() && !images?.length && !hasContext) return;
       log.info("store", `send to session ${id}: ${preview(text)}`);
       // Never send into a session that belongs to another project. If the
       // backend ever hands back a stale pairing again (sidebar on `Arka`,

@@ -1019,7 +1019,7 @@ function UserEntryBubble({ text, images }: { text: string; images?: string[] }) 
     <div className="flex w-full justify-end">
       <div className="max-w-[80%] rounded-2xl bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap text-[var(--ink)]">
         {contextHandover && (
-          <div className="mb-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-xs shadow-xs">
+          <div className={`${showText || allImages.length > 0 ? "mb-3" : ""} overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-xs shadow-xs`}>
             <div
               role="button"
               tabIndex={0}
