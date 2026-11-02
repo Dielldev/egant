@@ -160,7 +160,7 @@ export function ProjectMenu({
                   onClick={() => {
                     setOpen(false);
                     if (header) setSidebarProject(project.id);
-                    void selectProject(project.id);
+                    void selectProject(project.id, !header);
                   }}
                 >
                   <span

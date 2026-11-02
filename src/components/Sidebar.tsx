@@ -72,7 +72,6 @@ export function Sidebar() {
   const setSidebarWorktreesOnly = useEgant((s) => s.setSidebarWorktreesOnly);
   const collapsedGroups = useEgant((s) => s.collapsedGroups);
   const toggleGroupCollapsed = useEgant((s) => s.toggleGroupCollapsed);
-  const selectProject = useEgant((s) => s.selectProject);
   const selectSession = useEgant((s) => s.selectSession);
   const archiveSession = useEgant((s) => s.archiveSession);
   const renameSession = useEgant((s) => s.renameSession);
@@ -289,8 +288,7 @@ export function Sidebar() {
     const run = async () => {
       const key = `project:${projectId}`;
       if (useEgant.getState().collapsedGroups[key]) toggleGroupCollapsed(key);
-      if (snapshot?.activeProject !== projectId) await selectProject(projectId);
-      await createSession();
+      await createSession(undefined, projectId);
     };
     void run();
   };
@@ -740,6 +738,12 @@ function OptionRow({
  * third line when one is showing. The top-right corner says what the session
  * is doing — a working dot, or how long ago it started — and turns into a
  * Close button under the pointer. */
+/** The nearest drop zone for a dragged session under this point, if any. The
+ * composer and the stages around it mark themselves `data-context-drop`. */
+function contextDropZoneAt(x: number, y: number): Element | null {
+  return document.elementFromPoint(x, y)?.closest("[data-context-drop]") ?? null;
+}
+
 function SessionRow({
   id,
   title,
@@ -801,30 +805,52 @@ function SessionRow({
   const [isDragging, setIsDragging] = useState(false);
   const didDragRef = useRef(false);
 
-  const handleDragStart = (e: React.DragEvent) => {
-    didDragRef.current = true;
-    setIsDragging(true);
-    const payload = {
-      id,
-      title,
-      agent,
-      model: model ?? null,
-    };
-    useEgant.getState().setDraggingSession(payload);
-    const json = JSON.stringify(payload);
-    try {
-      e.dataTransfer.setData("application/x-egant-session", json);
-      e.dataTransfer.setData("text/plain", json);
-    } catch {}
-    e.dataTransfer.effectAllowed = "copy";
-  };
+  // A pointer drag rather than HTML5 drag-and-drop: WKWebView inside Tauri
+  // starts the native drag fine but never delivers `drop` to the page, so the
+  // row follows the pointer itself and the drop is a hit test on release.
+  const [ghostAt, setGhostAt] = useState<{ x: number; y: number } | null>(null);
 
-  const handleDragEnd = () => {
-    setIsDragging(false);
-    setTimeout(() => {
-      didDragRef.current = false;
-      useEgant.getState().setDraggingSession(null);
-    }, 150);
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button, input")) return;
+    const payload = { id, title, agent, model: model ?? null };
+    const start = { x: e.clientX, y: e.clientY };
+    let active = false;
+    const store = useEgant.getState();
+
+    const move = (ev: PointerEvent) => {
+      if (!active) {
+        if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 6) return;
+        active = true;
+        didDragRef.current = true;
+        setIsDragging(true);
+        document.body.style.userSelect = "none";
+        store.setDraggingSession(payload);
+      }
+      setGhostAt({ x: ev.clientX, y: ev.clientY });
+      store.setSessionDropHot(contextDropZoneAt(ev.clientX, ev.clientY) != null);
+    };
+    const finish = (ev: PointerEvent, cancelled: boolean) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (!active) return;
+      document.body.style.userSelect = "";
+      const dropped = !cancelled && contextDropZoneAt(ev.clientX, ev.clientY) != null;
+      store.setDraggingSession(null);
+      store.setSessionDropHot(false);
+      setGhostAt(null);
+      setIsDragging(false);
+      if (dropped) void store.attachContextFromSession(payload);
+      // The click that follows a release on the same row is not a selection.
+      setTimeout(() => {
+        didDragRef.current = false;
+      }, 150);
+    };
+    const up = (ev: PointerEvent) => finish(ev, false);
+    const cancel = (ev: PointerEvent) => finish(ev, true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   };
 
   // The corner: what's happening now, swapped for Archive while the pointer
@@ -889,9 +915,7 @@ function SessionRow({
       role="button"
       tabIndex={0}
       title={`${tooltip} — drag to a new chat to attach context`}
-      draggable={true}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
+      onPointerDown={handlePointerDown}
       onClick={() => {
         if (didDragRef.current) {
           didDragRef.current = false;
@@ -899,7 +923,6 @@ function SessionRow({
         }
         onClick();
       }}
-      style={{ WebkitUserDrag: "element" } as React.CSSProperties}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenuAt({ x: e.clientX, y: e.clientY });
@@ -907,10 +930,25 @@ function SessionRow({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onClick();
       }}
-      className={`draggable-row group flex w-full cursor-grab active:cursor-grabbing flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-all ${
+      className={`group flex w-full cursor-grab select-none active:cursor-grabbing flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-all ${
         selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"
       } ${isDragging ? "opacity-40 scale-[0.98]" : ""}`}
     >
+      {ghostAt &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[200] flex max-w-[260px] items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--stage)] px-2.5 py-1.5 text-xs font-medium text-[var(--ink)] shadow-xl"
+            style={{ left: ghostAt.x + 14, top: ghostAt.y + 10 }}
+          >
+            <ProviderGlyph
+              provider={AGENT_PROVIDER[agent] ?? agent}
+              size={14}
+              color={AGENT_ACCENT[agent]}
+            />
+            <span className="truncate">{title}</span>
+          </div>,
+          document.body,
+        )}
       {menuAt && (
         <RowMenu
           at={menuAt}
@@ -921,7 +959,8 @@ function SessionRow({
               label: "Pass context to new chat",
               run: async () => {
                 const store = useEgant.getState();
-                await store.createSession();
+                const sessionObj = store.snapshot?.sessions.find((s) => s.id === id);
+                await store.createSession(undefined, sessionObj?.projectId);
                 void store.attachContextFromSession({ id, title, agent, model: model ?? null });
               },
             },

@@ -735,14 +735,14 @@ interface EgantStore {
   ensureTranscript: (id: number) => Promise<void>;
 
   openFolderDialog: () => Promise<void>;
-  selectProject: (id: number) => Promise<void>;
+  selectProject: (id: number, keepNewSession?: boolean) => Promise<void>;
   /** Unpins the project selection — "All projects" in the sidebar switcher. */
   selectAllProjects: () => Promise<void>;
   toggleSidebar: () => Promise<void>;
 
   /** Optionally pins the session about to start to an existing worktree —
-   * see `startingNewSessionWorktree`. */
-  createSession: (worktree?: WorktreeInfo) => Promise<void>;
+   * see `startingNewSessionWorktree`. Optionally specifies the target project. */
+  createSession: (worktree?: WorktreeInfo, projectId?: number) => Promise<void>;
   selectSession: (id: number) => Promise<void>;
   closeSession: (id: number) => Promise<void>;
   /** Each session's queue: messages sent while its agent was busy, waiting
@@ -778,6 +778,9 @@ interface EgantStore {
   /** Active session being dragged across the window (HTML5 drag & drop bridge). */
   draggingSession: { id: number; title: string; agent: string; model: string | null } | null;
   setDraggingSession: (session: { id: number; title: string; agent: string; model: string | null } | null) => void;
+  /** The dragged session is over somewhere it can be dropped. */
+  sessionDropHot: boolean;
+  setSessionDropHot: (hot: boolean) => void;
 
   /** Send from the launch screen: opens a folder / session first if needed,
    * then delivers the text into the resulting session. */
@@ -1946,6 +1949,8 @@ export const useEgant = create<EgantStore>()((set, get) => {
     attachedContextSource: null,
     draggingSession: null,
     setDraggingSession: (draggingSession) => set({ draggingSession }),
+    sessionDropHot: false,
+    setSessionDropHot: (sessionDropHot) => set({ sessionDropHot }),
 
     agents: [],
     composerAgent: loadString("egant.composerAgent"),
@@ -2123,6 +2128,17 @@ export const useEgant = create<EgantStore>()((set, get) => {
 
     startCliSession: async (agent) => {
       log.info("store", `starting CLI session for ${agent}`);
+      if (get().snapshot?.activeProject == null) {
+        const activeProj =
+          get().snapshot?.sessions.find((s) => s.id === get().snapshot?.activeSession)?.projectId ??
+          get().sidebarProject ??
+          (get().snapshot?.projects.length ? get().snapshot!.projects[0].id : null);
+        if (activeProj != null) {
+          try {
+            applySnapshot(await api.selectProject(activeProj));
+          } catch {}
+        }
+      }
       // Same rule as a chat session: there is nothing to run a CLI *in*
       // until a folder is open, so ask for one first rather than failing.
       if (get().snapshot?.activeProject == null) {
@@ -2450,8 +2466,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
       }
     },
 
-    selectProject: async (id) => {
-      set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
+    selectProject: async (id, keepNewSession) => {
+      if (!keepNewSession) {
+        set({ startingNewSession: false, startingNewSessionWorktree: null, libraryOpen: false });
+      }
       // Picking a folder from the launch screen's chip while the sidebar lists
       // another one: the list follows, or the new session would land in a
       // folder the sidebar isn't showing.
@@ -2489,12 +2507,39 @@ export const useEgant = create<EgantStore>()((set, get) => {
     // resulting empty-transcript screen would silently do nothing — that
     // screen's session already existed and was already running the old
     // model.
-    createSession: async (worktree) => {
+    createSession: async (worktree, projectId) => {
       const snapshot = get().snapshot;
-      if (!snapshot || snapshot.activeProject == null) {
+      if (!snapshot) return;
+
+      const activeSession =
+        snapshot.activeSession != null
+          ? snapshot.sessions.find((s) => s.id === snapshot.activeSession)
+          : null;
+
+      const targetProjectId =
+        projectId ??
+        activeSession?.projectId ??
+        get().sidebarProject ??
+        snapshot.activeProject ??
+        (snapshot.projects.length > 0 ? snapshot.projects[0].id : null);
+
+      if (targetProjectId == null) {
         await get().openFolderDialog();
         return;
       }
+
+      if (snapshot.activeProject !== targetProjectId) {
+        try {
+          applySnapshot(await api.selectProject(targetProjectId));
+        } catch (error) {
+          fail(set, error);
+        }
+      }
+
+      if (get().sidebarProject != null && get().sidebarProject !== targetProjectId) {
+        get().setSidebarProject(targetProjectId);
+      }
+
       set({
         startingNewSession: true,
         startingNewSessionWorktree: worktree ?? null,
@@ -2740,7 +2785,16 @@ export const useEgant = create<EgantStore>()((set, get) => {
           }
         }
         if (id == null) {
-          if (get().snapshot?.activeProject == null) {
+          let activeProj = get().snapshot?.activeProject;
+          if (activeProj == null && (get().snapshot?.projects.length ?? 0) > 0) {
+            const fallback =
+              get().sidebarProject ?? get().snapshot!.projects[0].id;
+            try {
+              applySnapshot(await api.selectProject(fallback));
+              activeProj = fallback;
+            } catch {}
+          }
+          if (activeProj == null) {
             const path = await pickProjectFolder().catch((error: unknown) => {
               fail(set, error);
               return null;

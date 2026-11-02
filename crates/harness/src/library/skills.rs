@@ -14,7 +14,7 @@
 //! app can't hold), plus the official Anthropic and OpenAI skill repos listed
 //! from GitHub for browsing with no query.
 
-use super::{home_dir, shell_quote, write_atomic};
+use super::{DiskCache, home_dir, shell_quote, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -177,11 +177,11 @@ pub struct CatalogSkill {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeaturedSource {
-    pub source: &'static str,
-    pub label: &'static str,
+    pub source: std::borrow::Cow<'static, str>,
+    pub label: std::borrow::Cow<'static, str>,
     pub skills: Vec<CatalogSkill>,
 }
 
@@ -945,20 +945,29 @@ fn search_hits(
 /// near-identical skills, so each source gets at most [`PER_SOURCE`] places
 /// to keep the list varied. Cached for the hour.
 pub fn popular(refresh: bool) -> Result<Vec<CatalogSkill>, String> {
+    if !refresh {
+        if let Some((skills, stale)) = POPULAR.get() {
+            if stale {
+                POPULAR.revalidate(fetch_popular);
+            }
+            return Ok(skills);
+        }
+    }
+    let skills = fetch_popular()?;
+    POPULAR.put(&skills);
+    Ok(skills)
+}
+
+static POPULAR: DiskCache<Vec<CatalogSkill>> =
+    DiskCache::new("popular-skills", Duration::from_secs(6 * 3600));
+
+fn fetch_popular() -> Result<Vec<CatalogSkill>, String> {
     const QUERIES: &[&str] = &[
         "skill", "react", "design", "test", "git", "docs", "python", "api", "deploy", "code",
         "web", "agent", "data", "pdf", "review", "debug",
     ];
     const PER_SOURCE: usize = 3;
     const TOP: usize = 24;
-    static CACHE: Mutex<Option<(Instant, Vec<CatalogSkill>)>> = Mutex::new(None);
-    if !refresh {
-        if let Some((at, skills)) = CACHE.lock().ok().and_then(|c| c.clone()) {
-            if at.elapsed() < Duration::from_secs(3600) {
-                return Ok(skills);
-            }
-        }
-    }
     let client = http()?;
     let results: Vec<Result<Vec<CatalogSkill>, String>> = std::thread::scope(|scope| {
         let handles: Vec<_> = QUERIES
@@ -994,11 +1003,7 @@ pub fn popular(refresh: bool) -> Result<Vec<CatalogSkill>, String> {
             .next()
             .unwrap_or_else(|| "skills.sh returned nothing".into()));
     }
-    let skills = rank_popular(seen.into_values().collect(), PER_SOURCE, TOP);
-    if let Ok(mut cache) = CACHE.lock() {
-        *cache = Some((Instant::now(), skills.clone()));
-    }
-    Ok(skills)
+    Ok(rank_popular(seen.into_values().collect(), PER_SOURCE, TOP))
 }
 
 fn rank_popular(mut skills: Vec<CatalogSkill>, per_source: usize, top: usize) -> Vec<CatalogSkill> {
@@ -1017,17 +1022,26 @@ fn rank_popular(mut skills: Vec<CatalogSkill>, per_source: usize, top: usize) ->
 
 /// The official repos, browsed with no query. Each is one GitHub tree
 /// listing plus a raw SKILL.md fetch per skill for its description, cached
-/// for the hour — GitHub allows an unauthenticated caller 60 API calls an
+/// for six hours, on disk too — GitHub allows an unauthenticated caller 60 API calls an
 /// hour, and this spends two.
 pub fn featured(refresh: bool) -> Result<Vec<FeaturedSource>, String> {
-    static CACHE: Mutex<Option<(Instant, Vec<FeaturedSource>)>> = Mutex::new(None);
     if !refresh {
-        if let Some((at, sources)) = CACHE.lock().ok().and_then(|c| c.clone()) {
-            if at.elapsed() < Duration::from_secs(3600) {
-                return Ok(sources);
+        if let Some((sources, stale)) = FEATURED.get() {
+            if stale {
+                FEATURED.revalidate(fetch_featured);
             }
+            return Ok(sources);
         }
     }
+    let sources = fetch_featured()?;
+    FEATURED.put(&sources);
+    Ok(sources)
+}
+
+static FEATURED: DiskCache<Vec<FeaturedSource>> =
+    DiskCache::new("featured-skills", Duration::from_secs(6 * 3600));
+
+fn fetch_featured() -> Result<Vec<FeaturedSource>, String> {
     const SOURCES: &[(&str, &str, &str)] = &[
         ("anthropics/skills", "Anthropic", "skills/"),
         ("openai/skills", "OpenAI", "skills/.curated/"),
@@ -1038,8 +1052,8 @@ pub fn featured(refresh: bool) -> Result<Vec<FeaturedSource>, String> {
     for (source, label, prefix) in SOURCES {
         match list_repo_skills(&client, source, prefix) {
             Ok(skills) => out.push(FeaturedSource {
-                source,
-                label,
+                source: (*source).into(),
+                label: (*label).into(),
                 skills,
             }),
             Err(error) => errors.push(format!("{label}: {error}")),
@@ -1047,9 +1061,6 @@ pub fn featured(refresh: bool) -> Result<Vec<FeaturedSource>, String> {
     }
     if out.is_empty() && !errors.is_empty() {
         return Err(errors.join("\n"));
-    }
-    if let Ok(mut cache) = CACHE.lock() {
-        *cache = Some((Instant::now(), out.clone()));
     }
     Ok(out)
 }

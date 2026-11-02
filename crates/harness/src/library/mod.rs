@@ -20,12 +20,108 @@ pub mod mcp;
 pub mod mcp_catalog;
 pub mod skills;
 
+use serde::{Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 pub(crate) fn home_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
         .filter(|p| p.is_absolute())
         .ok_or_else(|| "could not determine user home directory".to_string())
+}
+
+/// A list fetched from the network that survives a restart. The Library's
+/// catalogs cost dozens of HTTP requests to build; without this every launch
+/// starts from nothing and the tab sits empty until the last one lands.
+///
+/// Stale-while-revalidate: [`get`](Self::get) answers from memory or the copy
+/// on disk at once, however old, and says whether it has aged out — in which
+/// case the caller kicks [`revalidate`](Self::revalidate) to refetch on a
+/// background thread, and the next open sees the fresh one.
+pub(crate) struct DiskCache<T> {
+    name: &'static str,
+    ttl: Duration,
+    slot: Mutex<Option<(Instant, T)>>,
+    seeded: AtomicBool,
+    refreshing: AtomicBool,
+}
+
+impl<T: Clone + Send + Serialize + DeserializeOwned + 'static> DiskCache<T> {
+    pub(crate) const fn new(name: &'static str, ttl: Duration) -> Self {
+        Self {
+            name,
+            ttl,
+            slot: Mutex::new(None),
+            seeded: AtomicBool::new(false),
+            refreshing: AtomicBool::new(false),
+        }
+    }
+
+    fn file(&self) -> Option<PathBuf> {
+        dirs::cache_dir().map(|dir| dir.join("egant").join(format!("{}.json", self.name)))
+    }
+
+    /// Loads the on-disk copy into memory, once per process, dated by the
+    /// file's own age so a week-old file counts as a week old.
+    fn seed(&self) {
+        if self.seeded.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(path) = self.file() else { return };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<T>(&text) else {
+            return;
+        };
+        let age = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .unwrap_or(self.ttl);
+        let at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+        if let Ok(mut slot) = self.slot.lock() {
+            slot.get_or_insert((at, value));
+        }
+    }
+
+    /// The newest copy this machine has and whether it is past its `ttl`.
+    pub(crate) fn get(&self) -> Option<(T, bool)> {
+        self.seed();
+        let slot = self.slot.lock().ok()?;
+        slot.as_ref()
+            .map(|(at, value)| (value.clone(), at.elapsed() >= self.ttl))
+    }
+
+    pub(crate) fn put(&self, value: &T) {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = Some((Instant::now(), value.clone()));
+        }
+        let Some(path) = self.file() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string(value) {
+            let _ = std::fs::write(&path, text);
+        }
+    }
+
+    /// Refetches on a background thread, one at a time, and stores the result
+    /// when it works. A failure leaves the old copy in place.
+    pub(crate) fn revalidate(&'static self, fetch: fn() -> Result<T, String>) {
+        if self.refreshing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(move || {
+            match fetch() {
+                Ok(value) => self.put(&value),
+                Err(error) => log::warn!("refreshing {} failed: {error}", self.name),
+            }
+            self.refreshing.store(false, Ordering::SeqCst);
+        });
+    }
 }
 
 /// Replace `path` with `contents` in one step: write a sibling temp file and

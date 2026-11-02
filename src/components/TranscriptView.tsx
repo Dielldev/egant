@@ -9,7 +9,16 @@ import {
   TriangleAlert,
   Undo2,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { modShortcut } from "../lib/platform";
 import {
   ASK_USER_QUESTION,
@@ -184,9 +193,24 @@ class GlideTimeline {
  * Reads the active session's transcript mirror on render, which is what makes
  * streaming free — each `session-event` folds into the store and this
  * re-renders. */
+/** Rows drawn when a conversation first opens. */
+const INITIAL_ROWS = 60;
+/** Rows "Show earlier messages" brings back each time. */
+const EARLIER_STEP = 100;
+
+/** The row a drawn window starts at when it wants to start near `index`: never
+ * inside a run of tool calls, which fold into one card and would otherwise be
+ * cut in half. */
+function windowStart(entries: Entry[], index: number): number {
+  let start = Math.max(0, Math.min(index, entries.length));
+  while (start > 0 && entries[start]?.kind === "tool" && entries[start - 1]?.kind === "tool") {
+    start--;
+  }
+  return start;
+}
+
 export function TranscriptView() {
   const snapshot = useEgant((s) => s.snapshot);
-  const transcripts = useEgant((s) => s.transcripts);
   const openFolderDialog = useEgant((s) => s.openFolderDialog);
   const answerPermission = useEgant((s) => s.answerPermission);
   const openFile = useEgant((s) => s.openFile);
@@ -195,6 +219,10 @@ export function TranscriptView() {
 
   const activeId = snapshot?.activeSession;
   const active = snapshot?.sessions.find((s) => s.id === activeId);
+  // Only the open conversation's transcript: subscribing to the whole map
+  // re-rendered this view (and re-ran the grouping below) for every token a
+  // background session streamed.
+  const transcript = useEgant((s) => (activeId != null ? s.transcripts[activeId] : undefined));
 
   // The error toast above the composer auto-dismisses: a sticky red bar that
   // has to be clicked away reads as a crash, while most store errors are
@@ -290,7 +318,6 @@ export function TranscriptView() {
   // A revert asked about in one conversation doesn't follow you to another.
   useEffect(() => setReverting(null), [activeId]);
 
-  const transcript = activeId != null ? transcripts[activeId] : undefined;
   // Reasoning is dropped rather than drawn. The status line at the tail
   // already says the turn is thinking, and once the answer is there a
   // scrollback of settled "Thought for 4s" rows is just noise between the
@@ -299,6 +326,43 @@ export function TranscriptView() {
   // nothing would still split two neighbouring Reads into separate cards, for
   // a reason invisible on screen.
   const entries = (transcript?.entries ?? []).filter((entry) => entry.kind !== "thinking");
+
+  // Only the tail of a long conversation is drawn when it opens: every row is
+  // a Markdown parse and a pile of DOM, and mounting hundreds of them is what
+  // made switching chats slow. The window is anchored the first time a
+  // conversation shows rows and only ever grows from there ("Show earlier",
+  // a search hit, the outline), so rows don't vanish under a reader as the
+  // reply streams in.
+  const [windowFrom, setWindowFrom] = useState<Record<number, number>>({});
+  const from = Math.min(
+    activeId != null
+      ? (windowFrom[activeId] ?? windowStart(entries, entries.length - INITIAL_ROWS))
+      : 0,
+    entries.length,
+  );
+  const hasRows = entries.length > 0;
+  useEffect(() => {
+    if (activeId == null || !hasRows) return;
+    setWindowFrom((prev) => (activeId in prev ? prev : { ...prev, [activeId]: from }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, hasRows]);
+  /** Where the scroll was just before the window grew upward, so the reader
+   * keeps the row they were on instead of being shoved down by what's above. */
+  const growRef = useRef<{ height: number; top: number } | null>(null);
+  const growWindow = (to: number, keepPlace: boolean) => {
+    const root = scrollRef.current;
+    if (activeId == null || !root) return;
+    growRef.current = keepPlace ? { height: root.scrollHeight, top: root.scrollTop } : null;
+    stickRef.current = false;
+    setWindowFrom((prev) => ({ ...prev, [activeId]: Math.min(prev[activeId] ?? from, to) }));
+  };
+  useLayoutEffect(() => {
+    const grown = growRef.current;
+    const root = scrollRef.current;
+    if (!grown || !root) return;
+    growRef.current = null;
+    root.scrollTop = grown.top + (root.scrollHeight - grown.height);
+  }, [from]);
   // The Run pill offers to run what the last turn *changed*; a turn that only
   // answered a question or ran `echo` has nothing new to run.
   const lastTurnChangedFiles = (() => {
@@ -326,7 +390,10 @@ export function TranscriptView() {
       (entry) => entry.kind === jumpTo.kind && seen++ === jumpTo.ordinal,
     );
     if (target < 0) return;
-    requestAnimationFrame(() => {
+    // A hit above the drawn window: draw it first, then look for the row.
+    const hidden = target < from;
+    if (hidden) growWindow(windowStart(entries, target - 3), false);
+    const find = () => {
       const el = scrollRef.current?.querySelector<HTMLElement>(`[data-entry="${target}"]`);
       if (!el) return;
       // Reading a match is leaving the tail: don't get pulled back down.
@@ -335,7 +402,9 @@ export function TranscriptView() {
       el.classList.remove("search-flash");
       void el.offsetWidth; // restart the animation on a second visit
       el.classList.add("search-flash");
-    });
+    };
+    if (hidden) requestAnimationFrame(() => requestAnimationFrame(find));
+    else requestAnimationFrame(find);
     // `entries` follows `transcript`; the length is what changes when it loads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpTo, activeId, transcript?.entries.length]);
@@ -416,6 +485,12 @@ export function TranscriptView() {
   const jumpToPrompt = (entryIndex: number) => {
     const root = scrollRef.current;
     const el = promptRefs.current.get(entryIndex);
+    if (root && !el && entryIndex < from) {
+      // A prompt above the drawn window: draw it, then glide there.
+      growWindow(windowStart(entries, entryIndex), false);
+      requestAnimationFrame(() => requestAnimationFrame(() => jumpToPrompt(entryIndex)));
+      return;
+    }
     if (!root || !el) return;
     // Leaving the tail breaks the pin on purpose — the stick effect would
     // otherwise yank a jump-to-#1 straight back to the bottom on next render.
@@ -516,6 +591,7 @@ export function TranscriptView() {
 
   return (
     <div
+      data-context-drop
       onDragEnter={handleStageDragEnter}
       onDragOver={handleStageDragOver}
       onDragLeave={handleStageDragLeave}
@@ -545,7 +621,20 @@ export function TranscriptView() {
             // Turns are numbered by the messages that opened them, the way the
             // backend numbers the snapshots they can be reverted to.
             let turn = 0;
-            let i = 0;
+            for (let k = 0; k < from; k++) if (entries[k]!.kind === "user") turn++;
+            let i = from;
+            if (from > 0) {
+              nodes.push(
+                <button
+                  key="earlier"
+                  type="button"
+                  onClick={() => growWindow(windowStart(entries, from - EARLIER_STEP), true)}
+                  className="mx-auto cursor-pointer rounded-full border border-[var(--border)] px-3 py-1 text-[12px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
+                >
+                  Show earlier messages
+                </button>,
+              );
+            }
             while (i < entries.length) {
               const entry = entries[i]!;
               // A question or a plan stands on its own rather than folding
@@ -734,7 +823,9 @@ export function TranscriptView() {
               </button>
             </div>
           )}
-          <Composer sessionId={active.id} />
+          {/* Keyed so a switch starts from that conversation's own draft
+            rather than briefly painting the previous one's text. */}
+          <Composer key={active.id} sessionId={active.id} />
         </div>
       </div>
     </div>

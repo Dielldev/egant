@@ -102,6 +102,36 @@ export async function resolveImageDataUrl(
   }
 }
 
+/** A small preview (long edge `max` px) of an image, as an object URL the
+ * caller must revoke. A screenshot can be 5K across; an `<img>` pointed at the
+ * original decodes the whole bitmap to paint a 44px chip, so the chip gets its
+ * own downscaled copy and the original stays untouched until it's opened.
+ * Resolves `null` when the browser can't decode it (SVG, a damaged file). */
+export async function thumbnailUrl(source: Blob | string, max = 128): Promise<string | null> {
+  try {
+    const blob = typeof source === "string" ? await (await fetch(source)).blob() : source;
+    // Asking the decoder for the small size up front keeps the full bitmap
+    // from ever existing; engines that ignore the options still decode, then
+    // we scale on the canvas below.
+    const bitmap = await createImageBitmap(blob, {
+      resizeWidth: max,
+      resizeQuality: "low",
+    }).catch(() => createImageBitmap(blob));
+    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    const small = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    return small ? URL.createObjectURL(small) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Copies an image (either data URL or local/remote source) to the system clipboard as a PNG image. */
 export async function copyImageToClipboard(srcOrDataUrl: string): Promise<boolean> {
   try {

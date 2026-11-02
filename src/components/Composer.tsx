@@ -21,7 +21,13 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, pickAttachments } from "../lib/api";
-import { isImage, resolveImageDataUrl } from "../lib/images";
+import {
+  clearComposerDraft,
+  composerDraftKey,
+  readComposerDraft,
+  writeComposerDraft,
+} from "../lib/composerDrafts";
+import { isImage, resolveImageDataUrl, thumbnailUrl } from "../lib/images";
 import { log } from "../lib/logger";
 import { modShortcut } from "../lib/platform";
 import { commandItems, findTrigger, mention } from "../lib/composerMenu";
@@ -56,10 +62,24 @@ const FILES_FRESH_MS = 15_000;
  * see it and remove it, but it never joins the message. */
 type PastedImage = {
   id: string;
-  dataUrl: string;
+  /** Small object URL the chip draws — never the original, whose full bitmap
+   * would be decoded to paint 44px. `null` until it's made. */
+  thumb: string | null;
+  /** Object URL over the original bytes, for the full-size view. Absent for an
+   * image that arrived as a path: that one is read from disk when opened. */
+  full?: string;
+  /** Where a dropped image already lives on disk. */
+  sourcePath?: string;
   path: string | null;
   error: boolean;
 };
+
+/** Object URLs pin their bytes until revoked, so every chip's pair is let go
+ * of when the chip is — removed, sent, or the composer unmounts. */
+function releaseImage(img: PastedImage) {
+  if (img.thumb) URL.revokeObjectURL(img.thumb);
+  if (img.full) URL.revokeObjectURL(img.full);
+}
 
 /** The one control that drives the window, in the two shapes it takes.
  *
@@ -104,9 +124,15 @@ export function Composer({
   const clearAttachedContext = useEgant((s) => s.clearAttachedContext);
   const draggingSession = useEgant((s) => s.draggingSession);
 
-  const [text, setText] = useState("");
+  // A prompt that has not been sent survives leaving this conversation: it is
+  // kept under the session (or the launch screen) it was typed in, and read
+  // back when that composer returns.
+  const draftKey = composerDraftKey(sessionId);
+  const [text, setText] = useState(() => readComposerDraft(draftKey));
   const [isDragOverSession, setIsDragOverSession] = useState(false);
-  const [isHoveringDrop, setIsHoveringDrop] = useState(false);
+  const [isHoveringDropNative, setIsHoveringDrop] = useState(false);
+  const sessionDropHot = useEgant((s) => s.sessionDropHot);
+  const isHoveringDrop = isHoveringDropNative || sessionDropHot;
   const dragCountRef = useRef(0);
   const [showContextPreview, setShowContextPreview] = useState(false);
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
@@ -149,6 +175,9 @@ export function Composer({
   const installedSkills = useEgant((s) => s.installedSkills);
   const fetchSkills = useEgant((s) => s.fetchSkills);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const pastedRef = useRef(pastedImages);
+  pastedRef.current = pastedImages;
+  useEffect(() => () => pastedRef.current.forEach(releaseImage), []);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -203,6 +232,32 @@ export function Composer({
     area.style.height = "auto";
     area.style.height = `${Math.min(area.scrollHeight, 240)}px`;
   }, [text]);
+
+  // Keeps the draft under the key it was typed for. Declared before the swap
+  // below so a session change can never file the old text under the new key.
+  const draftKeyRef = useRef(draftKey);
+  const textRef = useRef(text);
+  textRef.current = text;
+  useEffect(() => {
+    writeComposerDraft(draftKeyRef.current, text);
+  }, [text]);
+  // One last write on the way out, when the transcript unmounts the box
+  // before the effect above has had its turn.
+  useEffect(() => () => writeComposerDraft(draftKeyRef.current, textRef.current), []);
+  // The composer can also be pointed at another session without unmounting
+  // (both transcripts already in memory). Flush what was typed here, then
+  // bring in the other conversation's draft. Images belong to the message
+  // being composed, not to the next conversation, so they do not follow.
+  useEffect(() => {
+    if (draftKeyRef.current === draftKey) return;
+    writeComposerDraft(draftKeyRef.current, textRef.current);
+    draftKeyRef.current = draftKey;
+    setText(readComposerDraft(draftKey));
+    pastedRef.current.forEach(releaseImage);
+    setPastedImages([]);
+    setPreviewImage(null);
+    setCaret(0);
+  }, [draftKey]);
 
   const busy = transcript?.state === "running" || transcript?.state === "awaiting_permission";
   // A session the agent exited from — or one just restored from disk on
@@ -486,7 +541,9 @@ export function Composer({
     const paths = readyImages.map((img) => img.path as string);
     if (hero || sessionId == null) void sendOnLaunch(text, paths);
     else void send(sessionId, text, paths);
+    clearComposerDraft(draftKey);
     setText("");
+    pastedImages.forEach(releaseImage);
     setPastedImages([]);
     requestAnimationFrame(() => areaRef.current?.focus());
   };
@@ -511,16 +568,13 @@ export function Composer({
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       setPastedImages((prev) => [
         ...prev,
-        { id, dataUrl: "", path: p, error: false },
+        { id, thumb: null, sourcePath: p, path: p, error: false },
       ]);
+      // Read once to make the small chip image, then let the full-size data
+      // URL go: it's read again from disk only if the chip is opened.
       resolveImageDataUrl(p)
-        .then((dataUrl) => {
-          if (dataUrl) {
-            setPastedImages((prev) =>
-              prev.map((img) => (img.id === id ? { ...img, dataUrl } : img)),
-            );
-          }
-        })
+        .then((dataUrl) => (dataUrl ? thumbnailUrl(dataUrl) : null))
+        .then((thumb) => adoptThumb(id, thumb))
         .catch((error: unknown) => {
           log.error("composer", `couldn't load image preview: ${String(error)}`, error);
         });
@@ -533,28 +587,51 @@ export function Composer({
   // the CLIs only understand file paths, never inline clipboard data.
   const addPastedImage = (file: File) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === "string" ? reader.result : null;
-      if (!dataUrl) return;
-      setPastedImages((prev) => [...prev, { id, dataUrl, path: null, error: false }]);
-      api
-        .savePastedImage(dataUrl)
-        .then((path) => {
-          setPastedImages((prev) => prev.map((img) => (img.id === id ? { ...img, path } : img)));
-        })
-        .catch((error: unknown) => {
-          log.error("composer", `couldn't save pasted image: ${String(error)}`, error);
-          setPastedImages((prev) =>
-            prev.map((img) => (img.id === id ? { ...img, error: true } : img)),
-          );
-        });
-    };
-    reader.readAsDataURL(file);
+    // The chip is up before anything is decoded or written; the preview and
+    // the temp file both land on their own.
+    setPastedImages((prev) => [
+      ...prev,
+      { id, thumb: null, full: URL.createObjectURL(file), path: null, error: false },
+    ]);
+    void thumbnailUrl(file).then((thumb) => adoptThumb(id, thumb));
+    api
+      .savePastedImage(file)
+      .then((path) => {
+        setPastedImages((prev) => prev.map((img) => (img.id === id ? { ...img, path } : img)));
+      })
+      .catch((error: unknown) => {
+        log.error("composer", `couldn't save pasted image: ${String(error)}`, error);
+        setPastedImages((prev) =>
+          prev.map((img) => (img.id === id ? { ...img, error: true } : img)),
+        );
+      });
+  };
+
+  /** Hands a finished thumbnail to its chip — or frees it at once when the chip
+   * was removed or sent while it was being made. */
+  const adoptThumb = (id: string, thumb: string | null) => {
+    if (!thumb) return;
+    if (!pastedRef.current.some((img) => img.id === id)) {
+      URL.revokeObjectURL(thumb);
+      return;
+    }
+    setPastedImages((prev) => prev.map((img) => (img.id === id ? { ...img, thumb } : img)));
   };
 
   const removePastedImage = (id: string) => {
+    const gone = pastedImages.find((img) => img.id === id);
+    if (gone) releaseImage(gone);
     setPastedImages((prev) => prev.filter((img) => img.id !== id));
+  };
+
+  const previewPastedImage = async (img: PastedImage) => {
+    if (img.error) return;
+    if (img.full) {
+      setPreviewImage(img.full);
+      return;
+    }
+    const dataUrl = img.sourcePath ? await resolveImageDataUrl(img.sourcePath) : null;
+    setPreviewImage(dataUrl ?? img.thumb);
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -771,16 +848,14 @@ export function Composer({
             <button
               type="button"
               title={img.error ? "Couldn't save this image" : "Click to view"}
-              onClick={() => {
-                if (!img.error && img.dataUrl) setPreviewImage(img.dataUrl);
-              }}
+              onClick={() => void previewPastedImage(img)}
               className={`h-11 w-11 cursor-pointer overflow-hidden rounded-lg border bg-[var(--card)] ${
                 img.error ? "border-[var(--danger)]/50" : "border-[var(--border)]"
               }`}
             >
-              {img.dataUrl ? (
+              {img.thumb ? (
                 <img
-                  src={img.dataUrl}
+                  src={img.thumb}
                   alt="Attached preview"
                   className={`h-full w-full object-cover ${img.error ? "opacity-40" : ""}`}
                 />
@@ -1065,8 +1140,11 @@ export function Composer({
         <FoldVertical size={16} strokeWidth={2} />
       </button>
       {sessionPickerOpen && (
-        <div className="absolute bottom-full right-0 mb-2 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)] p-1.5 shadow-xl">
-          <div className="px-2.5 py-1.5 text-[11px] font-semibold text-[var(--muted)] uppercase tracking-wider">
+        // `.menu` is the opaque raised panel the other popovers use; `--card`
+        // is only a faint tint, so on its own the composer text and the
+        // wallpaper showed straight through the list.
+        <div className="menu menu-pop-up absolute bottom-full right-0 z-50 mb-2 w-72 max-h-72 overflow-y-auto rounded-xl p-1.5">
+          <div className="px-2.5 pt-1 pb-1.5 text-[10px] font-semibold text-[var(--faint)] uppercase tracking-wider">
             Pass context from previous chat
           </div>
           <div className="flex flex-col gap-0.5">
@@ -1150,6 +1228,7 @@ export function Composer({
         )}
         <div
           ref={wrapRef}
+          data-context-drop
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -1249,6 +1328,7 @@ export function Composer({
           />
         )}
         <div
+          data-context-drop
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}

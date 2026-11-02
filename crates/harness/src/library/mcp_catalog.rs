@@ -10,12 +10,13 @@
 //! module evaluating anything. Anything it doesn't understand (a spread, a
 //! function call) fails the parse, and the built-in copy is used instead.
 
+use super::DiskCache;
 use super::mcp::{CatalogMcp, CredentialKey, Transport};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 const REMOTE_URL: &str = "https://raw.githubusercontent.com/generalaction/emdash/HEAD/apps/emdash-desktop/src/core/primitives/mcp/api/catalog.ts";
 
@@ -35,7 +36,7 @@ pub struct McpCatalog {
     pub live: bool,
 }
 
-static LIVE: Mutex<Option<(Instant, Vec<CatalogMcp>)>> = Mutex::new(None);
+static LIVE: DiskCache<Vec<CatalogMcp>> = DiskCache::new("mcp-catalog", FRESH_FOR);
 
 fn bundled() -> &'static [CatalogMcp] {
     static BUNDLED: OnceLock<Vec<CatalogMcp>> = OnceLock::new();
@@ -47,34 +48,33 @@ fn bundled() -> &'static [CatalogMcp] {
     })
 }
 
-/// The newest catalog this process has, without touching the network —
+/// The newest catalog this machine has, without touching the network —
 /// what matching an installed server to its catalog entry uses.
 pub fn current() -> Vec<CatalogMcp> {
-    LIVE.lock()
-        .ok()
-        .and_then(|live| live.as_ref().map(|(_, entries)| entries.clone()))
+    LIVE.get()
+        .map(|(entries, _)| entries)
         .unwrap_or_else(|| bundled().to_vec())
 }
 
-/// The catalog for the Recommended grid: the live one, fetched when the
-/// cached copy is older than [`FRESH_FOR`] (or `refresh` asks), else the
-/// built-in one.
+/// The catalog for the Recommended grid. A copy fetched earlier — this run or
+/// a previous one — answers at once, and an aged one is refetched behind it;
+/// only a machine that has never fetched waits on GitHub. `refresh` asks for
+/// the network now. When it can't be had, the built-in one.
 pub fn load(refresh: bool) -> McpCatalog {
     if !refresh {
-        if let Some((at, entries)) = LIVE.lock().ok().and_then(|live| live.clone()) {
-            if at.elapsed() < FRESH_FOR {
-                return McpCatalog {
-                    entries,
-                    live: true,
-                };
+        if let Some((entries, stale)) = LIVE.get() {
+            if stale {
+                LIVE.revalidate(fetch);
             }
+            return McpCatalog {
+                entries,
+                live: true,
+            };
         }
     }
     match fetch() {
         Ok(entries) => {
-            if let Ok(mut live) = LIVE.lock() {
-                *live = Some((Instant::now(), entries.clone()));
-            }
+            LIVE.put(&entries);
             McpCatalog {
                 entries,
                 live: true,
@@ -83,8 +83,8 @@ pub fn load(refresh: bool) -> McpCatalog {
         Err(error) => {
             log::warn!("live mcp catalog unavailable, using the built-in one: {error}");
             // A catalog fetched earlier beats the built-in one even stale.
-            match LIVE.lock().ok().and_then(|live| live.clone()) {
-                Some((_, entries)) => McpCatalog {
+            match LIVE.get() {
+                Some((entries, _)) => McpCatalog {
                     entries,
                     live: true,
                 },

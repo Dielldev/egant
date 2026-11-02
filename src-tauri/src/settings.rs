@@ -99,8 +99,7 @@ impl Settings {
             Some(path) => !path.is_file(),
             None => true,
         };
-        if need_recovery
-            && let Some(preserved) = find_preserved_wallpaper() {
+        if need_recovery && let Some(preserved) = find_preserved_wallpaper() {
             settings.wallpaper = Some(preserved);
             settings.save();
         }

@@ -1133,9 +1133,10 @@ html[data-theme="light"] {
   text-align: right;
   color: var(--faint);
   user-select: none;
-  background: color-mix(in srgb, var(--stage) 80%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  /* Near-opaque instead of blurred: this class is on every line of a file or
+   * diff, and a backdrop blur per line is hundreds of GPU layers for a
+   * tint that was already 80% there. */
+  background: color-mix(in srgb, var(--stage) 94%, transparent);
 }
 
 .code-pane {
@@ -1283,8 +1284,8 @@ html[data-theme="light"] {
   position: sticky;
   top: 0;
   z-index: 1;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  /* One per hunk, stuck over scrolling code: opaque rather than blurred. */
+  background: color-mix(in srgb, var(--stage) 94%, var(--card));
 }
 
 /* Behind an image in the viewer and the image diff: the usual checkerboard,

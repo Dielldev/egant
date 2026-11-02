@@ -6,7 +6,7 @@
 //! If the agent CLI is unavailable, it uses a deterministic fallback distillation
 //! so the operation never fails.
 
-use crate::agents::{prepare_program_args, resolve_executable, AgentId};
+use crate::agents::{AgentId, prepare_program_args, resolve_executable};
 use crate::transcript::{Transcript, TranscriptEntry};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -516,12 +516,7 @@ fn run_no_stdin(mut command: Command, cwd: &Path) -> Option<(ExitStatus, String)
     Some((status, String::from_utf8_lossy(&stdout).into_owned()))
 }
 
-fn write_context_file(
-    cwd: &Path,
-    session_id: u64,
-    title: &str,
-    content: &str,
-) -> Option<String> {
+fn write_context_file(cwd: &Path, session_id: u64, title: &str, content: &str) -> Option<String> {
     let safe_title: String = title
         .chars()
         .map(|c| {

@@ -527,16 +527,16 @@ export const api = {
     traced("blob_text", `${path}@${source}`, () =>
       invoke<string | null>("blob_text", { root, path, source }),
     ),
-  /** Writes a pasted-image data URL to a temp file and hands back its path —
+  /** Writes a pasted image's bytes to a temp file and hands back its path —
    * the composer turns that into an `@path` mention, the same way a picked
    * attachment does. */
-  savePastedImage: (dataUrl: string) => {
-    const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
-    if (!match) return Promise.reject(new Error("not an image data URL"));
-    const [, mime, data] = match;
-    const extension = mime.split("/")[1]?.replace("+xml", "") || "png";
+  savePastedImage: async (image: Blob) => {
+    const extension = image.type.split("/")[1]?.replace("+xml", "") || "png";
+    // Raw bytes as the request body: no base64 round trip, no multi-megabyte
+    // string through JSON on either side of the IPC boundary.
+    const bytes = new Uint8Array(await image.arrayBuffer());
     return traced("save_pasted_image", extension, () =>
-      invoke<string>("save_pasted_image", { data, extension }),
+      invoke<string>("save_pasted_image", bytes, { headers: { "x-extension": extension } }),
     );
   },
 

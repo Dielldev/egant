@@ -109,6 +109,7 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
         </button>
       )}
       <div
+        data-context-drop
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}

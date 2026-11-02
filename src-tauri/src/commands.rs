@@ -234,7 +234,7 @@ enum ScopeBase {
 /// than the turn did, never less, and it stops the tab from being empty for a
 /// reason the user can't see.
 fn resolve_scope(
-    state: &BackendState<'_>,
+    turn_baseline: Option<String>,
     repo: &egant_vcs::Repo,
     scope: &DiffScopeArg,
 ) -> Result<Option<ScopeBase>, String> {
@@ -251,26 +251,40 @@ fn resolve_scope(
             })?;
             Ok(Some(ScopeBase::Tree(tree)))
         }
-        DiffScopeArg::Turn { session } => {
-            let baseline = {
-                let guard = state.lock().unwrap();
-                guard
-                    .sessions
-                    .get(session)
-                    .and_then(|session| session.turn_baseline.clone())
-            };
-            match baseline {
-                Some(tree) => Ok(Some(ScopeBase::Tree(tree))),
-                None => {
-                    let head = repo
-                        .head_tree()
-                        .map_err(|error| error.to_string())?
-                        .ok_or_else(|| "this repository has no commits yet".to_string())?;
-                    Ok(Some(ScopeBase::Tree(head)))
-                }
+        DiffScopeArg::Turn { .. } => match turn_baseline {
+            Some(tree) => Ok(Some(ScopeBase::Tree(tree))),
+            None => {
+                let head = repo
+                    .head_tree()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "this repository has no commits yet".to_string())?;
+                Ok(Some(ScopeBase::Tree(head)))
             }
-        }
+        },
     }
+}
+
+/// The tree a turn scope measures from, read out of the state up front so the
+/// git work that follows can run on a blocking thread without holding it.
+fn turn_baseline_of(state: &BackendState<'_>, scope: &DiffScopeArg) -> Option<String> {
+    let DiffScopeArg::Turn { session } = scope else {
+        return None;
+    };
+    let guard = state.lock().unwrap();
+    guard
+        .sessions
+        .get(session)
+        .and_then(|session| session.turn_baseline.clone())
+}
+
+/// Runs libgit2 work off the command thread: a status walk or a diff over a
+/// big repository would otherwise freeze the window until it returned.
+async fn git_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 /// The branch a repository integrates into, for a branch scope nobody named a
@@ -821,8 +835,11 @@ fn set_session_model(
     Ok(())
 }
 
+/// `async` so the JSON for a long transcript is written off the main thread —
+/// opening a big conversation used to freeze the window while it serialized.
+/// The lock is held only to build the DTO, never across a suspension point.
 #[tauri::command]
-fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, String> {
+async fn get_transcript(state: BackendState<'_>, id: u64) -> Result<TranscriptDto, String> {
     let guard = state.lock().unwrap();
     let Some(session) = guard.sessions.get(&id) else {
         log::warn!("get_transcript unknown session {id}");
@@ -1343,17 +1360,26 @@ pub(crate) fn apply_window_glass(
 
 /// What git reports as changed in the project, staged rows first.
 #[tauri::command]
-fn changes_list(
+async fn changes_list(
     state: BackendState<'_>,
     path: String,
     scope: Option<DiffScopeArg>,
+) -> Result<Vec<ChangeDto>, String> {
+    let scope = scope.unwrap_or(DiffScopeArg::WorkingTree { staged: false });
+    let baseline = turn_baseline_of(&state, &scope);
+    git_blocking(move || changes_list_blocking(path, scope, baseline)).await
+}
+
+fn changes_list_blocking(
+    path: String,
+    scope: DiffScopeArg,
+    baseline: Option<String>,
 ) -> Result<Vec<ChangeDto>, String> {
     let repo = egant_vcs::Repo::discover(&path).map_err(|error| {
         log::warn!("changes_list {path} discover failed: {error}");
         error.to_string()
     })?;
-    let scope = scope.unwrap_or(DiffScopeArg::WorkingTree { staged: false });
-    let changes = match resolve_scope(&state, &repo, &scope)? {
+    let changes = match resolve_scope(baseline, &repo, &scope)? {
         // The working tree is the only scope with two sides to it — the index
         // and the disk — and the only one the panel can act on.
         None => repo.changes().map_err(|error| {
@@ -1387,17 +1413,27 @@ fn changes_list(
 }
 
 #[tauri::command]
-fn diff_file(
+async fn diff_file(
     state: BackendState<'_>,
     root: String,
     path: String,
     scope: Option<DiffScopeArg>,
 ) -> Result<Vec<DiffHunkDto>, String> {
-    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
     let scope = scope.unwrap_or(DiffScopeArg::WorkingTree { staged: false });
+    let baseline = turn_baseline_of(&state, &scope);
+    git_blocking(move || diff_file_blocking(root, path, scope, baseline)).await
+}
+
+fn diff_file_blocking(
+    root: String,
+    path: String,
+    scope: DiffScopeArg,
+    baseline: Option<String>,
+) -> Result<Vec<DiffHunkDto>, String> {
+    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
     let staged = matches!(scope, DiffScopeArg::WorkingTree { staged: true });
     let file = Path::new(&path);
-    let hunks = match resolve_scope(&state, &repo, &scope)? {
+    let hunks = match resolve_scope(baseline, &repo, &scope)? {
         None => repo.diff(file, staged),
         Some(ScopeBase::Tree(tree)) => repo.diff_since(&tree, file),
         Some(ScopeBase::Commit(sha)) => repo.commit_diff(&sha, file),
@@ -1437,7 +1473,11 @@ fn status_name(status: egant_vcs::FileStatus) -> &'static str {
 /// Branch, upstream distance and first remote, for the Changes tab's header
 /// and for deciding whether pushing is even possible.
 #[tauri::command]
-fn repo_status(path: String) -> Result<RepoStatusDto, String> {
+async fn repo_status(path: String) -> Result<RepoStatusDto, String> {
+    git_blocking(move || repo_status_blocking(path)).await
+}
+
+fn repo_status_blocking(path: String) -> Result<RepoStatusDto, String> {
     let repo = egant_vcs::Repo::discover(&path).map_err(|error| error.to_string())?;
     // Deliberately not `snapshot()`: that walks the whole status to collect
     // changes, which `changes_list` is already doing alongside this call.
@@ -1543,23 +1583,33 @@ fn blob_bytes(root: &str, path: &Path, source: &str) -> Result<Option<Vec<u8>>, 
 /// One side of a file as a data URL, for the diffs the viewer draws rather
 /// than reads: images.
 #[tauri::command]
-fn blob_data_url(root: String, path: String, source: String) -> Result<Option<String>, String> {
-    let file = Path::new(&path);
-    Ok(blob_bytes(&root, file, &source)?.map(|bytes| {
-        format!(
-            "data:{};base64,{}",
-            mime_for(file),
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
-        )
-    }))
+async fn blob_data_url(
+    root: String,
+    path: String,
+    source: String,
+) -> Result<Option<String>, String> {
+    git_blocking(move || {
+        let file = Path::new(&path);
+        Ok(blob_bytes(&root, file, &source)?.map(|bytes| {
+            format!(
+                "data:{};base64,{}",
+                mime_for(file),
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+            )
+        }))
+    })
+    .await
 }
 
 /// One side of a file as text, for the preview a renderable file can offer
 /// instead of its diff.
 #[tauri::command]
-fn blob_text(root: String, path: String, source: String) -> Result<Option<String>, String> {
-    Ok(blob_bytes(&root, Path::new(&path), &source)?
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+async fn blob_text(root: String, path: String, source: String) -> Result<Option<String>, String> {
+    git_blocking(move || {
+        Ok(blob_bytes(&root, Path::new(&path), &source)?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1595,9 +1645,12 @@ fn commit_changes(root: String, message: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn repo_branch(path: String) -> Result<Option<String>, String> {
-    let repo = egant_vcs::Repo::discover(&path).map_err(|error| error.to_string())?;
-    repo.head_branch().map_err(|error| error.to_string())
+async fn repo_branch(path: String) -> Result<Option<String>, String> {
+    git_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&path).map_err(|error| error.to_string())?;
+        repo.head_branch().map_err(|error| error.to_string())
+    })
+    .await
 }
 
 /// `git pull --ff-only`. Fast-forward only on purpose: a merge commit the user
@@ -1857,9 +1910,26 @@ static PASTE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// `@path` mention: the CLIs read files, not inline clipboard bytes, so a
 /// paste needs a file on disk exactly like a dragged-in attachment does.
 #[tauri::command]
-fn save_pasted_image(data: String, extension: String) -> Result<String, String> {
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
-        .map_err(|error| error.to_string())?;
+async fn save_pasted_image(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    // The image arrives as the raw request body, not a base64 string inside
+    // JSON — a retina screenshot is megabytes, and encoding it twice was most
+    // of what made a paste feel slow.
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the image bytes as the request body".to_string());
+    };
+    let bytes = bytes.clone();
+    let extension = request
+        .headers()
+        .get("x-extension")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    tauri::async_runtime::spawn_blocking(move || write_pasted_image(&bytes, &extension))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn write_pasted_image(bytes: &[u8], extension: &str) -> Result<String, String> {
     let dir = std::env::temp_dir().join("egant-pastes");
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let stamp = std::time::SystemTime::now()
