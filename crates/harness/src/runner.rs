@@ -221,6 +221,15 @@ async fn run_turn<T: TurnTranslator>(
         request.cwd.display(),
         text.len()
     );
+    if !request.cwd.is_dir() {
+        let message = format!(
+            "Working directory `{}` does not exist or is not a folder",
+            request.cwd.display()
+        );
+        log::error!("turn spawn failed: {message}");
+        send_all(events, translator.turn_failed(&message)).await;
+        return false;
+    }
     let (prog, prefix) = crate::agents::prepare_program_args(&request.program);
     let mut cmd = Command::new(&prog);
     cmd.args(&prefix)

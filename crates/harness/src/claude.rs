@@ -203,6 +203,13 @@ impl ClaudeCode {
             options.session_id = Some(new_session_id());
         }
 
+        if !options.cwd.is_dir() {
+            anyhow::bail!(
+                "Working directory `{}` does not exist or is not a folder",
+                options.cwd.display()
+            );
+        }
+
         let (prog, prefix) = crate::agents::prepare_program_args(&options.program);
         let mut cmd = Command::new(&prog);
         cmd.args(&prefix)
