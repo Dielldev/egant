@@ -592,7 +592,7 @@ fn format_skill_prompt(
 ) -> String {
     if user_instruction.is_empty() {
         format!(
-            "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n\
+            "[Project: {project_name} | Path: {path}]\n\
             [Skill: {skill_id} | Path: {skill_file}]\n\
             Please apply and follow the instructions in the {skill_id} skill below:\n\n\
             <skill_instructions>\n\
@@ -603,7 +603,7 @@ fn format_skill_prompt(
         )
     } else {
         format!(
-            "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n\
+            "[Project: {project_name} | Path: {path}]\n\
             [Skill: {skill_id} | Path: {skill_file}]\n\
             Please apply and follow the instructions in the {skill_id} skill below to fulfill the user request:\n\n\
             <skill_instructions>\n\
@@ -686,7 +686,7 @@ pub fn wrap_turn_with_project(project_name: &str, cwd: &std::path::Path, text: &
         return wrapped_skill;
     }
     format!(
-        "[Project: {project_name} | Path: {path} — this is where you are. When asked where you are, answer with this project; do not run `pwd`, trust this location.]\n{text}",
+        "[Project: {project_name} | Path: {path}]\n{text}",
         path = cwd.display()
     )
 }
