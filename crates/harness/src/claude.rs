@@ -635,7 +635,11 @@ impl TurnGate {
     /// Notes a `session_state_changed` report; `idle` releases the held end.
     fn observe_state(&mut self, state: &str) -> Option<HarnessEvent> {
         self.reports_state = true;
-        if state == "idle" { self.held.take() } else { None }
+        if state == "idle" {
+            self.held.take()
+        } else {
+            None
+        }
     }
 
     /// Gives up waiting: whatever is held becomes the turn's end.
@@ -670,7 +674,9 @@ fn merge_turn_ends(earlier: HarnessEvent, later: HarnessEvent) -> HarnessEvent {
             duration_ms: duration_ms.saturating_add(earlier_ms),
             cost_usd: cost_usd + earlier_cost,
             usage: TurnUsage {
-                input_tokens: usage.input_tokens.saturating_add(earlier_usage.input_tokens),
+                input_tokens: usage
+                    .input_tokens
+                    .saturating_add(earlier_usage.input_tokens),
                 output_tokens: usage
                     .output_tokens
                     .saturating_add(earlier_usage.output_tokens),
@@ -1247,13 +1253,15 @@ mod tests {
         translate(serde_json::from_str(frame).unwrap(), &Mutex::new(None))
     }
 
-
     fn gated(gate: &mut TurnGate, frame: &str) -> Vec<HarnessEvent> {
-        route(gate, serde_json::from_str(frame).unwrap(), &Mutex::new(None))
+        route(
+            gate,
+            serde_json::from_str(frame).unwrap(),
+            &Mutex::new(None),
+        )
     }
 
-    const STATE_RUNNING: &str =
-        r#"{"type":"system","subtype":"session_state_changed","state":"running","session_id":"s1"}"#;
+    const STATE_RUNNING: &str = r#"{"type":"system","subtype":"session_state_changed","state":"running","session_id":"s1"}"#;
     const STATE_IDLE: &str =
         r#"{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"s1"}"#;
 
@@ -1310,7 +1318,10 @@ mod tests {
     fn a_cli_that_reports_no_state_ends_turns_at_the_result() {
         let mut gate = TurnGate::default();
         let events = gated(&mut gate, &result_frame("done", 0.1));
-        assert!(matches!(events.as_slice(), [HarnessEvent::TurnEnded { .. }]));
+        assert!(matches!(
+            events.as_slice(),
+            [HarnessEvent::TurnEnded { .. }]
+        ));
         assert!(!gate.holding());
     }
 
@@ -1325,7 +1336,10 @@ mod tests {
         let mut gate = TurnGate::default();
         gated(&mut gate, STATE_RUNNING);
         gated(&mut gate, &result_frame("done", 0.1));
-        assert!(matches!(gate.release(), Some(HarnessEvent::TurnEnded { .. })));
+        assert!(matches!(
+            gate.release(),
+            Some(HarnessEvent::TurnEnded { .. })
+        ));
         assert!(gate.release().is_none());
     }
 
