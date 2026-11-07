@@ -34,7 +34,7 @@ pub struct Settings {
     pub wallpaper: Option<PathBuf>,
     /// Scrim strength over the wallpaper, `0.1..=0.9`.
     pub wallpaper_dim: f32,
-    /// Agent id new sessions start with (`claude`, `codex`, `opencode`).
+    /// Agent id new sessions start with (`claude`, `codex`, `opencode`, `antigravity`, `cursor`).
     /// Unknown values fall back to `claude` when read.
     pub default_agent: String,
     /// Whether a new session gets its own worktree. Off to begin with: a

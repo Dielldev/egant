@@ -27,7 +27,7 @@ const CONNECT_HINTS: Record<string, string> = {
   codex: "Check your browser — a Codex sign-in tab has opened.",
   opencode: "Check the Terminal window that opened and follow the provider picker.",
   antigravity: "Check the Terminal window that opened to sign in with Google.",
-  cursor: "Run `cursor-agent login` in your terminal to authenticate Cursor.",
+  cursor: "Check your browser — a Cursor sign-in tab should have opened.",
 };
 
 const PROVIDER_METADATA: Record<
@@ -250,7 +250,7 @@ export function AccountsSection() {
           name="Cursor"
           status={cursorStatus}
           meta={PROVIDER_METADATA.cursor}
-          emptyText="Cursor isn't connected on this device — cursor-agent sign-in isn't wired up yet."
+          emptyText="Cursor isn't connected on this device — Add account runs cursor-agent login."
           onSuccess={refreshAll}
         />
       </div>

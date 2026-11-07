@@ -607,12 +607,15 @@ interface EgantStore {
   fetchCatalog: () => Promise<void>;
   /** Like `fetchAgents`, but follows the cheap presence-based list with a
    * live login recheck for the agents the CLI can answer fast (Claude,
-   * Codex) — the same live check "Refresh" runs. `list_agents` alone only
-   * knows a credentials file exists, which can read "connected" for an
+   * Codex, Cursor) — the same live check "Refresh" runs. `list_agents` alone
+   * only knows a credentials file exists, which can read "connected" for an
    * account whose token expired days ago; this is what keeps Settings from
    * saying that. Called on Settings > Agents/Accounts open and once at
    * launch, never from a hot path. */
   verifyAgents: () => Promise<void>;
+  /** Patches one agent row with a live `checkAgentLogin` result so a
+   * presence-based `listAgents` refresh can't wipe a just-confirmed login. */
+  applyAgentStatus: (status: AgentStatus) => void;
   /** Models for the picker's agent, with loading state. Refetched on picker
    * open so newly logged-in providers appear. */
   models: AgentModel[];
@@ -1209,7 +1212,13 @@ export function usesChatUi(
 
 /** Agents egant ships a chat harness for. Mirrors the catalog's `chatUi`
  * column; only used before the catalog has crossed the IPC boundary. */
-export const HARNESSED: readonly string[] = ["claude", "codex", "opencode", "antigravity"];
+export const HARNESSED: readonly string[] = [
+  "claude",
+  "codex",
+  "opencode",
+  "antigravity",
+  "cursor",
+];
 
 /** Where the workspace panel points: the active conversation's working
  * directory, else the selected project, else the first project open. The
@@ -2008,7 +2017,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
         return;
       }
       const live = await Promise.all(
-        ["claude", "codex", "antigravity"].map((id) => api.checkAgentLogin(id).catch(() => null)),
+        ["claude", "codex", "antigravity", "cursor"].map((id) =>
+          api.checkAgentLogin(id).catch(() => null),
+        ),
       );
       const agents = get().agents.map((agent) => {
         const fresh = live.find((status) => status?.id === agent.id);
@@ -2016,6 +2027,11 @@ export const useEgant = create<EgantStore>()((set, get) => {
       });
       log.debug("store", "agent login recheck done");
       set({ agents });
+    },
+    applyAgentStatus: (status) => {
+      set({
+        agents: get().agents.map((agent) => (agent.id === status.id ? status : agent)),
+      });
     },
     models: [],
     modelsAgent: null,
@@ -2100,6 +2116,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       codex: true,
       opencode: true,
       antigravity: true,
+      cursor: true,
     }),
     setAgentEnabled: (id, on) => {
       const enabledAgents = { ...get().enabledAgents, [id]: on };

@@ -5,7 +5,8 @@
 //! [`antigravity_models`]. opencode reports its live catalog (`opencode models --verbose`: id,
 //! display name, provider, reasoning variants). Codex discovers its live
 //! catalog too, over `codex app-server`'s `model/list` — see
-//! [`discover_codex_models`]. Claude's CLI has no discovery call, but Anthropic
+//! [`discover_codex_models`]. Cursor discovers via `cursor-agent --list-models`
+//! (plain `id - name` lines). Claude's CLI has no discovery call, but Anthropic
 //! publishes the catalog Claude Code itself reads — see
 //! [`fetch_claude_catalog`] — so the picker and Settings show whatever is
 //! live, with the last fetch kept on disk and [`claude_fallback_models`] only
@@ -66,10 +67,11 @@ pub struct AgentModel {
 }
 
 /// How long a discovered catalog is reused before it's looked up again.
-/// Discovery costs a CLI spawn each for Codex (`codex app-server`) and
-/// opencode (`opencode models --verbose`), and catalogs change on the scale of
-/// CLI releases, not seconds — so paying that on every picker open, every tab
-/// switch and every Settings visit was buying nothing.
+/// Discovery costs a CLI spawn each for Codex (`codex app-server`),
+/// opencode (`opencode models --verbose`), and Cursor (`cursor-agent
+/// --list-models`), and catalogs change on the scale of CLI releases, not
+/// seconds — so paying that on every picker open, every tab switch and every
+/// Settings visit was buying nothing.
 const CATALOG_TTL: Duration = Duration::from_secs(10 * 60);
 
 fn catalog_cache() -> &'static Mutex<HashMap<AgentId, (Instant, Vec<AgentModel>)>> {
@@ -134,6 +136,7 @@ fn discover_models(agent: AgentId) -> Result<Vec<AgentModel>, String> {
         AgentId::Codex => Ok(codex_models_or_fallback()),
         AgentId::Claude => Ok(claude_models_or_fallback()),
         AgentId::Antigravity => antigravity_models(),
+        AgentId::Cursor => cursor_models(),
         other => Err(format!(
             "{} doesn't expose a model list yet",
             other.descriptor().name
@@ -1124,6 +1127,67 @@ fn antigravity_provider(id: &str) -> &'static str {
     }
 }
 
+/// `cursor-agent --list-models` prints one `id - Display Name` line per model
+/// (plus an `Available models` header). No JSON variant exists today.
+fn cursor_models() -> Result<Vec<AgentModel>, String> {
+    let desc = AgentId::Cursor.descriptor();
+    let program =
+        crate::agents::resolve_executable(desc).ok_or_else(|| desc.install_hint.to_string())?;
+    let output = run_with_timeout(&program, &["--list-models"], MODELS_TIMEOUT)
+        .ok_or_else(|| "listing cursor models timed out".to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "cursor-agent --list-models failed".to_string()
+        } else {
+            stderr
+        });
+    }
+    let models = parse_cursor_list_models(&output.stdout);
+    if models.is_empty() {
+        return Err(
+            "cursor-agent advertised no models (`cursor-agent login` to authenticate)"
+                .to_string(),
+        );
+    }
+    Ok(models)
+}
+
+/// Lines shaped `id - Display Name`, ignoring the `Available models` banner
+/// and blank lines. Display names may themselves contain ` - `.
+fn parse_cursor_list_models(out: &[u8]) -> Vec<AgentModel> {
+    let text = String::from_utf8_lossy(out);
+    let mut models = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.eq_ignore_ascii_case("available models") {
+            continue;
+        }
+        let Some((id, name)) = line.split_once(" - ") else {
+            continue;
+        };
+        let id = id.trim();
+        let name = name.trim();
+        if id.is_empty() || name.is_empty() {
+            continue;
+        }
+        let cli_default = id == "auto" || name.to_lowercase().contains("current, default");
+        models.push(AgentModel {
+            id: id.to_string(),
+            name: name.to_string(),
+            provider: "cursor".to_string(),
+            provider_name: "Cursor".to_string(),
+            description: String::new(),
+            context: 0,
+            max_context: 0,
+            variants: Vec::new(),
+            default_variant: String::new(),
+            cli_default,
+        });
+    }
+    models
+}
+
 struct CommandOutput {
     status: std::process::ExitStatus,
     stdout: Vec<u8>,
@@ -1672,7 +1736,19 @@ sleep 30
     }
 
     #[test]
+    fn cursor_list_models_parses_id_dash_name() {
+        let out = b"Available models\n\nauto - Auto (current, default)\ngpt-5.2 - GPT-5.2\ncomposer-2.5 - Composer 2.5\n";
+        let models = parse_cursor_list_models(out);
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "auto");
+        assert!(models[0].cli_default);
+        assert_eq!(models[1].id, "gpt-5.2");
+        assert_eq!(models[1].name, "GPT-5.2");
+        assert_eq!(models[2].provider, "cursor");
+    }
+
+    #[test]
     fn unknown_agents_have_no_list() {
-        assert!(list_models(AgentId::Cursor).is_err());
+        assert!(list_models(AgentId::Devin).is_err());
     }
 }

@@ -263,7 +263,8 @@ export function Composer({
   // A session the agent exited from — or one just restored from disk on
   // launch — still has a live conversation behind it as long as the CLI
   // recorded a session id: sending into it asks the backend to resume that
-  // id (`claude --resume`, `codex exec resume <thread>`, `opencode run -s`)
+  // id (`claude --resume`, `codex exec resume <thread>`, `opencode run -s`,
+  // `cursor-agent --resume`)
   // rather than starting over. Only a session that never got that far (it
   // failed before its first reply) has truly nothing left to continue.
   const resumable = (session?.ended ?? false) && transcript?.sessionId != null;

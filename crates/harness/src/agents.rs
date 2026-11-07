@@ -10,7 +10,7 @@
 //! Login state follows zeron's `AgentAccounts` credential locations: Claude
 //! (`~/.claude/.credentials.json`, else the macOS Keychain entry the CLI
 //! itself uses), Codex (`$CODEX_HOME/auth.json`), Cursor
-//! (`~/.cursor/sdk/auth.json`), opencode (`~/.local/share/opencode/auth.json`).
+//! (`~/.config/cursor/auth.json`), opencode (`~/.local/share/opencode/auth.json`).
 //! Only presence is probed — file contents are never read except for the
 //! display email, and never logged.
 
@@ -150,7 +150,7 @@ const DESCRIPTORS: &[AgentDescriptor] = &[
             "/opt/homebrew/bin/cursor-agent",
             "/usr/local/bin/cursor-agent",
         ],
-        install_hint: "Install the cursor-agent CLI to enable",
+        install_hint: "Install the cursor-agent CLI to enable (`curl https://cursor.com/install -fsS | bash`), then run `cursor-agent login`",
     },
     AgentDescriptor {
         id: AgentId::Devin,
@@ -333,6 +333,7 @@ fn verify_login(id: AgentId) -> Option<(bool, Option<String>)> {
         AgentId::Claude => verify_claude_login(),
         AgentId::Codex => verify_codex_login(),
         AgentId::Antigravity => verify_antigravity_login(),
+        AgentId::Cursor => verify_cursor_login(),
         _ => None,
     }
 }
@@ -385,6 +386,27 @@ fn verify_codex_login() -> Option<(bool, Option<String>)> {
     Some((output.status.success() && text.contains("logged in"), email))
 }
 
+/// `cursor-agent status --format json` reports `isAuthenticated` and optional
+/// `userInfo.email` — same shape as `whoami`.
+fn verify_cursor_login() -> Option<(bool, Option<String>)> {
+    let program = resolve_executable(AgentId::Cursor.descriptor())?;
+    let output = std::process::Command::new(program)
+        .args(["status", "--format", "json"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let logged_in = value
+        .get("isAuthenticated")
+        .and_then(serde_json::Value::as_bool)?;
+    let email = value
+        .get("userInfo")
+        .and_then(|u| u.get("email"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some((logged_in, logged_in.then_some(email).flatten()))
+}
+
 // ---------------------------------------------------------------------------
 // Connecting an account
 // ---------------------------------------------------------------------------
@@ -403,6 +425,7 @@ pub fn connect(id: AgentId) -> Result<(), String> {
         // invites the CLI to wait on it.
         AgentId::Claude => spawn_detached(&program, &["auth", "login"]),
         AgentId::Codex => spawn_detached(&program, &["login"]),
+        AgentId::Cursor => spawn_detached(&program, &["login"]),
         // An arrow-key provider picker: needs a real terminal to draw into.
         AgentId::Opencode => open_in_terminal(&program, &["auth", "login"]),
         // Bare `agy` starts its TUI, which signs in through the browser on
@@ -476,14 +499,13 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
         command_line.push(' ');
         command_line.push_str(&shell_quote(arg));
     }
-    // Keep the window open after the CLI exits so login errors stay readable.
-    command_line.push_str("; exec \"${SHELL:-bash}\"");
 
     let copy_hint = format!(
-        "Run `{} {}` in a terminal to sign in — egant couldn't open a terminal automatically.",
-        program.display(),
-        args.join(" ")
+        "Run `{command_line}` in a terminal to sign in — egant couldn't open a terminal automatically.",
     );
+
+    // Keep the window open after the CLI exits so login errors stay readable.
+    command_line.push_str("; exec \"${SHELL:-bash}\"");
 
     let try_sh_c = |bin: &str, prefix: &[&str]| -> bool {
         let mut cmd = std::process::Command::new(bin);
@@ -515,7 +537,7 @@ fn open_in_terminal(program: &Path, args: &[&str]) -> Result<(), String> {
         ("gnome-terminal", &["--"]),
         ("kgx", &["--"]),
         ("konsole", &["-e"]),
-        ("xfce4-terminal", &["-e"]),
+        ("xfce4-terminal", &["-x"]),
         ("mate-terminal", &["-e"]),
         ("tilix", &["-e"]),
         ("alacritty", &["-e"]),
@@ -1148,8 +1170,17 @@ fn opencode_auth_file() -> Option<PathBuf> {
 }
 
 fn cursor_auth_file() -> Option<PathBuf> {
-    let file = home_dir()?.join(".cursor/sdk/auth.json");
-    file.is_file().then_some(file)
+    let home = home_dir()?;
+    // Current CLI writes `~/.config/cursor/auth.json` (accessToken +
+    // refreshToken). Older docs/builds mentioned `~/.cursor/sdk/auth.json`;
+    // keep probing that so a leftover install still counts as connected.
+    for rel in [".config/cursor/auth.json", ".cursor/sdk/auth.json"] {
+        let file = home.join(rel);
+        if file.is_file() {
+            return Some(file);
+        }
+    }
+    None
 }
 
 fn antigravity_login() -> (bool, Option<String>) {

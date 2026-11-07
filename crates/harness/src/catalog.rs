@@ -322,9 +322,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         extra_paths: &["~/.cursor/bin/cursor-agent"],
         vendor: "cursor",
         website: "https://cursor.com/cli",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
+        supports: FULL,
+        chat_ui: true,
+        recommended: true,
         #[cfg(windows)]
         install_options: &[winget("winget install Cursor.Cursor", true)],
         #[cfg(not(windows))]
@@ -959,11 +959,11 @@ mod tests {
         }
     }
 
-    /// The three agents egant can actually drive must all be listed, since
-    /// the tab is the only place they can be installed from.
+    /// The agents egant can actually drive must all be listed, since the tab
+    /// is the only place they can be installed from.
     #[test]
     fn drivable_agents_are_catalogued() {
-        for id in ["claude", "codex", "opencode"] {
+        for id in ["claude", "codex", "opencode", "cursor"] {
             let entry = entry(id).expect("drivable agent is in the catalog");
             assert!(entry.chat_ui);
             assert!(entry.recommended);

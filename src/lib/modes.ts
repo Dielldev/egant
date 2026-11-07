@@ -43,6 +43,15 @@ const ANTIGRAVITY_MODE_INFO: Record<NumberedMode, string> = {
   plan: "Plan mode — Antigravity looks around and plans before it changes anything.",
 };
 
+// Cursor's headless `-p` has nobody to ask mid-turn: Auto/Accept edits map to
+// `--force`, Manual/Plan map to `--mode plan`.
+const CURSOR_MODE_INFO: Record<NumberedMode, string> = {
+  auto: "Force mode — Cursor can edit and run commands without asking.",
+  manual: "No live approval channel here, so this stays in plan mode.",
+  acceptEdits: "Same as Auto for Cursor — force mode, no separate ask-first step.",
+  plan: "Plan mode — Cursor looks around and plans before it changes anything.",
+};
+
 /** Agents whose numbered modes (Auto/Manual/Accept edits/Plan) each mean
  * something different to the backend. Anything else falls back to a plain
  * note in the menu — but Bypass permissions (below) always works and is
@@ -52,4 +61,5 @@ export const MODE_INFO: Partial<Record<string, Record<NumberedMode, string>>> = 
   codex: CODEX_MODE_INFO,
   opencode: OPENCODE_MODE_INFO,
   antigravity: ANTIGRAVITY_MODE_INFO,
+  cursor: CURSOR_MODE_INFO,
 };
