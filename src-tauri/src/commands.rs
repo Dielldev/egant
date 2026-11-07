@@ -1014,6 +1014,17 @@ fn set_worktree_default(state: BackendState<'_>, on: bool) -> SettingsDto {
     guard.settings.dto()
 }
 
+#[tauri::command]
+fn set_title_agent(state: BackendState<'_>, agent: String) -> Result<SettingsDto, String> {
+    match agent.as_str() {
+        "claude" | "codex" | "off" => {}
+        other => return Err(format!("unknown title agent `{other}`")),
+    }
+    let mut guard = state.lock().unwrap();
+    guard.settings.set_title_agent(agent);
+    Ok(guard.settings.dto())
+}
+
 /// Off the main thread: on a cold cache each installed CLI is spawned for its
 /// `--version`, and a plain `fn` command would freeze the window meanwhile.
 #[tauri::command]
@@ -1393,7 +1404,29 @@ pub(crate) fn apply_window_glass(window: &tauri::WebviewWindow, dark: bool, glas
     "none".to_string()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Linux has no `window-vibrancy` API — blur is compositor-owned (KWin,
+/// Mutter extensions, etc.). With `transparent: true` the window alpha still
+/// lets the desktop show through CSS tints, which is enough for Glass modes.
+/// Returns `"transparent"` so the frontend can keep the see-through CSS path
+/// (same `data-window-glass` contract as Windows when a native effect takes).
+#[cfg(target_os = "linux")]
+pub(crate) fn apply_window_glass(
+    window: &tauri::WebviewWindow,
+    _dark: bool,
+    glass: bool,
+) -> String {
+    // Keep the webview ground clear whenever glass is on; Opaque mode still
+    // paints solid fills in CSS, but a zero-alpha ground avoids a flash of
+    // white behind them on some WebKitGTK builds.
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    if glass {
+        "transparent".to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub(crate) fn apply_window_glass(
     _window: &tauri::WebviewWindow,
     _dark: bool,
@@ -2100,6 +2133,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         cycle_dim,
         set_default_agent,
         set_worktree_default,
+        set_title_agent,
         list_agents,
         list_agent_catalog,
         get_agent_catalog_entry,

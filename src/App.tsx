@@ -352,6 +352,23 @@ function EgantWindow() {
           e.preventDefault();
           performRef.current("toggle-panel-maximized");
           break;
+        // View menu zoom. Native accelerators vanish with the menu on
+        // Windows/Linux (`usesCustomTitlebar`); without these the advertised
+        // Ctrl+=/−/0 shortcuts do nothing.
+        case "=":
+        case "+":
+          e.preventDefault();
+          performRef.current("zoom-in");
+          break;
+        case "-":
+        case "_":
+          e.preventDefault();
+          performRef.current("zoom-out");
+          break;
+        case "0":
+          e.preventDefault();
+          performRef.current("zoom-reset");
+          break;
       }
     };
     window.addEventListener("keydown", onKeyDown);

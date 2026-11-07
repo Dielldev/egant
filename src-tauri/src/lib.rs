@@ -143,7 +143,10 @@ pub fn run() {
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
-                    #[cfg(target_os = "windows")]
+                    // Transparent window + zero alpha webview ground so CSS
+                    // tints can show the desktop (Windows Mica path; Linux
+                    // compositor alpha). macOS uses vibrancy instead.
+                    #[cfg(any(target_os = "windows", target_os = "linux"))]
                     {
                         let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
                     }

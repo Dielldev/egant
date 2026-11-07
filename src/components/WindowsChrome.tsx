@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { runMenuAction } from "../lib/menuActions";
-import { modShortcut } from "../lib/platform";
+import { isLinux, modShortcut } from "../lib/platform";
 import { useEgant } from "../store";
 
 const REPO = "https://github.com/Dielldev/egant";
@@ -207,7 +207,12 @@ export function WindowsChrome() {
         "separator",
         {
           label: "Close Window",
-          shortcut: "Alt+F4",
+          shortcut: isLinux() ? "Ctrl+W" : "Alt+F4",
+          onClick: () => void win.close().catch(() => {}),
+        },
+        {
+          label: "Quit egant",
+          shortcut: isLinux() ? "Ctrl+Q" : "Alt+F4",
           onClick: () => void win.close().catch(() => {}),
         },
       ],
@@ -316,8 +321,8 @@ export function WindowsChrome() {
         },
         "separator",
         {
-          label: "Close",
-          shortcut: "Alt+F4",
+          label: isLinux() ? "Close Window" : "Close",
+          shortcut: isLinux() ? "Ctrl+W" : "Alt+F4",
           onClick: () => void win.close().catch(() => {}),
         },
       ],

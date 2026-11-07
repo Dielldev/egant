@@ -24,7 +24,6 @@
 
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -369,6 +368,7 @@ fn access_token_from_file() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn access_token_from_keychain() -> Option<String> {
+    use std::process::Stdio;
     let output = std::process::Command::new("/usr/bin/security")
         .args([
             "find-generic-password",

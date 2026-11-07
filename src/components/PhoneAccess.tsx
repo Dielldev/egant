@@ -296,11 +296,11 @@ export function HostDeviceRow({
                 <button
                   type="button"
                   onClick={onStartEdit}
-                  title="Rename this device"
+                  title="Display name in egant only — does not rename this machine"
                   className="flex shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
                 >
                   <Pencil size={11} strokeWidth={2} />
-                  Rename
+                  Nickname
                 </button>
               </>
             )}

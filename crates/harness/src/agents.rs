@@ -1262,7 +1262,29 @@ fn antigravity_has_keyring() -> bool {
     false
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn antigravity_has_keyring() -> bool {
+    // Same lookup `antigravity_email_linux` uses — presence of the secret is
+    // enough to count as connected even when the payload has no email claim.
+    let lookup = std::process::Command::new("secret-tool")
+        .args(["lookup", "service", "gemini", "username", "antigravity"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if lookup.is_ok_and(|status| status.success()) {
+        return true;
+    }
+    if let Some(home) = home_dir() {
+        let cli_dir = home.join(".gemini").join("antigravity-cli");
+        if cli_dir.join("settings.json").is_file() || cli_dir.join("installation_id").is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn antigravity_has_keyring() -> bool {
     false
 }
@@ -1393,11 +1415,6 @@ fn keychain_has_service_account(service: &str, account: &str) -> bool {
         let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
         return text.contains(&service.to_lowercase()) && text.contains(&account.to_lowercase());
     }
-    false
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn keychain_has_service_account(_service: &str, _account: &str) -> bool {
     false
 }
 

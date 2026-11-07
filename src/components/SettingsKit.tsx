@@ -5,11 +5,15 @@
 
 import { ArrowUpDown, Monitor } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 
 /** `useState` mirrored to localStorage, so sections keep their choices
- * across reopens. Objects merge with their defaults; primitives replace. */
+ * across reopens. Objects merge with their defaults; primitives replace.
+ *
+ * Writes happen inside the setter (before paint), not in a later effect —
+ * otherwise a same-tick `FILES_SETTINGS_EVENT` (or closing Settings before
+ * the write effect ran) could leave open editors reading a stale value. */
 export function usePersistentState<T>(
   key: string,
   initial: T,
@@ -33,14 +37,21 @@ export function usePersistentState<T>(
       return initial;
     }
   });
-  useEffect(() => {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch {
-      // Unavailable storage: the window keeps the in-memory choice.
-    }
-  }, [key, value]);
-  return [value, setValue];
+  const setAndPersist: Dispatch<SetStateAction<T>> = (action) => {
+    setValue((prev) => {
+      const next =
+        typeof action === "function"
+          ? (action as (previous: T) => T)(prev)
+          : action;
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {
+        // Unavailable storage: the window keeps the in-memory choice.
+      }
+      return next;
+    });
+  };
+  return [value, setAndPersist];
 }
 
 /** localStorage key behind Settings > Files > Editor font size. */

@@ -366,9 +366,8 @@ export function applyAppearance(appearance: AppearanceState): void {
   root.dataset.theme = theme;
   root.dataset.palette = palette;
   root.dataset.glass = appearance.glass === "opaque" ? "opaque" : appearance.glass === "clear" ? "clear" : "frosted";
-  // Linux has no native vibrancy; `tauri.linux.conf.json` uses an opaque
-  // window. Tag the document so CSS can swap transparent washes for solid
-  // fills + in-window blur without touching the macOS frosted path.
+  // Tag the document so platform CSS (Windows Mica, Linux window alpha) can
+  // swap transparent washes without touching the macOS frosted path.
   if (isLinux()) {
     root.dataset.platform = "linux";
   } else if (isWindows()) {
@@ -393,22 +392,23 @@ export function applyAppearance(appearance: AppearanceState): void {
   );
 
   // The window itself: titlebar theme and the native backdrop behind the
-  // transparent stage (macOS vibrancy, Windows Acrylic/Mica). It stays on in
-  // every Glass mode — including No Glass, where the sidebar is the one
-  // surface that keeps its glass look and needs live blur behind it.
-  // Windows' CSS cannot see the desktop behind the webview, so it needs to
-  // know whether a native backdrop actually took. Until the call answers (and
-  // if it fails) the solid-ground rules stay on. On macOS the attribute is
-  // simply unused.
+  // transparent stage (macOS vibrancy, Windows Acrylic/Mica, Linux window
+  // alpha). It stays on in every Glass mode — including No Glass, where the
+  // sidebar is the one surface that keeps its glass look and needs live blur
+  // behind it.
+  // Windows/Linux CSS cannot invent desktop blur alone, so they need to know
+  // whether the transparent/backdrop path is live. Until the call answers
+  // (and if it fails) the solid-ground rules stay on. On macOS the attribute
+  // is simply unused.
   void api
     .syncWindowAppearance(theme === "dark", true)
     .then((effect) => {
-      if (!isWindows()) return;
+      if (!isWindows() && !isLinux()) return;
       root.dataset.windowGlass = effect === "none" ? "false" : "true";
       root.dataset.windowEffect = effect;
     })
     .catch(() => {
-      if (isWindows()) root.dataset.windowGlass = "false";
+      if (isWindows() || isLinux()) root.dataset.windowGlass = "false";
     });
 }
 

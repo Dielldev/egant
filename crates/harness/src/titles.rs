@@ -37,7 +37,16 @@ const MAX_PROMPT_CHARS: usize = 2_000;
 /// whichever of the two is. Claude always titles on Haiku. Codex titles on the
 /// session's own `model`, because its small models aren't offered on every
 /// account and the session's model demonstrably is.
-pub fn generate(agent: AgentId, model: Option<&str>, prompt: &str) -> Option<String> {
+///
+/// `prefer` overrides the session-agent heuristic when Settings → Session
+/// titles picks Claude or Codex explicitly. Callers skip this function when
+/// the setting is `off`.
+pub fn generate(
+    agent: AgentId,
+    model: Option<&str>,
+    prompt: &str,
+    prefer: Option<AgentId>,
+) -> Option<String> {
     let prompt: String = prompt.trim().chars().take(MAX_PROMPT_CHARS).collect();
     if prompt.is_empty() {
         return None;
@@ -47,9 +56,13 @@ pub fn generate(agent: AgentId, model: Option<&str>, prompt: &str) -> Option<Str
         serde_json::to_string(&prompt).ok()?
     );
 
-    let candidates = match agent {
-        AgentId::Codex => [AgentId::Codex, AgentId::Claude],
-        _ => [AgentId::Claude, AgentId::Codex],
+    let candidates = match prefer {
+        Some(AgentId::Codex) => [AgentId::Codex, AgentId::Claude],
+        Some(AgentId::Claude) => [AgentId::Claude, AgentId::Codex],
+        _ => match agent {
+            AgentId::Codex => [AgentId::Codex, AgentId::Claude],
+            _ => [AgentId::Claude, AgentId::Codex],
+        },
     };
     let (titler, program) = candidates
         .into_iter()
@@ -224,6 +237,7 @@ mod tests {
                 agent,
                 None,
                 "the sidebar overlaps the composer when the window is narrow, fix it",
+                None,
             )
             .unwrap_or_else(|| panic!("{} produced no title", agent.as_str()));
             let words = title.split_whitespace().count();
