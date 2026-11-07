@@ -708,3 +708,9 @@ export async function pickAttachments(): Promise<string[]> {
   if (!picked) return [];
   return Array.isArray(picked) ? picked : [picked];
 }
+
+/** The composer "+" menu's "Add folder": one folder, mentioned like a file. */
+export async function pickFolderAttachment(): Promise<string | null> {
+  const picked = await open({ directory: true, multiple: false, title: "Add folder" });
+  return typeof picked === "string" ? picked : null;
+}

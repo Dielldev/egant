@@ -10,7 +10,6 @@ import {
   GitBranch,
   Image as ImageIcon,
   Loader2,
-  Paperclip,
   Pencil,
   Sparkles,
   Square,
@@ -20,7 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, pickAttachments } from "../lib/api";
+import { api, pickAttachments, pickFolderAttachment } from "../lib/api";
 import {
   clearComposerDraft,
   composerDraftKey,
@@ -30,13 +29,14 @@ import {
 import { isImage, resolveImageDataUrl, thumbnailUrl } from "../lib/images";
 import { log } from "../lib/logger";
 import { modShortcut } from "../lib/platform";
-import { commandItems, findTrigger, mention } from "../lib/composerMenu";
+import { commandItems, findTrigger, mention, SPACE } from "../lib/composerMenu";
 import { fuzzyFilter, fuzzyScore } from "../lib/fuzzy";
 import { contextFraction } from "../lib/transcript";
 import { modelWindowFor } from "../lib/types";
 import { HARNESSED, selectNextAgent, useEgant, usesChatUi } from "../store";
 import { AgentPicker, agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { ComposerMenu, type MenuItem } from "./ComposerMenu";
+import { ComposerPlusMenu, type PlusView } from "./ComposerPlusMenu";
 import { Markdown } from "./Markdown";
 import { ModeInfo } from "./ModeInfo";
 import { ProviderGlyph } from "./ProviderLogo";
@@ -135,32 +135,13 @@ export function Composer({
   const isHoveringDrop = isHoveringDropNative || sessionDropHot;
   const dragCountRef = useRef(0);
   const [showContextPreview, setShowContextPreview] = useState(false);
-  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
-  const sessionPickerRef = useRef<HTMLDivElement>(null);
+  const [plusView, setPlusView] = useState<PlusView | null>(null);
 
   const allSessions = useEgant((s) => s.snapshot?.sessions ?? []);
   const availableHandoverSessions = useMemo(
     () => allSessions.filter((s) => s.id !== sessionId),
     [allSessions, sessionId],
   );
-
-  useEffect(() => {
-    if (!sessionPickerOpen) return;
-    const handleClick = (e: MouseEvent) => {
-      if (sessionPickerRef.current && !sessionPickerRef.current.contains(e.target as Node)) {
-        setSessionPickerOpen(false);
-      }
-    };
-    const handleKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setSessionPickerOpen(false);
-    };
-    window.addEventListener("mousedown", handleClick);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleClick);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [sessionPickerOpen]);
   // Where the caret sits, for the `/` and `@` menus: what it is in decides
   // which one (if either) is open.
   const [caret, setCaret] = useState(0);
@@ -581,6 +562,31 @@ export function Composer({
         });
     }
     areaRef.current?.focus();
+  };
+
+  const attachFolder = async () => {
+    const dir = await pickFolderAttachment().catch(() => null);
+    if (!dir) return;
+    const folder = mention(dir);
+    setText((prev) => (prev.trim() === "" ? `${folder} ` : `${prev.trimEnd()} ${folder} `));
+    areaRef.current?.focus();
+  };
+
+  /** The "+" menu's "Slash commands": types a `/` at the caret, which is what
+   * opens the `/` menu — a new word when the caret is mid-word. */
+  const openSlashMenu = () => {
+    const at = areaRef.current?.selectionStart ?? text.length;
+    const before = text.slice(0, at);
+    const lead = before === "" || SPACE.test(before[before.length - 1]!) ? "" : " ";
+    const next = `${before}${lead}/${text.slice(at)}`;
+    const pos = before.length + lead.length + 1;
+    setText(next);
+    setCaret(pos);
+    setDismissed(null);
+    requestAnimationFrame(() => {
+      areaRef.current?.focus();
+      areaRef.current?.setSelectionRange(pos, pos);
+    });
   };
 
   // A pasted image becomes a thumbnail chip immediately (from the clipboard's
@@ -1115,83 +1121,28 @@ export function Composer({
         )
       : null;
 
-  const attachButton = (
-    <button
-      type="button"
-      title="Attach a file or folder"
-      onClick={() => void attach()}
-      className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-    >
-      <Paperclip size={17} strokeWidth={2} />
-    </button>
+  const plusMenu = (
+    <ComposerPlusMenu
+      view={plusView}
+      onView={setPlusView}
+      sessions={availableHandoverSessions}
+      hasContext={hasContext}
+      align={hero || sessionId == null ? "right" : "left"}
+      onAddFiles={() => void attach()}
+      onAddFolder={() => void attachFolder()}
+      onSlash={openSlashMenu}
+      onPassContext={(s) =>
+        void attachContextFromSession({
+          id: s.id,
+          title: s.title,
+          agent: s.agent,
+          model: s.modelOverride || s.model || null,
+        })
+      }
+      onOpenMcp={() => openLibrary("mcp")}
+      onOpenSkills={() => openLibrary("skills")}
+    />
   );
-
-  const contextButton = availableHandoverSessions.length > 0 ? (
-    <div className="relative" ref={sessionPickerRef}>
-      <button
-        type="button"
-        title="Pass context from previous chat"
-        onClick={() => setSessionPickerOpen(!sessionPickerOpen)}
-        className={`flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors ${
-          sessionPickerOpen || hasContext
-            ? "bg-[var(--hover)] text-[var(--accent)]"
-            : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)]"
-        }`}
-      >
-        <FoldVertical size={16} strokeWidth={2} />
-      </button>
-      {sessionPickerOpen && (
-        // `.menu` is the opaque raised panel the other popovers use; `--card`
-        // is only a faint tint, so on its own the composer text and the
-        // wallpaper showed straight through the list.
-        // The button sits at the right end of the launch toolbar but at the
-        // far LEFT of an in-session composer, so the panel must grow away
-        // from whichever edge it is near — right-anchored in a session it
-        // opened leftward underneath the sidebar and was clipped to a sliver.
-        <div
-          className={`menu menu-pop-up absolute bottom-full z-50 mb-2 w-72 max-w-[calc(100vw-2rem)] max-h-72 overflow-y-auto rounded-xl p-1.5 ${
-            hero || sessionId == null ? "right-0" : "left-0"
-          }`}
-        >
-          <div className="px-2.5 pt-1 pb-1.5 text-[10px] font-semibold text-[var(--faint)] uppercase tracking-wider">
-            Pass context from previous chat
-          </div>
-          <div className="flex flex-col gap-0.5">
-            {availableHandoverSessions.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => {
-                  setSessionPickerOpen(false);
-                  void attachContextFromSession({
-                    id: s.id,
-                    title: s.title,
-                    agent: s.agent,
-                    model: s.modelOverride || s.model || null,
-                  });
-                }}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--hover)] transition-colors cursor-pointer group"
-              >
-                <ProviderGlyph
-                  provider={AGENT_PROVIDER[s.agent] ?? s.agent}
-                  size={15}
-                  color={AGENT_ACCENT[s.agent]}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium text-[var(--ink)] group-hover:text-[var(--accent)]">
-                    {s.title}
-                  </div>
-                  <div className="text-[10px] text-[var(--muted)] truncate">
-                    {formatModelTitle(s.modelOverride || s.model || s.agent)}
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  ) : null;
 
   const sendButton = busy ? (
     <button
@@ -1269,7 +1220,7 @@ export function Composer({
             <div className="mb-2">
               <button
                 type="button"
-                onClick={() => setSessionPickerOpen(true)}
+                onClick={() => setPlusView("context")}
                 className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[11px] text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--ink)]"
               >
                 <FoldVertical size={12} className="text-[var(--accent)]" />
@@ -1285,8 +1236,7 @@ export function Composer({
               <AgentPicker />
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {contextButton}
-              {attachButton}
+              {plusMenu}
               {sendButton}
             </div>
           </div>
@@ -1353,8 +1303,7 @@ export function Composer({
           {activeSkillRow && <div className="order-first basis-full px-2 pt-1">{activeSkillRow}</div>}
           {imageRow && <div className="order-first basis-full px-2 pt-1">{imageRow}</div>}
           <div className={narrow ? "order-2 flex items-center gap-1" : "order-1 flex items-center gap-1"}>
-            {contextButton}
-            {attachButton}
+            {plusMenu}
           </div>
           <div
             className={`order-1 min-w-0 py-1 ${narrow ? "w-full basis-full px-2.5" : "flex-1 pr-1"}`}
