@@ -1,6 +1,5 @@
 import {
   AlertTriangle,
-  AppWindow,
   Archive,
   ArrowUpDown,
   Bell,
@@ -72,8 +71,8 @@ import { ProviderGlyph } from "./ProviderLogo";
 
 /** Settings: the window behind the Settings button in the sidebar footer. A left rail of
  * sections beside a scrolling pane, closed with the Back button (or `Esc`).
- * Appearance is fully wired to the window; the other sections are local
- * state until their backends land. */
+ * Appearance, Files, Notifications, Agents, Accounts, Devices, Usage and
+ * Shortcuts are wired; Appshots stays out of the nav until it exists. */
 
 const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "devices", label: "Devices", icon: Monitor },
@@ -84,7 +83,6 @@ const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "files", label: "Files", icon: Folder },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
-  { id: "appshots", label: "Appshots", icon: AppWindow },
   { id: "archived", label: "Archived sessions", icon: Archive },
 ];
 
@@ -108,6 +106,11 @@ export function SettingsPage() {
   // Keyboard Shortcuts) — the page's own clicks set the store to what they
   // already show, so only a foreign change gets through this.
   useEffect(() => {
+    // Appshots was removed from the nav until it exists; bounce stale deep-links.
+    if (section === "appshots") {
+      setSection("devices");
+      return;
+    }
     if (section !== hist[index]) go(section);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section]);
@@ -178,7 +181,6 @@ export function SettingsPage() {
           {hist[index] === "files" && <FilesSection />}
           {hist[index] === "notifications" && <NotificationsSection />}
           {hist[index] === "shortcuts" && <ShortcutsSection />}
-          {hist[index] === "appshots" && <Placeholder text="App snapshots will live here." />}
           {hist[index] === "archived" && <ArchivedSection />}
         </div>
       </main>
@@ -287,7 +289,7 @@ function DevicesSection() {
       <SectionHead
         title="Devices"
         count={1 + (phone.status?.devices.length ?? 0)}
-        sub={`${hostDeviceCapitalized()}, and the companion phones linked to control your sessions.`}
+        sub={`${hostDeviceCapitalized()}, and the companion phones linked to control your sessions. A nickname here is display-only in egant.`}
         right={
           <button
             type="button"
@@ -558,7 +560,11 @@ function AppearanceSection() {
         <Row
           icon={LayoutGrid}
           title="Glass"
-          sub="No Glass is a flat, solid IDE look — no blur or transparency."
+          sub={
+            typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent || "")
+              ? "On Linux the window is transparent so the desktop shows through. Compositor blur (KWin, etc.) is optional; No Glass keeps a solid IDE look."
+              : "No Glass is a flat, solid IDE look — no blur or transparency."
+          }
           control={
             <Pills
               options={GLASS_OPTIONS}
@@ -652,20 +658,7 @@ function AppearanceSection() {
             }
           />
         )}
-        <Row
-          icon={Folder}
-          title="Theme library"
-          sub="Import or link custom themes."
-          control={
-            <button
-              type="button"
-              title="Custom themes aren't supported yet"
-              className="shrink-0 cursor-pointer rounded-lg bg-white px-3.5 py-1.5 text-[13px] font-medium text-black hover:bg-white/85"
-            >
-              Add theme
-            </button>
-          }
-        />
+        {/* Theme library / Add theme — hidden until custom themes ship. */}
       </Card>
     </div>
   );

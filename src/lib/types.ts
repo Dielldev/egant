@@ -529,6 +529,8 @@ export interface SettingsState {
   /** Whether new sessions get their own worktree. The launch screen's toggle
    * writes it, so the choice is made once rather than per session. */
   worktreeDefault: boolean;
+  /** CLI that names new sessions (`claude` | `codex`), or `off`. */
+  titleAgent: string;
 }
 
 /** One row of `list_agents`: CLI presence and login state per agent. */

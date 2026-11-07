@@ -109,7 +109,13 @@ const PROMPTS: &[&str] = &["Prompts"];
 const PROMPTS_SESSIONS: &[&str] = &["Prompts", "Sessions"];
 const FULL: &[&str] = &["Prompts", "Sessions", "Tools"];
 
-const HOME_BINS: &[&str] = &["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
+const HOME_BINS: &[&str] = &[
+    "~/.local/bin",
+    "~/.npm-global/bin",
+    "~/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+];
 
 /// One npm install source, with the `@latest` update command derived from it.
 const fn npm(command: &'static str, recommended: bool) -> InstallOption {
@@ -774,12 +780,29 @@ fn run_install(
     sink: Option<OutputSink>,
 ) -> Result<InstallOutcome, String> {
     log::info!("catalog run {}: {command}", entry.id);
-    let (success, output) = run_in_login_shell_streaming(command, Duration::from_secs(600), sink)?;
+    let (mut success, mut output) =
+        run_in_login_shell_streaming(command, Duration::from_secs(600), sink)?;
+    let status = status_of(entry);
+    // A zero exit with no binary on PATH is still a failed install from the
+    // user's point of view — don't flip the badge to Installed on a no-op.
+    if success && !status.installed {
+        success = false;
+        let note = format!(
+            "Install command finished, but {} was not found on PATH afterward.\n\
+             Check that npm/curl landed the binary in ~/.local/bin or your Node version manager's bin dir.",
+            entry.binaries.first().copied().unwrap_or(entry.id)
+        );
+        output = if output.trim().is_empty() {
+            note
+        } else {
+            format!("{}\n\n{note}", output.trim_end())
+        };
+    }
     log::info!("catalog run {} done success={success}", entry.id);
     Ok(InstallOutcome {
         success,
         output,
-        status: status_of(entry),
+        status,
     })
 }
 
@@ -999,7 +1022,18 @@ pub(crate) fn run_in_login_shell_streaming(
 ) -> Result<(bool, String), String> {
     let shell = login_shell();
     let mut spawn = std::process::Command::new(&shell);
-    spawn.args(["-lc", command]);
+    // Interactive login (`-lic`), matching `agents::run_in_login_shell`: GUI
+    // launches never load `.bashrc`, where nvm/fnm/npm usually live. Non-
+    // interactive `-lc` alone is what made `npm: command not found` common
+    // when Install ran from a desktop-entry launch.
+    spawn.args(["-lic", command]);
+    // Also inject the PATH/env we already discover for agent spawns, so even
+    // when the shell still skips an rc file, npm and curl bootstrappers see
+    // the same bins Windows already gets.
+    spawn.env("PATH", crate::agents::execution_path());
+    for (k, v) in crate::agents::login_shell_env() {
+        spawn.env(k, v);
+    }
     run_bounded_streaming(spawn, deadline, sink)
 }
 

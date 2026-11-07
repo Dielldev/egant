@@ -42,6 +42,9 @@ pub struct Settings {
     /// surprise the first time, so the choice is theirs to make. The launch
     /// screen's toggle writes it, so it is only ever made once.
     pub worktree_default: bool,
+    /// Which CLI titles new sessions (`claude`, `codex`), or `off` to keep the
+    /// first-line placeholder. Unknown values fall back to `claude`.
+    pub title_agent: String,
 }
 
 impl Default for Settings {
@@ -51,6 +54,7 @@ impl Default for Settings {
             wallpaper_dim: DEFAULT_DIM,
             default_agent: "claude".to_string(),
             worktree_default: false,
+            title_agent: "claude".to_string(),
         }
     }
 }
@@ -64,6 +68,7 @@ pub struct SettingsDto {
     pub wallpaper_dim: f32,
     pub default_agent: String,
     pub worktree_default: bool,
+    pub title_agent: String,
 }
 
 impl Settings {
@@ -205,6 +210,16 @@ impl Settings {
         self.save();
     }
 
+    /// Which agent (or `off`) generates session titles. Values other than
+    /// `claude` / `codex` / `off` are stored as `claude`.
+    pub fn set_title_agent(&mut self, agent: String) {
+        self.title_agent = match agent.as_str() {
+            "codex" | "off" => agent,
+            _ => "claude".to_string(),
+        };
+        self.save();
+    }
+
     /// Steps the scrim one notch darker, wrapping to the lightest end so a
     /// single control can walk the whole range.
     pub fn cycle_dim(&mut self) {
@@ -228,6 +243,7 @@ impl Settings {
             wallpaper_dim: self.wallpaper_dim,
             default_agent: self.default_agent.clone(),
             worktree_default: self.worktree_default,
+            title_agent: self.title_agent.clone(),
         }
     }
 

@@ -1,6 +1,6 @@
 import { PanelRight, PanelRightClose, PanelRightDashed } from "lucide-react";
 import { useColumnLayout } from "../lib/layout";
-import { modShortcut } from "../lib/platform";
+import { modShortcut, usesCustomTitlebar } from "../lib/platform";
 import { selectOnLaunchScreen, useEgant } from "../store";
 import { log } from "../lib/logger";
 import { AGENT_ACCENT, AGENT_PROVIDER, agentName } from "./AgentPicker";
@@ -59,16 +59,25 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
       ? ""
       : agentWithKind;
 
+  // WindowBar rides the leftmost column — sidebar when open, stage when not.
+  // On Windows/Linux (custom titlebar) the launch screen is an exception: the
+  // stage used to be an empty drag strip while the toggle sat only in the
+  // sidebar, which reads as missing over the wallpaper. Put the bar on the
+  // stage there; Sidebar skips its copy (see Sidebar.tsx). macOS keeps the
+  // bar under the traffic lights in the sidebar.
+  const showWindowBar =
+    !sidebarVisible || (bare && usesCustomTitlebar());
+
   return (
-    <div className="flex w-full shrink-0 flex-col">
-      {!sidebarVisible && <WindowBar />}
+    <div className="relative flex w-full shrink-0 flex-col">
+      {showWindowBar && <WindowBar />}
       {bare ? (
-        // The strip still has to exist with the sidebar open: it is the only
-        // drag region up here, and it holds the stage clear of the traffic
-        // lights the sidebar would otherwise be under.
-        sidebarVisible && (
+        // macOS: sidebar holds WindowBar; keep a drag strip so the stage
+        // clears the traffic lights. Custom-titlebar platforms already drew
+        // WindowBar above.
+        sidebarVisible && !usesCustomTitlebar() ? (
           <div data-tauri-drag-region className="h-[38px] w-full" />
-        )
+        ) : null
       ) : (
         <div
           data-tauri-drag-region
@@ -123,9 +132,16 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
  * offered there (and App.tsx hides it if it was open). */
 function PanelButtonSlot() {
   const onLaunchScreen = useEgant(selectOnLaunchScreen);
+  const { sidebarShown } = useColumnLayout();
   if (onLaunchScreen) return null;
+  // Stay on the title row: when the sidebar is hidden, WindowBar is the row
+  // above it (38px), so shift down to match.
+  const top = sidebarShown ? 7 : 45;
   return (
-    <div className="absolute top-[7px] right-3 z-20 flex items-center gap-0.5">
+    <div
+      className="absolute right-3 z-20 flex items-center gap-0.5"
+      style={{ top }}
+    >
       <ContextButton />
       <PanelButton />
     </div>

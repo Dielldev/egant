@@ -33,7 +33,7 @@ import type {
 import { CONTEXT_PRESETS, formatContext, parseContext } from "../lib/types";
 import { useEgant } from "../store";
 import { ProviderLogo } from "./ProviderLogo";
-import { Card, DevicePill, Row, SectionHead, Select, Toggle, usePersistentState } from "./SettingsKit";
+import { Card, DevicePill, Row, SectionHead, Select, Toggle } from "./SettingsKit";
 
 type Filter = "all" | "installed" | "missing";
 
@@ -1170,15 +1170,24 @@ function AgentDefaults({ id, installed }: { id: string; installed: boolean }) {
 // ---------------------------------------------------------------------------
 
 function SessionTitlesCard() {
-  const [titleAgent, setTitleAgent] = usePersistentState("egant.titleAgent", "claude");
+  const titleAgent = useEgant((s) => s.snapshot?.settings.titleAgent ?? "claude");
+  const setTitleAgent = async (next: string) => {
+    try {
+      const settings = await api.setTitleAgent(next);
+      const snapshot = useEgant.getState().snapshot;
+      if (snapshot) useEgant.setState({ snapshot: { ...snapshot, settings } });
+    } catch {
+      // Keep the previous selection on failure.
+    }
+  };
   return (
     <Card>
       <Row
         icon={AlignLeft}
         title="Session titles"
-        sub="The agent used to name new sessions. Claude Code and Codex support restricted title generation."
+        sub="The agent used to name new sessions. Claude Code and Codex support restricted title generation. Off keeps the first-line title."
         control={
-          <Select value={titleAgent} onChange={setTitleAgent}>
+          <Select value={titleAgent} onChange={(v) => void setTitleAgent(v)}>
             <option value="claude">Claude Code</option>
             <option value="codex">Codex</option>
             <option value="off">Off</option>

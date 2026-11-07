@@ -461,21 +461,16 @@ html[data-glass="clear"] .stage-glass {
 html[data-glass="clear"] .stage-ground {
   background: transparent;
 }
-html[data-glass="opaque"] .stage-ground,
-html[data-platform="linux"] .stage-ground {
+html[data-glass="opaque"] .stage-ground {
   background: var(--stage);
 }
 
-/* Custom title bar on Windows and Linux (see `WindowsChrome.tsx`). On Windows
- * it stays translucent over Mica / Acrylic; on Linux the stage tint is solid
- * enough to read against an undecorated frame. */
+/* Custom title bar on Windows and Linux (see `WindowsChrome.tsx`). Stays
+ * translucent over the transparent window / native backdrop unless the
+ * backend reports no glass path (`data-window-glass="false"`). */
 .windows-titlebar {
   background: color-mix(in srgb, var(--stage) 25%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-}
-html[data-platform="linux"] .windows-titlebar {
-  background: var(--stage);
-  border-bottom: 1px solid var(--border);
 }
 html[data-window-glass="false"] .windows-titlebar {
   background: var(--stage);
@@ -645,30 +640,71 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Linux: opaque window (see tauri.linux.conf.json) — no native vibrancy, so
- * transparent body/tints read as empty. Use solid stage ground + stronger
- * glass fills; CSS backdrop-filter still blurs in-window wallpaper. macOS
- * never sets data-platform=linux, so frosted glass stays identical there. */
-html[data-platform="linux"] body {
+/* Linux without a live transparent window path (compositor / WebKitGTK
+ * refused alpha): keep solid grounds so text never floats over the desktop
+ * with no wash. Until `sync_window_appearance` answers, these apply. */
+html[data-platform="linux"][data-window-glass="false"] body {
   background: var(--stage);
 }
-html[data-platform="linux"]:not([data-glass="opaque"]) .sidebar-glass {
-  background: color-mix(in srgb, var(--sidebar) 72%, transparent);
+html[data-platform="linux"][data-window-glass="false"] .stage-ground {
+  background: var(--stage);
 }
-html[data-platform="linux"]:not([data-glass="opaque"]) .stage-glass {
-  background: color-mix(in srgb, var(--stage) 88%, transparent);
+html[data-platform="linux"][data-window-glass="false"] .stage-glass {
+  background: var(--stage);
 }
-html[data-platform="linux"][data-glass="clear"] .sidebar-glass {
-  background: color-mix(in srgb, var(--sidebar) 55%, transparent);
+html[data-platform="linux"][data-window-glass="false"] .sidebar-glass {
+  background: var(--sidebar);
 }
-html[data-platform="linux"][data-glass="clear"] .stage-glass {
-  background: color-mix(in srgb, var(--stage) 70%, transparent);
+html[data-platform="linux"][data-window-glass="false"] .composer {
+  background: var(--card);
 }
-html[data-platform="linux"]:not([data-glass="opaque"]) .composer {
-  background: color-mix(in srgb, var(--sidebar) 78%, transparent);
+
+/* Linux with a transparent window (`tauri.linux.conf.json`). Desktop shows
+ * through CSS tints; compositor blur (KWin, etc.) is optional and not under
+ * our control. Slightly stronger washes than Windows Mica — WebKitGTK has no
+ * DWM material underneath. */
+html[data-platform="linux"]:not([data-window-glass="false"]) body {
+  background: transparent;
 }
-html[data-platform="linux"][data-glass="clear"] .composer {
-  background: color-mix(in srgb, var(--sidebar) 62%, transparent);
+html[data-platform="linux"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 42%, transparent);
+}
+html[data-platform="linux"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .stage-glass {
+  background: color-mix(in srgb, var(--stage) 28%, transparent);
+}
+html[data-platform="linux"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .stage-ground {
+  background: color-mix(in srgb, var(--stage) 18%, transparent);
+}
+html[data-platform="linux"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 68%, transparent);
+}
+html[data-platform="linux"]:not([data-window-glass="false"]):not([data-glass="opaque"]) .windows-titlebar {
+  background: color-mix(in srgb, var(--stage) 35%, transparent);
+}
+
+/* Linux Clear glass: more desktop presence */
+html[data-platform="linux"][data-glass="clear"]:not([data-window-glass="false"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 22%, transparent);
+}
+html[data-platform="linux"][data-glass="clear"]:not([data-window-glass="false"]) .stage-glass {
+  background: color-mix(in srgb, var(--stage) 12%, transparent);
+}
+html[data-platform="linux"][data-glass="clear"]:not([data-window-glass="false"]) .stage-ground {
+  background: transparent;
+}
+html[data-platform="linux"][data-glass="clear"]:not([data-window-glass="false"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 48%, transparent);
+}
+html[data-platform="linux"][data-glass="clear"]:not([data-window-glass="false"]) .windows-titlebar {
+  background: color-mix(in srgb, var(--stage) 18%, transparent);
+}
+
+/* Linux No Glass: solid stage; sidebar keeps a light wash over the desktop */
+html[data-platform="linux"][data-glass="opaque"]:not([data-window-glass="false"]) .sidebar-glass {
+  background: color-mix(in srgb, var(--sidebar) 42%, transparent);
+}
+html[data-platform="linux"][data-glass="opaque"]:not([data-window-glass="false"]) .composer {
+  background: color-mix(in srgb, var(--sidebar) 68%, transparent);
 }
 /* WebKitGTK often composites in software: a live 28px blur under the
  * composer re-renders on every streamed token and every scroll frame, which

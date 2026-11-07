@@ -2,6 +2,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
 import { log } from "./logger";
+import { isLinux } from "./platform";
 import { useEgant } from "../store";
 
 /** Where an update is. `available` is the state the sidebar's Update button
@@ -43,6 +44,17 @@ export async function checkForUpdates(manual = false): Promise<void> {
   // Already found one: a manual ask just points at the button.
   if (status === "available" && manual) {
     useEgant.getState().showNotice(`egant ${useUpdater.getState().version} is ready — use Update in the sidebar.`);
+    return;
+  }
+  // Linux builds often ship without updater artifacts; don't surface a hard
+  // error on automatic checks, and keep manual asks honest.
+  if (isLinux()) {
+    useUpdater.setState({ status: "idle" });
+    if (manual) {
+      useEgant.getState().showNotice(
+        "Automatic updates aren't packaged for Linux yet — install from the project releases page.",
+      );
+    }
     return;
   }
   useUpdater.setState({ status: "checking" });

@@ -31,12 +31,12 @@ import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { installUpdate, useUpdater } from "../lib/updater";
 import { shouldOpenUpward } from "../lib/popover";
-import { isMac, modShortcut } from "../lib/platform";
+import { isMac, modShortcut, usesCustomTitlebar } from "../lib/platform";
 import type { MobileDevice, SessionInfo } from "../lib/types";
 import { agentName, AGENT_ACCENT, AGENT_PROVIDER } from "./AgentPicker";
 import { EditableTitle } from "./EditableTitle";
 import { ProviderGlyph } from "./ProviderLogo";
-import { useEgant } from "../store";
+import { selectOnLaunchScreen, useEgant } from "../store";
 import { ProjectMenu } from "./ProjectMenu";
 import { WindowBar } from "./WindowBar";
 
@@ -293,12 +293,17 @@ export function Sidebar() {
     void run();
   };
 
+  // Windows/Linux launch: WindowBar lives on the stage (SessionHeader) so the
+  // sidebar toggle stays visible over the wallpaper — skip the duplicate.
+  const onLaunchScreen = useEgant(selectOnLaunchScreen);
+  const showWindowBar = !(onLaunchScreen && usesCustomTitlebar());
+
   return (
     <aside
       style={{ width: sidebarWidth }}
       className="sidebar-glass relative flex h-full shrink-0 flex-col text-[var(--muted)] select-none"
     >
-      <WindowBar />
+      {showWindowBar && <WindowBar />}
 
       <div data-tauri-drag-region className="flex w-full items-center gap-1 px-2 pt-1 pb-1">
         <ProjectMenu variant="header" machine={machine} />

@@ -53,12 +53,27 @@ fn open_settings() -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn open_settings() -> Result<(), String> {
-    // There is no one settings app on Linux: try the two big desktops'.
+    // Desktop-specific panes first, then FreeDesktop-ish URIs, then a bare
+    // settings app. GUI-launched egant can't assume GNOME or KDE alone.
     for (program, args) in [
-        ("gnome-control-center", ["notifications"]),
-        ("systemsettings", ["kcm_notifications"]),
+        ("gnome-control-center", &["notifications"][..]),
+        ("systemsettings", &["kcm_notifications"][..]),
+        ("systemsettings5", &["kcm_notifications"][..]),
+        ("unity-control-center", &["notifications"][..]),
+        ("xdg-open", &["settings://configure/notifications"][..]),
+        ("xdg-open", &["preferences:"][..]),
     ] {
         if Command::new(program).args(args).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    for program in [
+        "gnome-control-center",
+        "systemsettings",
+        "systemsettings5",
+        "xfce4-settings-manager",
+    ] {
+        if Command::new(program).spawn().is_ok() {
             return Ok(());
         }
     }
@@ -71,8 +86,7 @@ fn open_settings() -> Result<(), String> {
 /// The themed cues are synthesized in Web Audio, and WKWebView suspends an
 /// audio context while its window is hidden, minimized or fully covered —
 /// exactly when the user is away and a cue matters — then refuses to restart
-/// it without a click. This path has no such dependency. Only macOS has it;
-/// elsewhere it reports an error and the caller keeps the Web Audio cue.
+/// it without a click. This path has no such dependency.
 ///
 /// `async` + `spawn_blocking`: waiting on the player must not sit on the UI thread.
 #[tauri::command]
@@ -121,7 +135,67 @@ fn play_sound(kind: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn play_sound(kind: &str) -> Result<(), String> {
+    let _ = match kind {
+        "completed" | "input" | "errors" => kind,
+        other => return Err(format!("unknown notification kind: {other}")),
+    };
+
+    // Freedesktop event ids map roughly onto our notification kinds.
+    let event = match kind {
+        "completed" => "complete",
+        "input" => "message-new-instant",
+        "errors" => "dialog-error",
+        _ => "message-new-instant",
+    };
+
+    // canberra first (GNOME/Pulse), then paplay with a stock freedesktop sound.
+    if Command::new("canberra-gtk-play")
+        .args(["--id", event])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return Ok(());
+    }
+
+    let sound_dirs = [
+        "/usr/share/sounds/freedesktop/stereo",
+        "/usr/share/sounds/gnome/default/alerts",
+        "/usr/share/sounds/sound-icons",
+    ];
+    let names = match kind {
+        "completed" => ["complete.oga", "bell.oga", "dialog-information.oga"],
+        "input" => ["message.oga", "message-new-instant.oga", "bell.oga"],
+        _ => ["dialog-error.oga", "dialog-warning.oga", "bell.oga"],
+    };
+    for dir in sound_dirs {
+        for name in names {
+            let path = format!("{dir}/{name}");
+            if !std::path::Path::new(&path).is_file() {
+                continue;
+            }
+            if Command::new("paplay")
+                .arg(&path)
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                return Ok(());
+            }
+            if Command::new("aplay")
+                .arg(&path)
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    Err("no system sound player found (tried canberra-gtk-play, paplay, aplay)".into())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn play_sound(_kind: &str) -> Result<(), String> {
-    Err("native notification sounds are only available on macOS and Windows".into())
+    Err("native notification sounds are only available on macOS, Windows, and Linux".into())
 }

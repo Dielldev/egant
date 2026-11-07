@@ -106,20 +106,28 @@ export function AccountsSection() {
   const cursorStatus = statusOf("cursor");
 
   const connectedList = [claudeStatus, codexStatus, opencodeStatus, antigravityStatus, cursorStatus].filter(
-    (a) => a?.connected,
+    (a): a is AgentStatus => a != null && a.connected,
   );
   const connectedCount = connectedList.length;
+  const primary = connectedList[0];
 
   const primaryName =
     claudeStatus?.accountName ??
     codexStatus?.accountName ??
-    "Diell Govori";
+    primary?.accountName ??
+    (connectedCount > 0 ? machine || "Connected" : "Not connected");
 
   const primaryEmail =
     claudeStatus?.email ??
     codexStatus?.email ??
     antigravityStatus?.email ??
-    "diellgovori9@gmail.com";
+    primary?.email ??
+    (connectedCount > 0 ? "Local accounts" : "No accounts linked");
+
+  const credentialsWhere =
+    typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent || "")
+      ? "libsecret / local credential stores"
+      : "system Keychain";
 
   return (
     <div className="space-y-6 pb-12">
@@ -145,7 +153,7 @@ export function AccountsSection() {
             </span>
           </h2>
           <p className="mt-0.5 text-[12px] text-[var(--muted)]">
-            Active CLI sessions on this machine. Authentications are stored locally in your system Keychain and agent configs.
+            Active CLI sessions on this machine. Authentications are stored locally in your {credentialsWhere} and agent configs.
           </p>
         </div>
 
@@ -261,7 +269,7 @@ export function AccountsSection() {
         <div>
           <div className="font-semibold text-white">Secure Local Authentication</div>
           <p className="mt-1">
-            All AI agent credentials reside solely on your local machine within system Keychain entries and CLI configuration files.
+            All AI agent credentials reside solely on your local machine within {credentialsWhere} entries and CLI configuration files.
             Egant communicates directly with installed CLIs on this device and never transmits or stores authentication tokens externally.
           </p>
         </div>
@@ -299,7 +307,14 @@ function DeveloperHeroCard({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const initial = (name?.trim()?.[0] ?? email?.trim()?.[0] ?? "D").toUpperCase();
+  const hasRealEmail = email.includes("@");
+  const initial = (
+    name?.trim()?.[0] ??
+    (hasRealEmail ? email.trim()[0] : null) ??
+    machine?.trim()?.[0] ??
+    "?"
+  ).toUpperCase();
+  const connected = connectedCount > 0;
 
   return (
     <div className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-5 shadow-sm">
@@ -316,22 +331,26 @@ function DeveloperHeroCard({
                 {name}
               </h1>
               <span className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[11px] font-medium text-white/90">
-                <span className="h-1.5 w-1.5 rounded-full bg-white" />
-                Active on device
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-white" : "bg-white/30"}`}
+                />
+                {connected ? "Active on device" : "No engines linked"}
               </span>
             </div>
 
             {/* Email with copy button */}
             <div className="mt-1 flex items-center gap-2 text-[13px] text-[var(--muted)]">
               <span className="truncate">{email}</span>
-              <button
-                type="button"
-                onClick={copyEmail}
-                title="Copy email"
-                className="cursor-pointer text-[var(--faint)] transition-colors hover:text-white"
-              >
-                {copied ? <Check size={13} className="text-white" /> : <Copy size={13} />}
-              </button>
+              {hasRealEmail && (
+                <button
+                  type="button"
+                  onClick={copyEmail}
+                  title="Copy email"
+                  className="cursor-pointer text-[var(--faint)] transition-colors hover:text-white"
+                >
+                  {copied ? <Check size={13} className="text-white" /> : <Copy size={13} />}
+                </button>
+              )}
             </div>
 
             {/* Machine & Hardware Info */}

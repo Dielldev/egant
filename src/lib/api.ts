@@ -261,6 +261,10 @@ export const api = {
     traced("set_worktree_default", `on=${on}`, () =>
       invoke<SettingsState>("set_worktree_default", { on }),
     ),
+  setTitleAgent: (agent: string) =>
+    traced("set_title_agent", `agent=${agent}`, () =>
+      invoke<SettingsState>("set_title_agent", { agent }),
+    ),
   listAgents: () => traced("list_agents", "", () => invoke<AgentStatus[]>("list_agents")),
   /** Every agent the Agents tab lists, with CLI presence. A filesystem
    * probe like `listAgents`, over the wider install catalog. */

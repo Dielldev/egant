@@ -818,6 +818,7 @@ fn name_session(app: &AppHandle, id: u64) {
     let job = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().unwrap();
+        let title_pref = guard.settings.title_agent.clone();
         guard.sessions.get(&id).and_then(|session| {
             // A CLI session's turns never pass through here, and its name is
             // the agent's.
@@ -847,10 +848,11 @@ fn name_session(app: &AppHandle, id: u64) {
                 prompt,
                 session.meta.agent,
                 session.meta.model.clone(),
+                title_pref,
             ))
         })
     };
-    let Some((retitle, worktree, prompt, agent, model)) = job else {
+    let Some((retitle, worktree, prompt, agent, model, title_pref)) = job else {
         return;
     };
     if !NAMING
@@ -861,7 +863,7 @@ fn name_session(app: &AppHandle, id: u64) {
         return;
     }
     log::info!(
-        "session {id} naming (title: {retitle}, worktree: {})",
+        "session {id} naming (title: {retitle}, worktree: {}, titler: {title_pref})",
         worktree
             .as_ref()
             .map_or("-", |worktree| worktree.branch.as_str())
@@ -870,7 +872,24 @@ fn name_session(app: &AppHandle, id: u64) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let outcome = tauri::async_runtime::spawn_blocking(move || {
-            let generated = egant_harness::titles::generate(agent, model.as_deref(), &prompt);
+            let prefer = match title_pref.as_str() {
+                "off" => {
+                    // Settings → Session titles → Off: keep the first-line
+                    // title, still rename a placeholder worktree from the prompt.
+                    let generated = None;
+                    let renamed = worktree.map(|worktree| {
+                        let name = opening_words(&prompt);
+                        let result = crate::worktrees::rename(&worktree, &name);
+                        (worktree, result)
+                    });
+                    return (generated, renamed);
+                }
+                "codex" => Some(egant_harness::AgentId::Codex),
+                "claude" => Some(egant_harness::AgentId::Claude),
+                _ => None,
+            };
+            let generated =
+                egant_harness::titles::generate(agent, model.as_deref(), &prompt, prefer);
             let renamed = worktree.map(|worktree| {
                 let name = generated.clone().unwrap_or_else(|| opening_words(&prompt));
                 let result = crate::worktrees::rename(&worktree, &name);
