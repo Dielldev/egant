@@ -319,7 +319,10 @@ pub const CATALOG: &[CatalogEntry] = &[
         name: "Cursor Agent",
         binaries: &["cursor-agent"],
         env_override: Some("CURSOR_AGENT_EXECUTABLE"),
-        extra_paths: &["~/.cursor/bin/cursor-agent"],
+        // Official install drops a shim in `~/.local/bin`; some builds also
+        // expose `~/.cursor/bin`. Keep both — `HOME_BINS` covers `~/.local/bin`
+        // too, but an explicit entry matches the harness descriptor.
+        extra_paths: &["~/.local/bin/cursor-agent", "~/.cursor/bin/cursor-agent"],
         vendor: "cursor",
         website: "https://cursor.com/cli",
         supports: FULL,

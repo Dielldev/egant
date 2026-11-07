@@ -303,6 +303,7 @@ impl TurnTranslator for CursorTranslator {
             }
             Some("user") => Vec::new(),
             Some("assistant") => translate_assistant(&value),
+            Some("thinking") => translate_thinking(&value),
             Some("tool_call") => self.translate_tool(&value),
             Some("result") => {
                 let is_error = value
@@ -336,7 +337,12 @@ impl TurnTranslator for CursorTranslator {
         }
     }
 
-    fn end_turn(&mut self, interrupted: bool, exit: Option<i32>) -> Vec<HarnessEvent> {
+    fn end_turn(
+        &mut self,
+        interrupted: bool,
+        exit: Option<i32>,
+        stderr: Option<&str>,
+    ) -> Vec<HarnessEvent> {
         // `result` already closed the turn; process teardown (any exit code)
         // is not a second ending. Only an interrupt that killed the child
         // before `result` arrived still needs to settle here.
@@ -345,12 +351,11 @@ impl TurnTranslator for CursorTranslator {
         }
         let (result, is_error) = if interrupted {
             (Some("Interrupted.".to_string()), true)
-        } else if exit.is_some_and(|code| code != 0) {
+        } else if let Some(code) = exit.filter(|code| *code != 0) {
+            // stdout says nothing when the CLI fails before the turn starts —
+            // a resumed session that no longer exists, say. stderr says why.
             (
-                Some(format!(
-                    "cursor-agent exited with status {}.",
-                    exit.unwrap_or_default()
-                )),
+                Some(crate::runner::exit_message("cursor-agent", code, stderr)),
                 true,
             )
         } else {
@@ -381,7 +386,9 @@ impl TurnTranslator for CursorTranslator {
 /// With `--stream-partial-output` (always on here), only deltas that carry
 /// `timestamp_ms` and lack `model_call_id` are new text — the other two
 /// assistant shapes are duplicate flushes (docs: Output format → Streaming
-/// partial output). The transcript settles streaming text when a tool starts
+/// partial output). Current CLIs stream incremental chunks with
+/// `timestamp_ms` only; older builds also emitted a `model_call_id` flush
+/// before tools. The transcript settles streaming text when a tool starts
 /// or the turn ends, so the skipped flushes are never needed as
 /// `AssistantMessage`.
 fn translate_assistant(value: &Value) -> Vec<HarnessEvent> {
@@ -395,6 +402,23 @@ fn translate_assistant(value: &Value) -> Vec<HarnessEvent> {
         return Vec::new();
     }
     vec![HarnessEvent::AssistantDelta { text }]
+}
+
+/// `thinking` deltas stream the model's scratchpad; `completed` is quiet —
+/// the transcript closes thinking when assistant text starts.
+fn translate_thinking(value: &Value) -> Vec<HarnessEvent> {
+    if value.get("subtype").and_then(Value::as_str) != Some("delta") {
+        return Vec::new();
+    }
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![HarnessEvent::ThinkingDelta { text }]
 }
 
 fn assistant_text(value: &Value) -> String {
@@ -795,7 +819,40 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         // Process exit after result is quiet.
-        assert!(t.end_turn(false, Some(0)).is_empty());
+        assert!(t.end_turn(false, Some(0), None).is_empty());
+    }
+
+    #[test]
+    fn thinking_deltas_stream() {
+        let mut t = translator();
+        let events = t.push_line(
+            r#"{"type":"thinking","subtype":"delta","text":"Hmm","session_id":"s","timestamp_ms":1}"#,
+        );
+        assert!(matches!(
+            &events[0],
+            HarnessEvent::ThinkingDelta { text } if text == "Hmm"
+        ));
+        assert!(t
+            .push_line(r#"{"type":"thinking","subtype":"completed","session_id":"s"}"#)
+            .is_empty());
+    }
+
+    #[test]
+    fn bad_exit_surfaces_stderr() {
+        let mut t = translator();
+        t.build("hi", &[]);
+        match &t.end_turn(false, Some(1), Some("no rollout found"))[0] {
+            HarnessEvent::TurnEnded {
+                result, is_error, ..
+            } => {
+                assert!(is_error);
+                assert_eq!(
+                    result.as_deref(),
+                    Some("cursor-agent exited with status 1:\nno rollout found")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

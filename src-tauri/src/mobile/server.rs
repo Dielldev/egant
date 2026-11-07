@@ -76,11 +76,12 @@ const MAX_DECISION_REPLY_BYTES: usize = 20_000;
 /// original that has no business crossing a phone connection.
 const MAX_WALLPAPER_BYTES: u64 = 25 * 1024 * 1024;
 /// The agents egant drives itself — the ones a phone can chat with.
-const CHAT_AGENTS: [AgentId; 4] = [
+const CHAT_AGENTS: [AgentId; 5] = [
     AgentId::Claude,
     AgentId::Codex,
     AgentId::Opencode,
     AgentId::Antigravity,
+    AgentId::Cursor,
 ];
 
 #[derive(Clone)]
@@ -1355,7 +1356,8 @@ mod tests {
         assert!(chat_agent("claude").is_ok());
         assert!(chat_agent("codex").is_ok());
         assert!(chat_agent("opencode").is_ok());
-        assert!(chat_agent("cursor").is_err());
+        assert!(chat_agent("antigravity").is_ok());
+        assert!(chat_agent("cursor").is_ok());
         assert!(chat_agent("bash").is_err());
     }
 

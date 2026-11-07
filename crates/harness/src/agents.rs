@@ -390,11 +390,17 @@ fn verify_codex_login() -> Option<(bool, Option<String>)> {
 /// `userInfo.email` — same shape as `whoami`.
 fn verify_cursor_login() -> Option<(bool, Option<String>)> {
     let program = resolve_executable(AgentId::Cursor.descriptor())?;
-    let output = std::process::Command::new(program)
+    let (prog, prefix) = prepare_program_args(&program);
+    let mut cmd = std::process::Command::new(prog);
+    cmd.args(prefix)
         .args(["status", "--format", "json"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().ok()?;
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let logged_in = value
         .get("isAuthenticated")
