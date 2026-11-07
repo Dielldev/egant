@@ -1,19 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { AGENT_ACCENT, AGENT_PROVIDER, SHORT_NAMES } from "../lib/agents";
+import { SHORT_NAMES } from "../lib/agents";
 import { api } from "../lib/api";
 import { log } from "../lib/logger";
 import { useEgant } from "../store";
 import type { ModelDay, TokenActivity } from "../lib/types";
-import { ProviderGlyph } from "./ProviderLogo";
 
-/** GitHub's year: 53 week-columns, the last one holding today. */
-const WEEKS = 53;
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** The calendar's width: 48 week-columns, the last one holding today. */
+const WEEKS = 48;
 const DAY_MS = 86_400_000;
 
-/** How many of the most-used models get a segment of their own before the
- * rest are folded into "Other". */
-const MODEL_SEGMENTS = 6;
+/** How many of the most-used models get a row of their own before the rest
+ * are folded into "Other". */
+const MODEL_SEGMENTS = 5;
 
 /** What the last fetch found, kept for the life of the window: the launch
  * screen mounts again for every new session, and reading the logs is not
@@ -68,9 +66,8 @@ export function modelLabel(id: string): string {
 }
 
 const RANGES = [
-  { id: "week", label: "1 week", days: 7 },
-  { id: "month", label: "1 month", days: 30 },
-  { id: "quarter", label: "90 days", days: 90 },
+  { id: "week", label: "This week", days: 7 },
+  { id: "month", label: "This month", days: 30 },
   { id: "all", label: "All time", days: null },
 ] as const;
 type RangeId = (typeof RANGES)[number]["id"];
@@ -84,7 +81,7 @@ function loadRange(): RangeId {
   } catch {
     // Storage can be unavailable; the default is fine.
   }
-  return "all";
+  return "week";
 }
 
 function dayTotal(models: ModelDay[]): number {
@@ -101,37 +98,35 @@ interface Segment {
 
 interface Summary {
   total: number;
-  input: number;
-  output: number;
-  cache: number;
+  messages: number;
+  sessions: number;
   activeDays: number;
   agents: Segment[];
   models: Segment[];
 }
 
 /** Sums the days on or after `since` (`YYYY-MM-DD`, or `null` for all of
- * them) into the headline and the two ways of splitting it. */
+ * them) into the headline figures and the two ways of splitting the tokens. */
 function summarize(data: TokenActivity, since: string | null): Summary {
   const summary: Summary = {
     total: 0,
-    input: 0,
-    output: 0,
-    cache: 0,
+    messages: 0,
+    sessions: 0,
     activeDays: 0,
     agents: [],
     models: [],
   };
   const agents = new Map<string, number>();
   const models = new Map<string, Segment>();
+  const sessions = new Set<number>();
   for (const day of data.days) {
     if (since !== null && day.date < since) continue;
     summary.activeDays += 1;
+    for (const id of day.sessions ?? []) sessions.add(id);
     for (const m of day.models) {
       const tokens = m.input + m.output + m.cache;
       summary.total += tokens;
-      summary.input += m.input;
-      summary.output += m.output;
-      summary.cache += m.cache;
+      summary.messages += m.turns ?? 0;
       agents.set(m.agent, (agents.get(m.agent) ?? 0) + tokens);
       // Two ids that read the same ("Haiku 4.5" with and without a date) are
       // one model.
@@ -144,43 +139,47 @@ function summarize(data: TokenActivity, since: string | null): Summary {
           key,
           label,
           tokens,
-          color: AGENT_ACCENT[m.agent] ?? "var(--muted)",
+          color: "",
           agent: m.agent,
         });
     }
   }
+  summary.sessions = sessions.size;
 
   summary.agents = [...agents]
     .map(([agent, tokens]) => ({
       key: agent,
       label: SHORT_NAMES[agent] ?? agent,
       tokens,
-      color: AGENT_ACCENT[agent] ?? "var(--muted)",
+      color: "",
       agent,
     }))
-    .sort((a, b) => b.tokens - a.tokens);
+    .sort((a, b) => b.tokens - a.tokens)
+    .map((segment, rank) => ({ ...segment, color: shareColor(rank) }));
 
-  // Models take their agent's colour and fade a little with rank, so
-  // neighbours from the same agent stay apart.
   const ranked = [...models.values()].sort((a, b) => b.tokens - a.tokens);
-  const rankInAgent = new Map<string, number>();
-  summary.models = ranked.slice(0, MODEL_SEGMENTS).map((segment) => {
-    const rank = rankInAgent.get(segment.agent!) ?? 0;
-    rankInAgent.set(segment.agent!, rank + 1);
-    const strength = [100, 74, 56, 42][rank] ?? 34;
-    return { ...segment, color: `color-mix(in srgb, ${segment.color} ${strength}%, transparent)` };
-  });
+  summary.models = ranked
+    .slice(0, MODEL_SEGMENTS)
+    .map((segment, rank) => ({ ...segment, color: shareColor(rank) }));
   const rest = ranked.slice(MODEL_SEGMENTS).reduce((sum, segment) => sum + segment.tokens, 0);
   if (rest > 0) {
     summary.models.push({
       key: "other",
       label: "Other",
       tokens: rest,
-      color: "color-mix(in srgb, var(--muted) 45%, transparent)",
+      color: shareColor(MODEL_SEGMENTS),
       agent: null,
     });
   }
   return summary;
+}
+
+/** Shares are drawn in the text colour at falling strengths, biggest first,
+ * so the panel stays one colour like the calendar above it. */
+const SHARE_STRENGTH = [100, 74, 54, 40, 30, 22];
+
+function shareColor(rank: number): string {
+  return `color-mix(in srgb, var(--ink) ${SHARE_STRENGTH[rank] ?? 18}%, transparent)`;
 }
 
 /** Days since 1970-01-01 of a calendar date, with no time zone in it. */
@@ -203,13 +202,10 @@ interface Cell {
   outside: boolean;
 }
 
-/** The year as 53 columns of Sunday-to-Saturday, ending with this week.
+/** The last 48 weeks as columns of Sunday-to-Saturday, ending with this one.
  * Brightness steps by quartile of the busy days: token counts are so skewed
  * that a linear scale would leave every ordinary day looking empty. */
-function buildCells(
-  data: TokenActivity,
-  since: string | null,
-): { cells: Cell[]; labels: { column: number; text: string }[] } {
+function buildCells(data: TokenActivity, since: string | null): Cell[] {
   const now = new Date();
   const today = dayNumber(now.getFullYear(), now.getMonth(), now.getDate());
   // 1970-01-01 was a Thursday, so day 0 sits at weekday 4 (Sunday = 0).
@@ -229,29 +225,15 @@ function buildCells(
     const level = tokens === 0 ? 0 : tokens <= q1 ? 1 : tokens <= q2 ? 2 : tokens <= q3 ? 3 : 4;
     cells.push({ key, day, tokens, level, future: day > today, outside: since !== null && key < since });
   }
-
-  // A month's name goes over the first column that starts in it, and never
-  // closer than three columns to the last one, or the names run together.
-  const labels: { column: number; text: string }[] = [];
-  let lastColumn = -3;
-  let lastMonth = new Date(first * DAY_MS).getUTCMonth();
-  for (let column = 1; column < WEEKS; column++) {
-    const month = new Date((first + column * 7) * DAY_MS).getUTCMonth();
-    if (month === lastMonth) continue;
-    lastMonth = month;
-    if (column - lastColumn < 3) continue;
-    labels.push({ column, text: MONTHS[month] });
-    lastColumn = column;
-  }
-  return { cells, labels };
+  return cells;
 }
 
-const LEVEL_STRENGTH = [0, 30, 52, 76, 100];
+/** The calendar is drawn in the text colour rather than the accent, so it
+ * reads as part of the page and stays quiet over any wallpaper. */
+const LEVEL_STRENGTH = [10, 30, 50, 74, 100];
 
 function levelColor(level: number): string {
-  return level === 0
-    ? "var(--bubble)"
-    : `color-mix(in srgb, var(--accent) ${LEVEL_STRENGTH[level]}%, transparent)`;
+  return `color-mix(in srgb, var(--ink) ${LEVEL_STRENGTH[level]}%, transparent)`;
 }
 
 function dayTitle(cell: Cell): string {
@@ -264,10 +246,16 @@ function dayTitle(cell: Cell): string {
   return cell.tokens > 0 ? `${date} — ${formatBig(cell.tokens)} tokens` : `${date} — no activity`;
 }
 
-/** What the launch screen shows under the composer: the year as a calendar of
- * token activity, the running total, and how it splits between agents or
- * between models. Read from the CLIs' own logs (see `activity.rs`), so it
- * includes work done outside egant. */
+/** The panel has nothing behind it, so the wallpaper shows through; the shadow
+ * is what keeps the text legible over a bright part of one. */
+const TEXT_SHADOW = "0 1px 8px rgba(0,0,0,0.7), 0 1px 2px rgba(0,0,0,0.85)";
+
+/** What the launch screen shows above the composer, straight over the
+ * wallpaper: messages, sessions, active
+ * days and tokens for a range, the last half-year as a calendar, and (if
+ * Appearance asks for it) how the tokens split between agents or models. Read
+ * from the CLIs' own logs (see `activity.rs`), so it includes work done outside
+ * egant. */
 export function ActivityPanel() {
   const enabled = useEgant((s) => s.appearance.showActivity);
   if (!enabled) return null;
@@ -278,7 +266,7 @@ export function ActivityPanel() {
  * logs: the hook only runs once the card is on screen. */
 function ActivityCard() {
   const { data, failed } = useTokenActivity();
-  const [by, setBy] = useState<"agents" | "models">("agents");
+  const detail = useEgant((s) => s.appearance.activityDetail);
   const [range, setRange] = useState<RangeId>(loadRange);
 
   // The first day of the range, counting today as day one of N.
@@ -289,9 +277,9 @@ function ActivityCard() {
     return dayKey(dayNumber(now.getFullYear(), now.getMonth(), now.getDate()) - (days - 1));
   }, [range]);
 
-  const grid = useMemo(() => (data ? buildCells(data, since) : null), [data, since]);
+  const cells = useMemo(() => (data ? buildCells(data, since) : null), [data, since]);
   const summary = useMemo(() => (data ? summarize(data, since) : null), [data, since]);
-  const segments = summary ? (by === "agents" ? summary.agents : summary.models) : [];
+  const segments = summary ? (detail === "models" ? summary.models : summary.agents) : [];
 
   const pickRange = (next: RangeId) => {
     setRange(next);
@@ -305,172 +293,113 @@ function ActivityCard() {
   if (failed && !data) return null;
   if (data && data.days.length === 0) return null;
 
-  const pills = (
-    options: readonly { id: string; label: string }[],
-    value: string,
-    onPick: (id: never) => void,
-  ) => (
-    <div className="flex shrink-0 rounded-full bg-[var(--bubble)] p-0.5 text-[12px]">
-      {options.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          onClick={() => onPick(option.id as never)}
-          className={`cursor-pointer rounded-full px-2.5 py-0.5 whitespace-nowrap ${
-            value === option.id
-              ? "bg-[var(--selected)] text-[var(--ink)]"
-              : "text-[var(--muted)] hover:text-[var(--ink)]"
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-  const rangeLabel = RANGES.find((r) => r.id === range)?.label ?? "";
+  const stats = [
+    { label: "messages", value: summary ? summary.messages.toLocaleString() : null },
+    { label: "sessions", value: summary ? summary.sessions.toLocaleString() : null },
+    { label: "active days", value: summary ? summary.activeDays.toLocaleString() : null },
+    { label: "tokens", value: summary ? formatBig(summary.total) : null },
+  ];
 
   return (
-    <div className="composer mt-5 w-full rounded-2xl px-5 py-4" aria-label="Token activity">
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-        <div className="min-w-0">
-          {summary ? (
-            <>
-              <div
-                className="flex items-baseline gap-2"
-                title={`Input ${formatBig(summary.input)} · Output ${formatBig(summary.output)} · Cache ${formatBig(summary.cache)}`}
-              >
-                <span className="text-[26px] leading-none font-semibold tracking-tight text-[var(--ink)] tabular-nums">
-                  {formatBig(summary.total)}
-                </span>
-                <span className="text-[13px] text-[var(--muted)]">tokens</span>
-              </div>
-              <div className="mt-1.5 text-[12px] text-[var(--faint)]">
-                {summary.activeDays} active {summary.activeDays === 1 ? "day" : "days"} ·{" "}
-                {range === "all" ? "all time" : `last ${rangeLabel.replace("1 ", "")}`}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="h-[26px] w-28 animate-pulse rounded-md bg-[var(--bubble)]" />
-              <div className="mt-1.5 text-[12px] text-[var(--faint)]">Reading your agents' logs…</div>
-            </>
-          )}
-        </div>
-        {pills(RANGES, range, pickRange)}
+    <div
+      className="mb-5 w-full px-6 py-2 text-[var(--ink)]"
+      aria-label="Activity"
+      style={{ textShadow: TEXT_SHADOW }}
+    >
+      <div className="mb-3.5 flex items-center gap-4 text-[12px]">
+        {RANGES.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => pickRange(option.id)}
+            className={`cursor-pointer transition-colors ${
+              range === option.id
+                ? "font-semibold text-[var(--ink)]"
+                : "text-[var(--ink)]/60 hover:text-[var(--ink)]"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
 
-      <div className="mt-4">
-        {/* Month names sit on the same columns as the cells beneath them. */}
-        <div
-          className="mb-1 grid h-3 text-[10px] leading-3 text-[var(--faint)]"
-          style={{ gridTemplateColumns: `repeat(${WEEKS}, minmax(0, 1fr))`, columnGap: 3 }}
-        >
-          {grid?.labels.map((label) => (
-            <span key={label.column} className="whitespace-nowrap" style={{ gridColumnStart: label.column + 1 }}>
-              {label.text}
-            </span>
-          ))}
-        </div>
-        <div
-          className="grid"
-          style={{
-            gridTemplateColumns: `repeat(${WEEKS}, minmax(0, 1fr))`,
-            gridTemplateRows: "repeat(7, auto)",
-            gridAutoFlow: "column",
-            gap: 3,
-          }}
-        >
-          {grid
-            ? grid.cells.map((cell) => (
-                <div
-                  key={cell.key}
-                  title={dayTitle(cell)}
-                  className="rounded-[2.5px]"
-                  style={{
-                    aspectRatio: "1",
-                    background: levelColor(cell.level),
-                    opacity: cell.outside ? 0.25 : undefined,
-                    visibility: cell.future ? "hidden" : undefined,
-                  }}
-                />
-              ))
-            : Array.from({ length: WEEKS * 7 }, (_, i) => (
-                <div key={i} className="rounded-[2.5px] bg-[var(--bubble)]" style={{ aspectRatio: "1" }} />
-              ))}
-        </div>
-        <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-[var(--faint)]">
-          <span className="mr-0.5">Less</span>
-          {LEVEL_STRENGTH.map((_, level) => (
-            <span
-              key={level}
-              className="h-[9px] w-[9px] rounded-[2px]"
-              style={{ background: levelColor(level) }}
-            />
-          ))}
-          <span className="ml-0.5">More</span>
-        </div>
-      </div>
-
-      {summary && (
-        <div className="mt-3.5 border-t border-[var(--border)] pt-3.5">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <span className="text-[12px] text-[var(--faint)]">Share of tokens</span>
-            {pills(
-              [
-                { id: "agents", label: "Agents" },
-                { id: "models", label: "Models" },
-              ],
-              by,
-              setBy,
+      <div className="mb-4 flex items-start justify-between gap-6">
+        {stats.map((stat) => (
+          <div key={stat.label} className="min-w-0">
+            {stat.value === null ? (
+              <div className="h-[24px] w-12 animate-pulse rounded-md bg-[var(--bubble)]" />
+            ) : (
+              <div className="text-[24px] leading-none font-semibold tracking-tight tabular-nums">
+                {stat.value}
+              </div>
             )}
+            <div className="mt-1.5 text-[11px] text-[var(--ink)]/65">{stat.label}</div>
           </div>
-          {summary.total === 0 ? (
-            <div className="py-2 text-[12px] text-[var(--faint)]">No activity in this range.</div>
-          ) : (
-            <>
-              <div className="flex h-2 w-full gap-[2px] overflow-hidden rounded-full">
-                {segments.map((segment) => (
-                  <div
-                    key={segment.key}
-                    title={`${segment.label} — ${formatPercent(segment.tokens, summary.total)} · ${formatBig(segment.tokens)} tokens`}
-                    className="h-full"
-                    style={{
-                      width: `${(segment.tokens / summary.total) * 100}%`,
-                      minWidth: 3,
-                      background: segment.color,
-                    }}
-                  />
-                ))}
+        ))}
+      </div>
+
+      <div
+        className="grid"
+        style={{
+          gridTemplateColumns: `repeat(${WEEKS}, minmax(0, 1fr))`,
+          gridTemplateRows: "repeat(7, auto)",
+          gridAutoFlow: "column",
+          gap: 4,
+        }}
+      >
+        {(cells ?? []).map((cell) => (
+          <div
+            key={cell.key}
+            title={dayTitle(cell)}
+            className="rounded-[3px]"
+            style={{
+              aspectRatio: "1",
+              background: levelColor(cell.level),
+              opacity: cell.outside ? 0.35 : undefined,
+              visibility: cell.future ? "hidden" : undefined,
+            }}
+          />
+        ))}
+        {!cells &&
+          Array.from({ length: WEEKS * 7 }, (_, i) => (
+            <div key={i} className="rounded-[3px]" style={{ aspectRatio: "1", background: levelColor(0) }} />
+          ))}
+      </div>
+
+      {detail !== "off" && summary && summary.total > 0 && (
+        <div className="mt-5">
+          <div className="flex h-1.5 w-full gap-[2px] overflow-hidden rounded-full">
+            {segments.map((segment) => (
+              <div
+                key={segment.key}
+                title={`${segment.label} — ${formatPercent(segment.tokens, summary.total)} · ${formatBig(segment.tokens)} tokens`}
+                className="h-full"
+                style={{
+                  width: `${(segment.tokens / summary.total) * 100}%`,
+                  minWidth: 3,
+                  background: segment.color,
+                }}
+              />
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+            {segments.map((segment) => (
+              <div
+                key={segment.key}
+                title={`${formatBig(segment.tokens)} tokens`}
+                className="flex min-w-0 items-center gap-1.5 text-[12px]"
+              >
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: segment.color }}
+                />
+                <span className="truncate">{segment.label}</span>
+                <span className="shrink-0 text-[var(--ink)]/65 tabular-nums">
+                  {formatPercent(segment.tokens, summary.total)}
+                </span>
               </div>
-              <div className="mt-3 grid grid-cols-3 gap-x-4 gap-y-2">
-                {segments.map((segment) => (
-                  <div key={segment.key} className="flex min-w-0 items-center gap-2 text-[12px]">
-                    {by === "agents" && segment.agent ? (
-                      <ProviderGlyph
-                        provider={AGENT_PROVIDER[segment.agent] ?? segment.agent}
-                        size={14}
-                        color={segment.color}
-                      />
-                    ) : (
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ background: segment.color }}
-                      />
-                    )}
-                    <span className="min-w-0 truncate text-[var(--ink)]" title={segment.label}>
-                      {segment.label}
-                    </span>
-                    <span className="shrink-0 font-medium text-[var(--ink)] tabular-nums">
-                      {formatPercent(segment.tokens, summary.total)}
-                    </span>
-                    <span className="shrink-0 text-[var(--faint)] tabular-nums">
-                      {formatBig(segment.tokens)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+            ))}
+          </div>
         </div>
       )}
     </div>

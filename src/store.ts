@@ -283,6 +283,8 @@ export const CHAT_TAB = "chat";
 export type AppearanceMode = "system" | "light" | "dark";
 export type GlassMode = "default" | "frosted" | "clear" | "opaque";
 export type BgEffect = "none" | "dither" | "ascii" | "halftone" | "scanlines";
+/** What the activity panel lists under its calendar. */
+export type ActivityDetail = "off" | "agents" | "models";
 
 export interface AppearanceState {
   mode: AppearanceMode;
@@ -296,6 +298,8 @@ export interface AppearanceState {
   bgEffect: BgEffect;
   /** The token-activity panel under the launch screen's composer. */
   showActivity: boolean;
+  /** The per-agent or per-model token split under the activity calendar. */
+  activityDetail: ActivityDetail;
 }
 
 // The workspace panel's hard ceiling — a fixed pixel position, not one
@@ -314,6 +318,7 @@ const DEFAULT_APPEARANCE: AppearanceState = {
   glass: "default",
   bgEffect: "none",
   showActivity: true,
+  activityDetail: "off",
 };
 
 function loadAppearance(): AppearanceState {

@@ -14,7 +14,7 @@ export function Quickstart() {
 
   return (
     <section className="section" id="start">
-      <Reveal className="section-head">
+      <Reveal className="section-head centered">
         <p className="eyebrow">Build from source</p>
         <h2>
           Four commands. <span className="dim">That's it.</span>
@@ -24,7 +24,7 @@ export function Quickstart() {
           on your PATH.
         </p>
       </Reveal>
-      <Reveal className="terminal">
+      <Reveal className="terminal centered">
         <div className="terminal-bar">
           <span>zsh</span>
           <button className="copy" onClick={copy} aria-label="Copy commands">

@@ -1,5 +1,5 @@
 import { ImagePlus, Monitor } from "lucide-react";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useEgant } from "../store";
 import { ActivityPanel } from "./ActivityPanel";
 import { Composer } from "./Composer";
@@ -16,6 +16,15 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
   const chooseWallpaper = useEgant((s) => s.chooseWallpaper);
   const attachContextFromSession = useEgant((s) => s.attachContextFromSession);
   const [isDragOver, setIsDragOver] = useState(false);
+  // The activity panel floats above the composer, so the stage keeps at least
+  // its height free there instead of letting it run off the top.
+  const [panelHeight, setPanelHeight] = useState(0);
+  const watchPanel = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const observer = new ResizeObserver(() => setPanelHeight(node.offsetHeight));
+    observer.observe(node);
+    setPanelHeight(node.offsetHeight);
+  }, []);
   const dragCounterRef = useRef(0);
 
   const handleDragEnter = (e: React.DragEvent) => {
@@ -115,9 +124,15 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className="relative flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-8"
-        style={{ paddingTop: "32vh" }}
+        style={{ paddingTop: `max(32vh, ${panelHeight + 56}px)` }}
       >
-        <div className={`w-full max-w-[735px] ${exiting ? "dock-exit" : "rise"}`}>
+        <div className={`relative w-full max-w-[735px] ${exiting ? "dock-exit" : "rise"}`}>
+          {/* Above the composer, lifted out of the flow so the composer keeps
+            the place it has always had unless the panel is taller than the
+            space above it (see `panelHeight`). */}
+          <div ref={watchPanel} className="absolute inset-x-0 bottom-full">
+            <ActivityPanel />
+          </div>
           {/* Where the next turn will run, right-aligned to the composer it
             belongs to. Deliberately unpositioned (no z-index of its own):
             the composer below establishes its own stacking context (its
@@ -147,10 +162,6 @@ export function LaunchScreen({ exiting }: { exiting?: boolean }) {
           >
             <CheckoutChips />
           </div>
-          {/* Below the composer, where a long window has room for it and a short
-            one scrolls to it: the stage owns the scrolling so the composer keeps
-            the place it has always had. */}
-          <ActivityPanel />
         </div>
       </div>
     </>

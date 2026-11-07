@@ -37,6 +37,11 @@ struct Rec {
     i: u64,
     o: u64,
     c: u64,
+    /// Which conversation it belongs to, as a hash of the log file (or, for
+    /// OpenCode, of its session id); `0` when unknown. Only ever compared
+    /// with other records' tags, to count sessions.
+    #[serde(default)]
+    s: u64,
 }
 
 impl Rec {
@@ -54,7 +59,24 @@ struct CachedFile {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CacheFile {
+    /// Which shape of `Rec` the files were read into: a cache from before
+    /// records carried a session tag is read again rather than trusted.
+    #[serde(default)]
+    version: u32,
     files: HashMap<String, CachedFile>,
+}
+
+const CACHE_VERSION: u32 = 2;
+
+/// FNV-1a: stable across runs and Rust versions, unlike `DefaultHasher`,
+/// which matters because the tags are written to the cache.
+fn tag(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash.max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +94,8 @@ pub struct ModelDay {
     pub input: u64,
     pub output: u64,
     pub cache: u64,
+    /// Model responses that day: one per logged assistant message.
+    pub turns: u64,
 }
 
 impl ModelDay {
@@ -89,6 +113,10 @@ pub struct DayActivity {
     pub date: String,
     /// Busiest first.
     pub models: Vec<ModelDay>,
+    /// The conversations that had a message that day, as small numbers that
+    /// mean the same thing on every day of this reply. The window unions them
+    /// over a range, so a chat that ran past midnight counts once.
+    pub sessions: Vec<u32>,
 }
 
 /// Rolling 5-hour, weekly (7-day), and all-time token usage for one model.
@@ -258,6 +286,7 @@ fn parse_claude(path: &Path) -> Vec<Rec> {
                 .cache_creation_input_tokens
                 .unwrap_or(0)
                 .saturating_add(usage.cache_read_input_tokens.unwrap_or(0)),
+            s: 0,
         };
         if rec.total() == 0 {
             return;
@@ -349,6 +378,7 @@ fn parse_codex(path: &Path) -> Vec<Rec> {
             i: cur_i.saturating_sub(prev_i),
             o: cur_o.saturating_sub(prev_o),
             c: cur_c.saturating_sub(prev_c),
+            s: 0,
         };
         (prev_i, prev_o, prev_c) = (cur_i, cur_o, cur_c);
         if rec.total() > 0 && rec.t > 0 {
@@ -398,7 +428,8 @@ fn read_opencode() -> Vec<Rec> {
         coalesce(json_extract(data, '$.tokens.output'), 0) \
           + coalesce(json_extract(data, '$.tokens.reasoning'), 0), \
         coalesce(json_extract(data, '$.tokens.cache.read'), 0) \
-          + coalesce(json_extract(data, '$.tokens.cache.write'), 0) \
+          + coalesce(json_extract(data, '$.tokens.cache.write'), 0), \
+        coalesce(session_id, '') \
         from message \
         where json_extract(data, '$.role') = 'assistant' \
           and json_extract(data, '$.tokens') is not null";
@@ -455,6 +486,7 @@ fn read_opencode() -> Vec<Rec> {
                 i: count()?,
                 o: count()?,
                 c: count()?,
+                s: tag(cells.next().unwrap_or("")),
             };
             (rec.total() > 0 && rec.t > 0).then_some(rec)
         })
@@ -733,6 +765,7 @@ fn parse_antigravity(path: &Path) -> Vec<Rec> {
             i,
             o,
             c,
+            s: 0,
         };
         if rec.total() > 0 && rec.t > 0 {
             recs.push(rec);
@@ -783,7 +816,11 @@ fn read_files(
             }
             _ => {
                 *dirty = true;
-                let recs = parse(&path);
+                let mut recs = parse(&path);
+                let session = tag(&key);
+                for rec in recs.iter_mut().filter(|rec| rec.s == 0) {
+                    rec.s = session;
+                }
                 all.extend(recs.iter().cloned());
                 cache.files.insert(
                     key,
@@ -814,6 +851,13 @@ fn scan(tz_offset_minutes: i32) -> ActivityDto {
         .unwrap_or_default();
     let mut seen = Vec::new();
     let mut dirty = false;
+    if cache.version != CACHE_VERSION {
+        cache = CacheFile {
+            version: CACHE_VERSION,
+            files: HashMap::new(),
+        };
+        dirty = true;
+    }
 
     let mut claude_files = Vec::new();
     if let Some(dir) = home_dir("CLAUDE_CONFIG_DIR", ".claude") {
@@ -877,7 +921,11 @@ fn scan(tz_offset_minutes: i32) -> ActivityDto {
 /// 23:30 local lands on the day the viewer lived it, not on UTC's.
 fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> ActivityDto {
     type Key<'a> = (i64, &'a str, &'a str);
-    let mut spent: HashMap<Key<'_>, [u64; 3]> = HashMap::new();
+    // input, output, cache, turns
+    let mut spent: HashMap<Key<'_>, [u64; 4]> = HashMap::new();
+    // Session tags become small numbers so each day can list its sessions.
+    let mut session_ids: HashMap<u64, u32> = HashMap::new();
+    let mut sessions_by_day: HashMap<i64, std::collections::BTreeSet<u32>> = HashMap::new();
 
     let now = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -931,6 +979,15 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
             slot[0] = slot[0].saturating_add(rec.i);
             slot[1] = slot[1].saturating_add(rec.o);
             slot[2] = slot[2].saturating_add(rec.c);
+            slot[3] = slot[3].saturating_add(1);
+            if rec.s != 0 {
+                let next = session_ids.len() as u32;
+                let id = *session_ids.entry(rec.s).or_insert(next);
+                sessions_by_day
+                    .entry(local.div_euclid(86_400))
+                    .or_default()
+                    .insert(id);
+            }
 
             let key = (agent.to_string(), model.to_string());
             let stat = stats_map.entry(key).or_insert_with(|| ModelUsageStat {
@@ -995,13 +1052,14 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
     });
 
     let mut by_day: std::collections::BTreeMap<i64, Vec<ModelDay>> = Default::default();
-    for ((day, agent, model), [input, output, cache]) in spent {
+    for ((day, agent, model), [input, output, cache, turns]) in spent {
         by_day.entry(day).or_default().push(ModelDay {
             agent: agent.to_string(),
             model: model.to_string(),
             input,
             output,
             cache,
+            turns,
         });
     }
     let days = by_day
@@ -1013,9 +1071,14 @@ fn aggregate(sources: Vec<(&str, Vec<Rec>)>, tz_offset_minutes: i32) -> Activity
                     .then_with(|| a.model.cmp(&b.model))
             });
             let (y, m, d) = civil_from_days(day);
+            let sessions = sessions_by_day
+                .remove(&day)
+                .map(|ids| ids.into_iter().collect())
+                .unwrap_or_default();
             DayActivity {
                 date: format!("{y:04}-{m:02}-{d:02}"),
                 models,
+                sessions,
             }
         })
         .collect();
@@ -1120,6 +1183,7 @@ mod tests {
             i: 0,
             o: tokens,
             c: 0,
+            s: 0,
         };
         let claude = vec![
             at("2026-08-16T23:30:00Z", "m1", 100),
@@ -1132,6 +1196,31 @@ mod tests {
         assert_eq!(dto.days[0].date, "2026-08-17");
         assert_eq!(dto.days[0].models.len(), 1);
         assert_eq!(dto.days[0].models[0].total(), 150);
+    }
+
+    #[test]
+    fn aggregate_counts_turns_and_each_session_once_a_day() {
+        let at = |iso: &str, session: u64| Rec {
+            t: parse_iso(iso).unwrap(),
+            k: String::new(),
+            m: "claude-opus-5".to_string(),
+            i: 1,
+            o: 1,
+            c: 1,
+            s: session,
+        };
+        let claude = vec![
+            at("2026-08-17T10:00:00Z", tag("a")),
+            at("2026-08-17T11:00:00Z", tag("a")),
+            at("2026-08-17T12:00:00Z", tag("b")),
+            at("2026-08-18T09:00:00Z", tag("a")),
+        ];
+        let dto = aggregate(vec![("claude", claude)], 0);
+        assert_eq!(dto.days.len(), 2);
+        assert_eq!(dto.days[0].models[0].turns, 3);
+        assert_eq!(dto.days[0].sessions.len(), 2);
+        // Session "a" is the same number on the second day.
+        assert!(dto.days[0].sessions.contains(&dto.days[1].sessions[0]));
     }
 
     /// Reads this machine's real logs and prints the totals, for checking the

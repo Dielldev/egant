@@ -43,7 +43,7 @@ import { ageLabel } from "../lib/transcript";
 import type { ArchivedSession } from "../lib/types";
 import type { ThemeName } from "cuelume";
 import { useEgant } from "../store";
-import type { BgEffect, GlassMode, SettingsSection } from "../store";
+import type { ActivityDetail, BgEffect, GlassMode, SettingsSection } from "../store";
 import { AccountsSection } from "./AccountsSettings";
 import { AgentsSection } from "./AgentsSettings";
 import { UsageSection } from "./UsageSettings";
@@ -365,6 +365,12 @@ const GLASS_OPTIONS: { value: GlassMode; label: string }[] = [
   { value: "opaque", label: "No Glass" },
 ];
 
+const ACTIVITY_DETAILS: { value: ActivityDetail; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "agents", label: "Agents" },
+  { value: "models", label: "Detailed models" },
+];
+
 const BG_EFFECTS: { value: BgEffect; label: string }[] = [
   { value: "none", label: "None" },
   { value: "dither", label: "Dither" },
@@ -623,7 +629,7 @@ function AppearanceSection() {
         <Row
           icon={ChartColumn}
           title="Activity panel"
-          sub="The token calendar and per-agent split under the new thread composer."
+          sub="Messages, sessions, tokens and a calendar of your work, above the new thread composer."
           control={
             <Toggle
               on={appearance.showActivity}
@@ -632,6 +638,20 @@ function AppearanceSection() {
             />
           }
         />
+        {appearance.showActivity && (
+          <Row
+            icon={ChartColumn}
+            title="Activity details"
+            sub="Break the tokens down by agent, or by each model, under the calendar."
+            control={
+              <Pills
+                options={ACTIVITY_DETAILS}
+                value={appearance.activityDetail}
+                onChange={(activityDetail) => setAppearance({ activityDetail })}
+              />
+            }
+          />
+        )}
         <Row
           icon={Folder}
           title="Theme library"

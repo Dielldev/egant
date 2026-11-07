@@ -1143,7 +1143,15 @@ export function Composer({
         // `.menu` is the opaque raised panel the other popovers use; `--card`
         // is only a faint tint, so on its own the composer text and the
         // wallpaper showed straight through the list.
-        <div className="menu menu-pop-up absolute bottom-full right-0 z-50 mb-2 w-72 max-h-72 overflow-y-auto rounded-xl p-1.5">
+        // The button sits at the right end of the launch toolbar but at the
+        // far LEFT of an in-session composer, so the panel must grow away
+        // from whichever edge it is near — right-anchored in a session it
+        // opened leftward underneath the sidebar and was clipped to a sliver.
+        <div
+          className={`menu menu-pop-up absolute bottom-full z-50 mb-2 w-72 max-w-[calc(100vw-2rem)] max-h-72 overflow-y-auto rounded-xl p-1.5 ${
+            hero || sessionId == null ? "right-0" : "left-0"
+          }`}
+        >
           <div className="px-2.5 pt-1 pb-1.5 text-[10px] font-semibold text-[var(--faint)] uppercase tracking-wider">
             Pass context from previous chat
           </div>

@@ -733,12 +733,17 @@ export interface ModelDay {
   input: number;
   output: number;
   cache: number;
+  /** Model responses that day. */
+  turns: number;
 }
 
 /** One local calendar day, `YYYY-MM-DD`. Quiet days are left out. */
 export interface DayActivity {
   date: string;
   models: ModelDay[];
+  /** Conversations with a message that day; the numbers mean the same on every
+   * day, so a range's session count is the size of their union. */
+  sessions: number[];
 }
 
 /** Usage stats for one model across rolling windows (5-hour, weekly, all-time). */

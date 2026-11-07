@@ -476,6 +476,13 @@ h2 {
   max-width: 680px;
   margin-bottom: 28px;
 }
+/* A section whose head and body sit on the page's centre line, like the
+ * closing call to action below it. */
+.section-head.centered {
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+}
 
 /* ---------- features ---------- */
 .features {
@@ -942,6 +949,10 @@ kbd {
   border-radius: 12px;
   overflow: hidden;
   background: var(--surface);
+}
+.terminal.centered {
+  margin-left: auto;
+  margin-right: auto;
 }
 .terminal-bar {
   display: flex;
