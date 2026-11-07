@@ -18,8 +18,8 @@
 use async_channel::Sender;
 use egant_harness::{
     AgentId, AntigravityOptions, AntigravityRun, ClaudeCode, ClaudeOptions, CodexExec,
-    CodexOptions, Harness, HarnessEvent, OpencodeOptions, OpencodeRun, PermissionDecision,
-    PermissionMode, Transcript, TranscriptEntry,
+    CodexOptions, CursorAgent, CursorOptions, Harness, HarnessEvent, OpencodeOptions, OpencodeRun,
+    PermissionDecision, PermissionMode, Transcript, TranscriptEntry,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -2427,11 +2427,21 @@ fn start_harness(
         })
         .map(|harness| Box::new(harness) as Box<dyn Harness>)
         .map_err(|error| error.to_string()),
+        AgentId::Cursor => CursorAgent::spawn(CursorOptions {
+            program: resolve_cli(agent)?,
+            cwd,
+            project_name: Some(project_name),
+            model,
+            session: resume,
+            permission_mode,
+        })
+        .map(|harness| Box::new(harness) as Box<dyn Harness>)
+        .map_err(|error| error.to_string()),
         other => {
             let descriptor = other.descriptor();
             Err(if resolve_cli(other).is_ok() {
                 format!(
-                    "{} sessions aren't drivable yet — Claude, Codex, OpenCode and Antigravity are.",
+                    "{} sessions aren't drivable yet — Claude, Codex, OpenCode, Antigravity and Cursor are.",
                     descriptor.name
                 )
             } else {

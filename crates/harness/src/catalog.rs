@@ -24,7 +24,7 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// Where an install comes from. Serialized as the label the tab prints next
@@ -333,12 +333,15 @@ pub const CATALOG: &[CatalogEntry] = &[
         name: "Cursor Agent",
         binaries: &["cursor-agent"],
         env_override: Some("CURSOR_AGENT_EXECUTABLE"),
-        extra_paths: &["~/.cursor/bin/cursor-agent"],
+        // Official install drops a shim in `~/.local/bin`; some builds also
+        // expose `~/.cursor/bin`. Keep both — `HOME_BINS` covers `~/.local/bin`
+        // too, but an explicit entry matches the harness descriptor.
+        extra_paths: &["~/.local/bin/cursor-agent", "~/.cursor/bin/cursor-agent"],
         vendor: "cursor",
         website: "https://cursor.com/cli",
-        supports: PROMPTS_SESSIONS,
-        chat_ui: false,
-        recommended: false,
+        supports: FULL,
+        chat_ui: true,
+        recommended: true,
         #[cfg(windows)]
         install_options: &[winget("winget install Cursor.Cursor", true)],
         #[cfg(not(windows))]
@@ -573,7 +576,19 @@ pub struct CatalogStatus {
 /// Probe every catalog entry. Filesystem only — the same cost as
 /// [`crate::detect_agents`], so the tab can call it on open and on Refresh.
 pub fn list() -> Vec<CatalogStatus> {
-    CATALOG.iter().map(status_of).collect()
+    // Each installed entry may spawn `--version` on a cold cache; probing
+    // them side by side keeps the first open at the cost of the slowest CLI
+    // rather than the sum of all of them.
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = CATALOG
+            .iter()
+            .map(|entry| scope.spawn(move || status_of(entry)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("catalog probe thread"))
+            .collect()
+    })
 }
 
 pub fn status_of(entry: &'static CatalogEntry) -> CatalogStatus {
@@ -689,6 +704,11 @@ fn locate(entry: &CatalogEntry) -> Option<PathBuf> {
 // Installing and updating
 // ---------------------------------------------------------------------------
 
+/// Receives a command's output as it is produced — raw text, carriage
+/// returns and all — so a long download can show its progress bar moving
+/// instead of one block of text once it has finished.
+pub type OutputSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallOutcome {
@@ -705,16 +725,24 @@ pub struct InstallOutcome {
 /// The command is never taken from the caller — only this module's table —
 /// so the frontend can't hand us a shell line to run. `method` picks which
 /// published source to use; `None` takes the recommended one.
-pub fn install(id: &str, method: Option<&str>) -> Result<InstallOutcome, String> {
+pub fn install(
+    id: &str,
+    method: Option<&str>,
+    sink: Option<OutputSink>,
+) -> Result<InstallOutcome, String> {
     log::info!("catalog install {id} method={method:?}");
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
     let option = option_for(entry, method)?;
-    run_install(entry, option.command)
+    run_install(entry, option.command, sink)
 }
 
 /// The "Install latest" action: the same source's update command, for an
 /// agent that is already here but behind its published release.
-pub fn update(id: &str, method: Option<&str>) -> Result<InstallOutcome, String> {
+pub fn update(
+    id: &str,
+    method: Option<&str>,
+    sink: Option<OutputSink>,
+) -> Result<InstallOutcome, String> {
     log::info!("catalog update {id} method={method:?}");
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
 
@@ -737,12 +765,16 @@ pub fn update(id: &str, method: Option<&str>) -> Result<InstallOutcome, String> 
     }
 
     let option = option_for(entry, method)?;
-    run_install(entry, &update_command(entry, option))
+    run_install(entry, &update_command(entry, option), sink)
 }
 
-fn run_install(entry: &'static CatalogEntry, command: &str) -> Result<InstallOutcome, String> {
+fn run_install(
+    entry: &'static CatalogEntry,
+    command: &str,
+    sink: Option<OutputSink>,
+) -> Result<InstallOutcome, String> {
     log::info!("catalog run {}: {command}", entry.id);
-    let (success, output) = run_in_login_shell(command, Duration::from_secs(600))?;
+    let (success, output) = run_in_login_shell_streaming(command, Duration::from_secs(600), sink)?;
     log::info!("catalog run {} done success={success}", entry.id);
     Ok(InstallOutcome {
         success,
@@ -799,6 +831,33 @@ pub fn check_update(id: &str) -> Result<UpdateInfo, String> {
 /// A CLI that hangs on `--version` must not wedge the blocking task this
 /// runs on, so the probe gets the same bounded wait an install does.
 pub fn local_version(program: &Path) -> Option<String> {
+    // `<cli> --version` boots a whole CLI (often Node) and the agent list,
+    // the install catalog and Settings all ask for it, so the answer is kept
+    // per binary. The key carries the resolved file's mtime and size: an
+    // update or reinstall writes a new file, which misses and re-probes.
+    type Key = (PathBuf, Option<std::time::SystemTime>, u64);
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<Key, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    let resolved = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let meta = std::fs::metadata(&resolved).ok();
+    let key: Key = (
+        resolved,
+        meta.as_ref().and_then(|m| m.modified().ok()),
+        meta.as_ref().map_or(0, |m| m.len()),
+    );
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+    let version = probe_version(program);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, version.clone());
+    }
+    version
+}
+
+fn probe_version(program: &Path) -> Option<String> {
     let (prog, prefix) = crate::agents::prepare_program_args(program);
     let mut command = std::process::Command::new(prog);
     for arg in prefix {
@@ -894,10 +953,18 @@ fn first_version(text: &str) -> Option<String> {
 
 /// Run one command through the user's login shell, capturing both streams
 /// and killing it if it outlives `deadline`. Returns `(exit success, output)`.
-#[cfg(windows)]
 pub(crate) fn run_in_login_shell(
     command: &str,
     deadline: Duration,
+) -> Result<(bool, String), String> {
+    run_in_login_shell_streaming(command, deadline, None)
+}
+
+#[cfg(windows)]
+pub(crate) fn run_in_login_shell_streaming(
+    command: &str,
+    deadline: Duration,
+    sink: Option<OutputSink>,
 ) -> Result<(bool, String), String> {
     let mut spawn = if command.trim_start().starts_with("powershell") {
         let mut cmd = std::process::Command::new("powershell.exe");
@@ -921,26 +988,38 @@ pub(crate) fn run_in_login_shell(
     }
     use std::os::windows::process::CommandExt;
     spawn.creation_flags(0x08000000);
-    run_bounded(spawn, deadline)
+    run_bounded_streaming(spawn, deadline, sink)
 }
 
 #[cfg(not(windows))]
-pub(crate) fn run_in_login_shell(
+pub(crate) fn run_in_login_shell_streaming(
     command: &str,
     deadline: Duration,
+    sink: Option<OutputSink>,
 ) -> Result<(bool, String), String> {
     let shell = login_shell();
     let mut spawn = std::process::Command::new(&shell);
     spawn.args(["-lc", command]);
-    run_bounded(spawn, deadline)
+    run_bounded_streaming(spawn, deadline, sink)
 }
 
 /// Spawn, drain both pipes, and kill the child if it outlives `deadline`.
 /// Returns `(exit success, combined output)`; a timeout reads as a failure
 /// whose output says so.
 fn run_bounded(
+    command: std::process::Command,
+    deadline: Duration,
+) -> Result<(bool, String), String> {
+    run_bounded_streaming(command, deadline, None)
+}
+
+/// [`run_bounded`], additionally handing each chunk of either stream to
+/// `sink` the moment it arrives. The returned output is still the full
+/// capture, so callers that ignore the sink behave exactly as before.
+fn run_bounded_streaming(
     mut command: std::process::Command,
     deadline: Duration,
+    sink: Option<OutputSink>,
 ) -> Result<(bool, String), String> {
     let mut child = command
         .stdin(Stdio::null())
@@ -951,8 +1030,8 @@ fn run_bounded(
 
     // Both pipes are drained on their own threads: an installer that fills
     // one buffer while we wait on the other would otherwise deadlock.
-    let rx = drain(child.stdout.take());
-    let err_rx = drain(child.stderr.take());
+    let rx = drain(child.stdout.take(), sink.clone());
+    let err_rx = drain(child.stderr.take(), sink);
 
     let start = Instant::now();
     let status = loop {
@@ -988,13 +1067,44 @@ fn run_bounded(
     }
 }
 
-fn drain<R: Read + Send + 'static>(stream: Option<R>) -> Option<mpsc::Receiver<String>> {
+fn drain<R: Read + Send + 'static>(
+    stream: Option<R>,
+    sink: Option<OutputSink>,
+) -> Option<mpsc::Receiver<String>> {
     let mut stream = stream?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stream.read_to_end(&mut buf);
-        let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        let mut all = Vec::new();
+        let mut chunk = [0u8; 4096];
+        // Bytes of `all` already handed to the sink. A read can end in the
+        // middle of a multi-byte character, so the tail waits for the next
+        // read to complete it.
+        let mut sent = 0usize;
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    all.extend_from_slice(&chunk[..read]);
+                    if let Some(sink) = &sink {
+                        let pending = &all[sent..];
+                        let valid = match std::str::from_utf8(pending) {
+                            Ok(_) => pending.len(),
+                            Err(error) => error.valid_up_to() + error.error_len().unwrap_or(0),
+                        };
+                        if valid > 0 {
+                            sink(&String::from_utf8_lossy(&pending[..valid]));
+                            sent += valid;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(sink) = &sink {
+            if sent < all.len() {
+                sink(&String::from_utf8_lossy(&all[sent..]));
+            }
+        }
+        let _ = tx.send(String::from_utf8_lossy(&all).into_owned());
     });
     Some(rx)
 }
@@ -1044,11 +1154,11 @@ mod tests {
         }
     }
 
-    /// The three agents egant can actually drive must all be listed, since
-    /// the tab is the only place they can be installed from.
+    /// The agents egant can actually drive must all be listed, since the tab
+    /// is the only place they can be installed from.
     #[test]
     fn drivable_agents_are_catalogued() {
-        for id in ["claude", "codex", "opencode"] {
+        for id in ["claude", "codex", "opencode", "cursor"] {
             let entry = entry(id).expect("drivable agent is in the catalog");
             assert!(entry.chat_ui);
             assert!(entry.recommended);
@@ -1238,12 +1348,12 @@ mod tests {
 
     #[test]
     fn install_rejects_agents_outside_the_catalog() {
-        assert!(install("definitely-not-an-agent", None).is_err());
+        assert!(install("definitely-not-an-agent", None, None).is_err());
         assert!(
-            install("devin", None).is_err(),
+            install("devin", None, None).is_err(),
             "no install source means no command to run"
         );
-        assert!(update("devin", None).is_err());
+        assert!(update("devin", None, None).is_err());
     }
 
     #[test]
@@ -1253,6 +1363,38 @@ mod tests {
         assert!(ok);
         assert!(out.contains("out"), "stdout missing from `{out}`");
         assert!(out.contains("err"), "stderr missing from `{out}`");
+    }
+
+    /// The sink sees output while the command is still running, not only
+    /// after it exits — that is what lets the sheet show a live progress bar.
+    #[test]
+    fn the_shell_runner_streams_output_before_the_command_exits() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<(Instant, String)>::new()));
+        let sink_seen = seen.clone();
+        let sink: OutputSink = Arc::new(move |chunk: &str| {
+            sink_seen
+                .lock()
+                .unwrap()
+                .push((Instant::now(), chunk.to_string()));
+        });
+        let start = Instant::now();
+        let (ok, out) = run_in_login_shell_streaming(
+            "printf 'first\\r'; sleep 1; printf 'second'",
+            Duration::from_secs(30),
+            Some(sink),
+        )
+        .unwrap();
+        assert!(ok);
+        assert!(out.contains("first") && out.contains("second"));
+        let seen = seen.lock().unwrap();
+        let first = seen
+            .iter()
+            .find(|(_, text)| text.contains("first"))
+            .unwrap();
+        assert!(
+            first.0.duration_since(start) < Duration::from_millis(800),
+            "first chunk arrived only after the command finished"
+        );
     }
 
     /// An installer that wedges must be killed rather than holding the

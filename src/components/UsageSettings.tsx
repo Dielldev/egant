@@ -72,6 +72,11 @@ export function providerGroupFor(agent: string, model: string): {
   const lowerAgent = agent.toLowerCase();
   const lowerModel = model.toLowerCase();
 
+  // Cursor bills its own plan whichever lab's model it routes to, so its
+  // sessions group under Cursor rather than under "gpt-…" or "claude-…".
+  if (lowerAgent === "cursor") {
+    return { id: "cursor", name: "Cursor", vendor: "cursor" };
+  }
   if (lowerAgent === "claude" || lowerModel.startsWith("claude")) {
     return { id: "anthropic", name: "Anthropic / Claude", vendor: "claude" };
   }

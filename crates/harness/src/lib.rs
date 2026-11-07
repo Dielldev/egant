@@ -1,10 +1,10 @@
 //! The agent-backend abstraction.
 //!
-//! Everything the UI knows about a running agent goes through [`Harness`]. One
-//! implementation ships today — [`claude::ClaudeCode`], which drives the
-//! `claude` CLI as a subprocess over its `stream-json` protocol. A second
-//! backend (Codex over JSON-RPC, say) should need no UI changes: it emits the
-//! same [`HarnessEvent`] stream.
+//! Everything the UI knows about a running agent goes through [`Harness`].
+//! Implementations today: [`claude::ClaudeCode`] (persistent stream-json
+//! session), plus one-process-per-turn runners for Codex, OpenCode,
+//! Antigravity and Cursor via [`runner`]. A new backend should need no UI
+//! changes: it emits the same [`HarnessEvent`] stream.
 //!
 //! The split is deliberate. [`protocol`] holds vendor-specific wire types;
 //! [`HarnessEvent`] is the vendor-neutral vocabulary the app renders.
@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod claude;
 pub mod codex;
 pub mod context;
+pub mod cursor;
 pub mod library;
 pub mod models;
 pub mod opencode;
@@ -35,6 +36,7 @@ pub use catalog::{CatalogStatus, InstallOutcome, UpdateInfo};
 pub use claude::{ClaudeCode, ClaudeOptions};
 pub use codex::{CodexExec, CodexOptions};
 pub use context::{SessionContextSummary, generate_context_summary};
+pub use cursor::{CursorAgent, CursorOptions};
 pub use models::{AgentModel, is_known_model, list_models};
 pub use opencode::{OpencodeOptions, OpencodeRun};
 pub use transcript::{

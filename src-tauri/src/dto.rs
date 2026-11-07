@@ -611,7 +611,7 @@ pub struct SessionDto {
     /// render at all.
     pub kind: &'static str,
     /// The agent running this session. A chat session names one of the
-    /// harnesses (`claude`, `codex`, `opencode`); a CLI session names any
+    /// harnesses (`claude`, `codex`, `opencode`, `antigravity`, `cursor`); a CLI session names any
     /// agent in the install catalog (`pi`, `goose`, …).
     pub agent: String,
     /// Model the session was started on, or last switched to, if any.

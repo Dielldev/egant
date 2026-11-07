@@ -19,6 +19,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
@@ -324,6 +325,50 @@ function Badge({
 }
 
 // ---------------------------------------------------------------------------
+// Live install output
+// ---------------------------------------------------------------------------
+
+/** A just-enough terminal for installer output: `\r` returns to the start of
+ * the line so a progress bar redraws in place instead of stacking a hundred
+ * rows, `\n` starts a new one, and colour/cursor escapes are dropped. */
+interface TermBuffer {
+  lines: string[];
+  col: number;
+}
+
+const MAX_TERM_LINES = 400;
+// eslint-disable-next-line no-control-regex
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*\u0007/g;
+
+function newTermBuffer(): TermBuffer {
+  return { lines: [""], col: 0 };
+}
+
+function writeTerm(buf: TermBuffer, chunk: string) {
+  for (const ch of chunk.replace(ANSI, "")) {
+    if (ch === "\n") {
+      buf.lines.push("");
+      buf.col = 0;
+    } else if (ch === "\r") {
+      buf.col = 0;
+    } else {
+      const last = buf.lines.length - 1;
+      const line = buf.lines[last];
+      buf.lines[last] =
+        buf.col >= line.length
+          ? line + ch
+          : line.slice(0, buf.col) + ch + line.slice(buf.col + 1);
+      buf.col += 1;
+    }
+  }
+  if (buf.lines.length > MAX_TERM_LINES) {
+    buf.lines.splice(0, buf.lines.length - MAX_TERM_LINES);
+  }
+}
+
+const termText = (buf: TermBuffer) => buf.lines.join("\n").trimEnd();
+
+// ---------------------------------------------------------------------------
 // The sheet a row opens
 // ---------------------------------------------------------------------------
 
@@ -350,6 +395,10 @@ function AgentSheet({
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [showReinstall, setShowReinstall] = useState(false);
+  // The command's output as it streams in, rendered like a terminal.
+  const [live, setLive] = useState("");
+  const term = useRef<TermBuffer>(newTermBuffer());
+  const liveRef = useRef<HTMLPreElement | null>(null);
 
   // Capture phase, so `Esc` closes the sheet rather than the whole settings
   // window (App's own handler listens on `window` at bubble phase).
@@ -371,6 +420,30 @@ function AgentSheet({
     }
   }, [entry.id]);
 
+  // The backend streams the install command's output while it runs.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listen<{ agent: string; data: string }>("agent-install-output", (event) => {
+      if (event.payload.agent !== entry.id) return;
+      writeTerm(term.current, event.payload.data);
+      setLive(termText(term.current));
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [entry.id]);
+
+  // Keep the newest line in view while it streams.
+  useEffect(() => {
+    const el = liveRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [live]);
+
   const copy = (label: string, text: string) => {
     void navigator.clipboard?.writeText(text).catch(() => {});
     setCopied(label);
@@ -384,10 +457,19 @@ function AgentSheet({
     setBusy(key);
     setLog(null);
     setFailed(false);
+    term.current = newTermBuffer();
+    setLive("");
     try {
       const outcome = await call();
       setFailed(!outcome.success);
-      setLog(outcome.output || (outcome.success ? "Done." : "The command failed."));
+      // What streamed is the real, interleaved terminal; fall back to the
+      // captured tail only if nothing came through the event.
+      const streamed = termText(term.current);
+      setLog(
+        streamed ||
+          outcome.output ||
+          (outcome.success ? "Done." : "The command failed."),
+      );
       onInstalled(outcome.status);
       if (onRefresh) {
         void onRefresh();
@@ -654,10 +736,22 @@ function AgentSheet({
           )}
 
           {busy && (
-            <p className="-mt-3 text-[12px] text-[var(--muted)]">
-              Running in your login shell. A command that asks for a password can't answer
-              here — run it in a terminal if this fails.
-            </p>
+            <div className="-mt-3">
+              <div className="mb-1 flex items-center gap-1.5 text-[12px] text-[var(--ink)]">
+                <RefreshCw size={12} strokeWidth={2.5} className="animate-spin" />
+                Running in your login shell…
+              </div>
+              <pre
+                ref={liveRef}
+                className="max-h-[220px] min-h-[64px] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre text-[var(--muted)]"
+              >
+                {live || "Starting…"}
+              </pre>
+              <p className="mt-1.5 text-[12px] text-[var(--muted)]">
+                A command that asks for a password can't answer here — run it in a terminal
+                if this fails.
+              </p>
+            </div>
           )}
           {log && !busy && (
             <div className="-mt-3">
@@ -678,10 +772,10 @@ function AgentSheet({
                   className="ml-auto flex cursor-pointer items-center gap-1 text-[var(--faint)] hover:text-[var(--ink)]"
                 >
                   <Copy size={11} strokeWidth={2} />
-                  Copy log
+                  {copied === "log" ? "Copied" : "Copy log"}
                 </button>
               </div>
-              <pre className="max-h-[180px] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[var(--muted)]">
+              <pre className="max-h-[220px] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre text-[var(--muted)]">
                 {log}
               </pre>
             </div>

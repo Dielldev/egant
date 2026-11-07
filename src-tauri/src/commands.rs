@@ -629,7 +629,7 @@ fn worktree_dto(worktree: &SessionWorktree) -> WorktreeDto {
 /// restored from disk on launch — is revived here rather than dropping the
 /// message.
 #[tauri::command]
-fn send_message(
+async fn send_message(
     app: AppHandle,
     state: BackendState<'_>,
     id: u64,
@@ -678,7 +678,7 @@ fn unqueue_message(
 /// Sends a queued message now: straight away when nothing is running, or by
 /// stopping the turn that is and sending it the moment that turn ends.
 #[tauri::command]
-fn send_queued_now(
+async fn send_queued_now(
     app: AppHandle,
     state: BackendState<'_>,
     id: u64,
@@ -708,7 +708,7 @@ fn send_queued_now(
 }
 
 #[tauri::command]
-fn interrupt_session(app: AppHandle, state: BackendState<'_>, id: u64) -> Result<(), String> {
+async fn interrupt_session(app: AppHandle, state: BackendState<'_>, id: u64) -> Result<(), String> {
     log::info!("interrupt_session {id}");
     let mut guard = state.lock().unwrap();
     service::interrupt(&app, &mut guard, id, &Origin::Desktop).map_err(|error| {
@@ -815,7 +815,7 @@ fn set_permission_mode(
 /// Moves a chat session onto another model and effort mid-conversation — the
 /// composer's model badge. See [`sessions::set_model`].
 #[tauri::command]
-fn set_session_model(
+async fn set_session_model(
     app: AppHandle,
     state: BackendState<'_>,
     id: u64,
@@ -1014,14 +1014,18 @@ fn set_worktree_default(state: BackendState<'_>, on: bool) -> SettingsDto {
     guard.settings.dto()
 }
 
+/// Off the main thread: on a cold cache each installed CLI is spawned for its
+/// `--version`, and a plain `fn` command would freeze the window meanwhile.
 #[tauri::command]
-fn list_agents() -> Vec<AgentStatus> {
-    let agents = egant_harness::detect_agents();
+async fn list_agents() -> Result<Vec<AgentStatus>, String> {
+    let agents = tauri::async_runtime::spawn_blocking(egant_harness::detect_agents)
+        .await
+        .map_err(|error| error.to_string())?;
     log::debug!(
         "list_agents ({} installed)",
         agents.iter().filter(|a| a.installed).count()
     );
-    agents
+    Ok(agents)
 }
 
 /// A live recheck of one agent's login, via the CLI's own status command
@@ -1048,7 +1052,7 @@ async fn check_agent_login(agent: String) -> Result<AgentStatus, String> {
 /// for CLIs whose login needs real keyboard interaction) and returns once
 /// it's under way. The frontend polls `check_agent_login` afterward.
 #[tauri::command]
-fn connect_agent(agent: String) -> Result<(), String> {
+async fn connect_agent(agent: String) -> Result<(), String> {
     log::info!("connect_agent {agent}");
     let id = AgentId::from_str(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
     // A new login can change what the account is allowed to run (Codex asks
@@ -1088,17 +1092,45 @@ async fn get_agent_catalog_entry(agent: String) -> Result<Option<CatalogStatus>,
     .map_err(|error| error.to_string())
 }
 
+#[derive(Clone, serde::Serialize)]
+struct InstallOutput {
+    agent: String,
+    data: String,
+}
+
+/// Forwards an install or update command's output to the webview as it is
+/// produced (`agent-install-output`), so the sheet can show the real
+/// terminal stream — progress bars included — rather than a spinner.
+fn install_output_sink(app: AppHandle, agent: &str) -> egant_harness::catalog::OutputSink {
+    let agent = agent.to_string();
+    std::sync::Arc::new(move |data: &str| {
+        let _ = tauri::Emitter::emit(
+            &app,
+            "agent-install-output",
+            InstallOutput {
+                agent: agent.clone(),
+                data: data.to_string(),
+            },
+        );
+    })
+}
+
 /// Run one catalog entry's own install command. The command comes from the
 /// backend's table, never from the caller — the frontend sends an agent id
 /// and nothing else. Slow (a network install), so it runs off the command
 /// thread; the outcome carries the re-probed row, so the tab can flip the
 /// badge without a second round trip.
 #[tauri::command]
-async fn install_agent(agent: String, method: Option<String>) -> Result<InstallOutcome, String> {
+async fn install_agent(
+    app: AppHandle,
+    agent: String,
+    method: Option<String>,
+) -> Result<InstallOutcome, String> {
     log::info!("install_agent {agent} method={method:?}");
     let name = agent.clone();
+    let sink = install_output_sink(app, &agent);
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        egant_harness::catalog::install(&agent, method.as_deref())
+        egant_harness::catalog::install(&agent, method.as_deref(), Some(sink))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1116,11 +1148,16 @@ async fn install_agent(agent: String, method: Option<String>) -> Result<InstallO
 /// a bare `npm install -g <pkg>` on a machine that already has it is a
 /// no-op.
 #[tauri::command]
-async fn update_agent(agent: String, method: Option<String>) -> Result<InstallOutcome, String> {
+async fn update_agent(
+    app: AppHandle,
+    agent: String,
+    method: Option<String>,
+) -> Result<InstallOutcome, String> {
     log::info!("update_agent {agent} method={method:?}");
     let name = agent.clone();
+    let sink = install_output_sink(app, &agent);
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        egant_harness::catalog::update(&agent, method.as_deref())
+        egant_harness::catalog::update(&agent, method.as_deref(), Some(sink))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1218,7 +1255,7 @@ async fn opencode_usage_stats() -> Result<OpencodeUsageDto, String> {
 /// than exposing the filesystem to the webview) keeps the security surface to
 /// the one image the user picked.
 #[tauri::command]
-fn wallpaper_data_url(state: BackendState<'_>) -> Result<Option<String>, String> {
+async fn wallpaper_data_url(state: BackendState<'_>) -> Result<Option<String>, String> {
     let mut guard = state.lock().unwrap();
     let path = match guard.settings.wallpaper.clone() {
         Some(p) if p.is_file() => p,
@@ -1523,10 +1560,13 @@ fn repo_status_blocking(path: String) -> Result<RepoStatusDto, String> {
 /// Throws away working-tree changes. Destructive and unrecoverable, so the
 /// panel confirms before calling it.
 #[tauri::command]
-fn discard_files(root: String, paths: Vec<String>) -> Result<(), String> {
-    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
-    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    repo.discard(&paths).map_err(|error| error.to_string())
+async fn discard_files(root: String, paths: Vec<String>) -> Result<(), String> {
+    git_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        repo.discard(&paths).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 fn clean_blob_path(path: &Path) -> PathBuf {
@@ -1624,35 +1664,47 @@ async fn blob_text(root: String, path: String, source: String) -> Result<Option<
 }
 
 #[tauri::command]
-fn stage_files(root: String, paths: Vec<String>) -> Result<(), String> {
-    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
-    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    repo.stage(&paths).map_err(|error| error.to_string())
+async fn stage_files(root: String, paths: Vec<String>) -> Result<(), String> {
+    git_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        repo.stage(&paths).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn unstage_files(root: String, paths: Vec<String>) -> Result<(), String> {
-    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
-    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    repo.unstage(&paths).map_err(|error| error.to_string())
+async fn unstage_files(root: String, paths: Vec<String>) -> Result<(), String> {
+    git_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        repo.unstage(&paths).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn stage_all(root: String) -> Result<(), String> {
-    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
-    repo.stage_all().map_err(|error| error.to_string())
+async fn stage_all(root: String) -> Result<(), String> {
+    git_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        repo.stage_all().map_err(|error| error.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn commit_changes(root: String, message: String) -> Result<String, String> {
+async fn commit_changes(root: String, message: String) -> Result<String, String> {
     log::info!("commit in {root}");
-    let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
-    repo.commit(&message)
-        .map(|oid| oid.to_string())
-        .map_err(|error| {
-            log::error!("commit in {root} failed: {error}");
-            error.to_string()
-        })
+    git_blocking(move || {
+        let repo = egant_vcs::Repo::discover(&root).map_err(|error| error.to_string())?;
+        repo.commit(&message)
+            .map(|oid| oid.to_string())
+            .map_err(|error| {
+                log::error!("commit in {root} failed: {error}");
+                error.to_string()
+            })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1788,7 +1840,7 @@ async fn conflict_status(root: String) -> Result<ConflictStatusDto, String> {
 /// quick-action buttons the inline viewer draws over each one. Empty for a
 /// delete conflict, which has no markers to show.
 #[tauri::command]
-fn conflict_blocks(root: String, path: String) -> Result<Vec<ConflictBlockDto>, String> {
+async fn conflict_blocks(root: String, path: String) -> Result<Vec<ConflictBlockDto>, String> {
     let full = Path::new(&root).join(&path);
     let text = std::fs::read_to_string(&full).map_err(|error| error.to_string())?;
     Ok(egant_vcs::conflict::parse_markers(&text)
@@ -1967,8 +2019,11 @@ fn write_pasted_image(bytes: &[u8], extension: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn git_remotes(root: String) -> Result<Vec<String>, String> {
-    egant_vcs::remote::remotes(Path::new(&root)).map_err(|error| error.to_string())
+async fn git_remotes(root: String) -> Result<Vec<String>, String> {
+    git_blocking(move || {
+        egant_vcs::remote::remotes(Path::new(&root)).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 /// Network operations run on a blocking thread: unlike the GPUI shell (where

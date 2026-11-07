@@ -1,11 +1,12 @@
 //! Short-lived-turn runner shared by CLIs without a persistent session wire.
 //!
-//! `opencode run` and `codex exec` each execute ONE turn per process: the
-//! prompt goes on the command line, JSON-lines events stream on stdout, and
-//! the process exits when the turn settles. The runner owns those children on
-//! a background thread, translates stdout into [`HarnessEvent`]s, and keeps
-//! the session alive across turns — the transcript never sees a process
-//! boundary, only turns. `Exited` is emitted exactly once, on shutdown.
+//! `opencode run`, `codex exec` and `cursor-agent -p` each execute ONE turn
+//! per process: the prompt goes on the command line, JSON-lines events stream
+//! on stdout, and the process exits when the turn settles. The runner owns
+//! those children on a background thread, translates stdout into
+//! [`HarnessEvent`]s, and keeps the session alive across turns — the
+//! transcript never sees a process boundary, only turns. `Exited` is emitted
+//! exactly once, on shutdown.
 //!
 //! Interrupt kills the turn's child and settles the turn as interrupted; a
 //! send that lands mid-turn queues behind it, matching the persistent CLIs,
