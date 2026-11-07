@@ -54,6 +54,7 @@ export function AgentsSection() {
   const setAgentSheetId = useEgant((s) => s.setAgentSheetId);
   const [updates, setUpdates] = useState<Record<string, AgentUpdate>>({});
   const [loading, setLoading] = useState(true);
+  const [sheetRefreshing, setSheetRefreshing] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(agentSheetId);
@@ -62,6 +63,30 @@ export function AgentsSection() {
   // for agents that are actually installed, and only once per refresh — the
   // ref keeps a re-render from firing the same lookups again.
   const checked = useRef(new Set<string>());
+
+  const refreshAgent = useCallback(
+    async (id: string) => {
+      setSheetRefreshing(true);
+      try {
+        const [freshEntry, updateInfo] = await Promise.all([
+          api.getAgentCatalogEntry(id).catch(() => null),
+          api.checkAgentUpdate(id).catch(() => null),
+          verifyAgents().catch(() => {}),
+        ]);
+        if (freshEntry) {
+          useEgant.setState((prev) => ({
+            catalog: prev.catalog.map((row) => (row.id === id ? freshEntry : row)),
+          }));
+        }
+        if (updateInfo) {
+          setUpdates((prev) => ({ ...prev, [id]: updateInfo }));
+        }
+      } finally {
+        setSheetRefreshing(false);
+      }
+    },
+    [verifyAgents],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -207,13 +232,15 @@ export function AgentsSection() {
           entry={open}
           status={statusOf(open.id)}
           update={updates[open.id]}
+          refreshing={sheetRefreshing}
+          onRefresh={() => refreshAgent(open.id)}
           onClose={() => setOpenId(null)}
-          onInstalled={(next) => {
+          onInstalled={async (next) => {
             useEgant.setState((prev) => ({
               catalog: prev.catalog.map((row) => (row.id === next.id ? next : row)),
             }));
             checked.current.delete(next.id);
-            void verifyAgents();
+            await refreshAgent(next.id);
           }}
         />
       )}
@@ -249,6 +276,7 @@ function AgentRow({
   update?: AgentUpdate;
   onOpen: () => void;
 }) {
+  const version = update?.current || entry.version;
   return (
     <button
       type="button"
@@ -259,6 +287,11 @@ function AgentRow({
       <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--ink)]">
         {entry.name}
       </span>
+      {version && (
+        <span className="shrink-0 font-mono text-[11px] text-[var(--muted)]">
+          v{version}
+        </span>
+      )}
       {entry.chatUi && <Badge tone="info">Chat UI</Badge>}
       {update?.updateAvailable && <Badge tone="warn">Update available</Badge>}
       <Badge tone={entry.installed ? "good" : "idle"}>
@@ -298,12 +331,16 @@ function AgentSheet({
   entry,
   status,
   update,
+  refreshing,
+  onRefresh,
   onClose,
   onInstalled,
 }: {
   entry: AgentCatalogEntry;
   status?: AgentStatus;
   update?: AgentUpdate;
+  refreshing?: boolean;
+  onRefresh?: () => Promise<void>;
   onClose: () => void;
   onInstalled: (next: AgentCatalogEntry) => void;
 }) {
@@ -312,6 +349,7 @@ function AgentSheet({
   const [failed, setFailed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [showReinstall, setShowReinstall] = useState(false);
 
   // Capture phase, so `Esc` closes the sheet rather than the whole settings
   // window (App's own handler listens on `window` at bubble phase).
@@ -325,6 +363,13 @@ function AgentSheet({
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [onClose]);
+
+  // Live check on mount to ensure we have the real version and update status
+  useEffect(() => {
+    if (entry.installed && onRefresh) {
+      void onRefresh();
+    }
+  }, [entry.id]);
 
   const copy = (label: string, text: string) => {
     void navigator.clipboard?.writeText(text).catch(() => {});
@@ -344,6 +389,9 @@ function AgentSheet({
       setFailed(!outcome.success);
       setLog(outcome.output || (outcome.success ? "Done." : "The command failed."));
       onInstalled(outcome.status);
+      if (onRefresh) {
+        void onRefresh();
+      }
     } catch (error) {
       setFailed(true);
       setLog(error instanceof Error ? error.message : String(error));
@@ -355,7 +403,8 @@ function AgentSheet({
   const options = entry.installOptions;
   const preferred = options.find((o) => o.recommended) ?? options[0] ?? null;
   const hasUpdate = update?.updateAvailable ?? false;
-  // Which source "Install latest" runs. The backend names one when it could
+  const version = update?.current || entry.version;
+  // Which source "Install latest" / "Update" runs. The backend names one when it could
   // check; otherwise the entry's recommended source.
   const updateOption =
     options.find((o) => o.method === update?.method) ?? preferred;
@@ -398,7 +447,21 @@ function AgentSheet({
           </header>
 
           <section>
-            <h3 className="mb-2 text-[13px] text-[var(--muted)]">Installation</h3>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-[13px] text-[var(--muted)]">Installation</h3>
+              {entry.installed && onRefresh && (
+                <button
+                  type="button"
+                  onClick={() => void onRefresh()}
+                  disabled={refreshing || busy !== null}
+                  title="Check actual installed version and updates"
+                  className="flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--ink)] disabled:opacity-50"
+                >
+                  <RefreshCw size={11} strokeWidth={2} className={refreshing ? "animate-spin" : ""} />
+                  <span>{refreshing ? "Checking…" : "Check version"}</span>
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-3 rounded-xl border border-[var(--border)] px-3.5 py-3">
               <span
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
@@ -407,7 +470,7 @@ function AgentSheet({
                     : "bg-[var(--hover)] text-[var(--faint)]"
                 }`}
               >
-                {busy ? (
+                {busy || refreshing ? (
                   <RefreshCw size={13} strokeWidth={2.5} className="animate-spin" />
                 ) : entry.installed ? (
                   <Check size={14} strokeWidth={2.5} />
@@ -419,9 +482,9 @@ function AgentSheet({
                 {entry.installed ? (
                   <>
                     <span className="shrink-0 text-[var(--ink)]">Found</span>
-                    {update?.current && (
+                    {version && (
                       <span className="shrink-0 rounded-md bg-[var(--hover)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--muted)]">
-                        v{update.current}
+                        v{version}
                       </span>
                     )}
                     <span className="min-w-0 truncate text-[var(--muted)]" title={entry.executable ?? ""}>
@@ -487,41 +550,77 @@ function AgentSheet({
 
           {entry.installed && updateOption && (
             <section>
-              <div
-                className={`rounded-xl border ${
-                  hasUpdate
-                    ? "border-amber-400/25 bg-amber-500/[0.06]"
-                    : "border-[var(--border)]"
-                }`}
-              >
-                <div className="flex items-center gap-2 px-3.5 pt-3">
-                  <span className="text-[13px] text-[var(--ink)]">Update</span>
-                  {hasUpdate ? (
-                    <span className="flex items-center gap-1 text-[12px] text-[var(--muted)]">
-                      <span className="font-mono">{update?.current}</span>
-                      <ArrowRight size={11} strokeWidth={2} />
-                      <span className="font-mono text-amber-300">{update?.latest}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[12px] text-[var(--muted)]">
-                      {update?.latest
-                        ? "Up to date"
-                        : update
-                          ? "egant can't check this CLI's published version — install latest to be sure."
-                          : "Checking…"}
-                    </span>
+              {hasUpdate ? (
+                <div className="rounded-xl border border-amber-400/25 bg-amber-500/[0.06]">
+                  <div className="flex items-center justify-between px-3.5 pt-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium text-[var(--ink)]">Update available</span>
+                      <span className="flex items-center gap-1 text-[12px] text-[var(--muted)]">
+                        <span className="font-mono">{version || update?.current}</span>
+                        <ArrowRight size={11} strokeWidth={2} />
+                        <span className="font-mono font-semibold text-amber-300">{update?.latest}</span>
+                      </span>
+                    </div>
+                  </div>
+                  <CommandRow
+                    command={updateOption.updateCommand}
+                    label={`Update to v${update?.latest}`}
+                    busy={busy === "update"}
+                    disabled={busy !== null}
+                    onRun={() =>
+                      void run("update", () => api.updateAgent(entry.id, updateOption.method))
+                    }
+                  />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-[var(--border)] px-3.5 py-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-[13px]">
+                      {update?.latest ? (
+                        <>
+                          <Check size={14} strokeWidth={2.5} className="text-emerald-500" />
+                          <span className="text-[var(--ink)]">Up to date</span>
+                          <span className="font-mono text-[11px] text-[var(--muted)]">
+                            v{version || update.latest}
+                          </span>
+                        </>
+                      ) : update ? (
+                        <span className="text-[12px] text-[var(--muted)]">
+                          v{version || "unknown"} installed · published release could not be verified
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-2 text-[12px] text-[var(--muted)]">
+                          <RefreshCw size={12} className="animate-spin text-[var(--muted)]" />
+                          <span>Checking for updates…</span>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowReinstall((v) => !v)}
+                      className="cursor-pointer text-[12px] text-[var(--muted)] hover:text-[var(--ink)]"
+                    >
+                      {showReinstall ? "Hide command" : "Reinstall"}
+                    </button>
+                  </div>
+                  {showReinstall && (
+                    <div className="mt-3 border-t border-[var(--border)] pt-2.5">
+                      <div className="mb-1 text-[11px] text-[var(--muted)]">
+                        Re-run command to repair or reinstall this CLI:
+                      </div>
+                      <CommandRow
+                        command={updateOption.updateCommand}
+                        label="Reinstall"
+                        busy={busy === "update"}
+                        disabled={busy !== null}
+                        onRun={() =>
+                          void run("update", () => api.updateAgent(entry.id, updateOption.method))
+                        }
+                      />
+                    </div>
                   )}
                 </div>
-                <CommandRow
-                  command={updateOption.updateCommand}
-                  label="Install latest"
-                  busy={busy === "update"}
-                  disabled={busy !== null}
-                  onRun={() =>
-                    void run("update", () => api.updateAgent(entry.id, updateOption.method))
-                  }
-                />
-              </div>
+              )}
             </section>
           )}
 

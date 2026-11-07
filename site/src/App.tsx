@@ -11,10 +11,6 @@ import { Showcase } from "./components/Showcase";
 export function App() {
   return (
     <>
-      <div className="backdrop" aria-hidden>
-        <span className="glow glow-a" />
-        <span className="glow glow-b" />
-      </div>
       <Nav />
       <main>
         <Hero />

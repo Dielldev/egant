@@ -1,14 +1,9 @@
 import { useEffect, useState } from "react";
 import { selectOnLaunchScreen, useEgant } from "../store";
+import { MIN_PANEL_WIDTH, MIN_STAGE_WIDTH } from "./columns";
+import { CONTEXT_WIDTH } from "./contextSidebar";
 
-/** The least room the conversation column is given before something else
- * yields. Under this the composer's controls wrap onto a second row and the
- * header truncates the title to a few letters. */
-export const MIN_STAGE_WIDTH = 440;
-
-/** The narrowest the workspace panel can be dragged — mirrored by the store's
- * `setPanelWidth` clamp. */
-export const MIN_PANEL_WIDTH = 240;
+export { MIN_PANEL_WIDTH, MIN_STAGE_WIDTH };
 
 export function useWindowWidth(): number {
   const [width, setWidth] = useState(() => window.innerWidth);
@@ -35,23 +30,29 @@ export function useColumnLayout() {
   const libraryOpen = useEgant((s) => s.libraryOpen);
   const settingsOpen = useEgant((s) => s.settingsOpen);
   const panelOpen = useEgant((s) => s.panelOpen && !selectOnLaunchScreen(s));
+  const contextOpen = useEgant((s) => s.contextOpen && !selectOnLaunchScreen(s));
   const windowWidth = useWindowWidth();
 
   const panelShown = panelOpen && !libraryOpen && !settingsOpen;
-  // A maximized panel replaces the stage, so there is no stage to protect.
+  // A maximized panel replaces the stage, so there is no stage to protect —
+  // and no room beside it for the context column either.
+  const contextShown = contextOpen && !libraryOpen && !settingsOpen && !(panelShown && panelMaximized);
+  const contextWidth = contextShown ? CONTEXT_WIDTH : 0;
   const crowded =
     preferred &&
-    panelShown &&
-    !panelMaximized &&
-    windowWidth - sidebarWidth - MIN_PANEL_WIDTH < MIN_STAGE_WIDTH;
+    (panelShown || contextShown) &&
+    !(panelShown && panelMaximized) &&
+    windowWidth - sidebarWidth - contextWidth - (panelShown ? MIN_PANEL_WIDTH : 0) < MIN_STAGE_WIDTH;
   const sidebarShown = preferred && !crowded;
-  const room = windowWidth - (sidebarShown ? sidebarWidth : 0) - MIN_STAGE_WIDTH;
+  const room = windowWidth - (sidebarShown ? sidebarWidth : 0) - contextWidth - MIN_STAGE_WIDTH;
 
   return {
     windowWidth,
     sidebarShown,
-    /** The sidebar is wanted but has stepped aside for the panel. */
+    /** The sidebar is wanted but has stepped aside for the right-hand columns. */
     sidebarYielded: crowded,
+    /** The context column is on screen (its width is `CONTEXT_WIDTH`). */
+    contextShown,
     /** The panel's width, held back so the stage keeps its minimum. */
     panelWidth: Math.max(MIN_PANEL_WIDTH, Math.min(panelWidth, room)),
   };

@@ -177,9 +177,10 @@ export function TerminalPane({
    * itself is wired once, at creation. */
   async function spawn(entry: LiveTerminal): Promise<void> {
     try {
+      const targetCwd = typeof cwd === "string" ? cwd : "";
       const ptyId = agent
-        ? await api.ptySpawnAgent(cwd, agent, entry.term.cols, entry.term.rows)
-        : await api.ptySpawn(cwd, entry.term.cols, entry.term.rows);
+        ? await api.ptySpawnAgent(targetCwd, agent, entry.term.cols, entry.term.rows)
+        : await api.ptySpawn(targetCwd, entry.term.cols, entry.term.rows);
       entry.ptyId = ptyId;
       attachPty(tabId, ptyId);
       for (const payload of entry.pending) {

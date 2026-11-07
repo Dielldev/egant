@@ -70,7 +70,14 @@ export function SessionModelPicker({
    * once, with the effort — or with the one it would keep, if the menu
    * closes first — so a switch restarts the agent once, not twice. */
   const [pending, setPending] = useState<{ model: string; variant: string } | null>(null);
-  const [pos, setPos] = useState({ bottom: 0, left: 0, width: 360, maxHeight: 440 });
+  const [pos, setPos] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+    openUpward: boolean;
+  }>({ bottom: 0, left: 0, width: 380, maxHeight: 520, openUpward: true });
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -110,15 +117,26 @@ export function SessionModelPicker({
   const place = () => {
     const rect = rootRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const width = Math.min(360, window.innerWidth - 16);
+    const width = Math.min(380, window.innerWidth - 16);
     // Right-aligned to the badge, which sits at the composer's right end,
     // then clamped back onto the window when the composer is narrow.
     const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const margin = 12;
+    const spaceAbove = rect.top - margin;
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    // Session composer sits at the foot of the window, so upward is standard,
+    // but flip downward if space above is too tight.
+    const openUpward = spaceAbove >= 260 || spaceAbove >= spaceBelow;
+    const available = openUpward ? spaceAbove : spaceBelow;
+    const maxHeight = Math.max(260, Math.min(520, available));
+
     setPos({
-      bottom: window.innerHeight - rect.top + 8,
+      top: openUpward ? undefined : rect.bottom + 8,
+      bottom: openUpward ? window.innerHeight - rect.top + 8 : undefined,
       left,
       width,
-      maxHeight: Math.max(200, Math.min(440, rect.top - 16)),
+      maxHeight,
+      openUpward,
     });
   };
 
@@ -136,10 +154,12 @@ export function SessionModelPicker({
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
     };
   }, [open]);
 
@@ -357,13 +377,16 @@ export function SessionModelPicker({
             // `backdrop-filter` would otherwise clip an absolutely-positioned
             // menu to its own box.
             style={{
+              top: pos.top,
               bottom: pos.bottom,
               left: pos.left,
               width: pos.width,
               maxHeight: pos.maxHeight,
-              transformOrigin: "bottom right",
+              transformOrigin: pos.openUpward ? "bottom right" : "top right",
             }}
-            className="menu menu-pop-up fixed z-[100] flex flex-col overflow-hidden rounded-2xl p-2 outline-none"
+            className={`menu ${
+              pos.openUpward ? "menu-pop-up" : "menu-pop"
+            } fixed z-[100] flex flex-col overflow-hidden rounded-2xl p-2 outline-none`}
           >
             {view === "effort" ? (
               <>
@@ -392,7 +415,7 @@ export function SessionModelPicker({
                 <div className="shrink-0 px-2 pb-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--faint)]">
                   REASONING
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="min-h-[140px] flex-1 overflow-y-auto">
                   {variants.map((variant, index) => {
                     const checked = (effortVariant || effortModelRow?.defaultVariant) === variant;
                     const highlighted = effortCursor === index;
@@ -462,7 +485,7 @@ export function SessionModelPicker({
                     />
                   </div>
                 </div>
-                <div role="listbox" className="min-h-0 flex-1 overflow-y-auto">
+                <div role="listbox" className="min-h-[140px] flex-1 overflow-y-auto">
                   {loading && catalog.length === 0 ? (
                     <div className="px-2.5 py-3 text-[12px] text-[var(--faint)]">Loading models…</div>
                   ) : rows.length === 0 ? (

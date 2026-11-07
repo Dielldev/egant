@@ -18,6 +18,8 @@ import {
   pushUser,
   resolvePermission,
 } from "./lib/transcript";
+import { MIN_PANEL_WIDTH, MIN_STAGE_WIDTH } from "./lib/columns";
+import { type ContextSectionId, normalizeContextOrder } from "./lib/contextSidebar";
 import { parseContext } from "./lib/types";
 import type {
   AgentCatalogEntry,
@@ -457,6 +459,16 @@ interface EgantStore {
    * terminals. Closed until asked for — the window is a conversation first. */
   panelOpen: boolean;
   panelWidth: number;
+  /** The context sidebar: what fills the window, the environment, connectors
+   * and changes. Its own column, independent of the workspace panel. */
+  contextOpen: boolean;
+  toggleContext: () => void;
+  /** Section order, dragged by the user. Always holds every section. */
+  contextOrder: ContextSectionId[];
+  setContextOrder: (order: ContextSectionId[]) => void;
+  /** Brings back a sidebar that stepped aside for the right-hand columns, by
+   * closing whichever of them it takes to make room. */
+  yieldToSidebar: () => void;
   /** The panel filling everything right of the sidebar, with the conversation
    * slid out from under it. Persisted: it is a way of working (reading a diff
    * full width) rather than a mode you fall into by accident. */
@@ -1678,6 +1690,39 @@ export const useEgant = create<EgantStore>()((set, get) => {
     panelOpen: loadBool("egant.panelOpen", false),
     panelWidth: loadNumber("egant.panelWidth", 320),
     panelMaximized: loadBool("egant.panelMaximized", false),
+    contextOpen: loadBool("egant.contextOpen", false),
+    toggleContext: () => {
+      // Like the panel: nothing to describe on the launch screen, so flipping
+      // the saved flag there would change the next conversation unseen.
+      if (selectOnLaunchScreen(get())) return;
+      const contextOpen = !get().contextOpen;
+      set({ contextOpen });
+      saveString("egant.contextOpen", String(contextOpen));
+    },
+    contextOrder: (() => {
+      try {
+        return normalizeContextOrder(JSON.parse(loadString("egant.contextOrder") ?? "null"));
+      } catch {
+        return normalizeContextOrder(null);
+      }
+    })(),
+    setContextOrder: (order) => {
+      const contextOrder = normalizeContextOrder(order);
+      set({ contextOrder });
+      saveString("egant.contextOrder", JSON.stringify(contextOrder));
+    },
+    yieldToSidebar: () => {
+      const { contextOpen, panelOpen, sidebarWidth } = get();
+      // The context column is the cheaper one to lose; the panel only goes too
+      // if the sidebar still wouldn't fit beside it on its own.
+      if (contextOpen) {
+        set({ contextOpen: false });
+        saveString("egant.contextOpen", "false");
+      }
+      const panelStillCrowds =
+        panelOpen && window.innerWidth - sidebarWidth - MIN_PANEL_WIDTH < MIN_STAGE_WIDTH;
+      if (panelStillCrowds || (!contextOpen && panelOpen)) get().togglePanel();
+    },
     setPanelWidth: (width) => {
       // A flat cap, not one computed off the window or the sidebar: the panel
       // simply can't be dragged past this position, so it never has to fight
@@ -1790,7 +1835,10 @@ export const useEgant = create<EgantStore>()((set, get) => {
         id: `term-${nextPanelTabId()}`,
         kind: "terminal",
         title: terminalTitle(n),
-        cwd: cwd || workspaceRoot(get().snapshot),
+        cwd:
+          typeof cwd === "string" && cwd.trim().length > 0
+            ? cwd.trim()
+            : workspaceRoot(get().snapshot),
       };
       set({ panelOpen: true, panelTabs: [...panelTabs, tab], panelTab: tab.id });
       saveString("egant.panelOpen", "true");

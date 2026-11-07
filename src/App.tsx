@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { CliLaunchDialog } from "./components/CliLaunchDialog";
 import { CliStage } from "./components/CliStage";
 import { ConflictFileView } from "./components/ConflictResolution";
+import { ContextSidebar } from "./components/ContextSidebar";
 import { DiffTabView } from "./components/DiffTabView";
 import { FileView } from "./components/FileView";
 import { ImageLightbox } from "./components/ImageLightbox";
@@ -77,7 +78,7 @@ function EgantWindow() {
   // there — whatever `panelOpen` was persisted as, including at startup and
   // after "+" from a session that had it open.
   const panelVisible = useEgant((s) => s.panelOpen && !selectOnLaunchScreen(s));
-  const { sidebarShown, sidebarYielded } = useColumnLayout();
+  const { sidebarShown, sidebarYielded, contextShown } = useColumnLayout();
   // The key handler below is installed once; this is how it sees the live value.
   const yielded = useRef(sidebarYielded);
   yielded.current = sidebarYielded;
@@ -210,9 +211,9 @@ function EgantWindow() {
         else store.openLibrary();
         break;
       case "toggle-sidebar":
-        // With the sidebar stepped aside for the panel, showing it means
-        // closing the panel (see `useColumnLayout`).
-        if (yielded.current) store.togglePanel();
+        // With the sidebar stepped aside for the right-hand columns, showing
+        // it means closing what displaced it (see `useColumnLayout`).
+        if (yielded.current) store.yieldToSidebar();
         else void store.toggleSidebar();
         break;
       case "toggle-panel":
@@ -559,6 +560,7 @@ function EgantWindow() {
                 )}
               </div>
               {panelVisible && !libraryOpen && <WorkspacePanel />}
+              {contextShown && <ContextSidebar />}
         </>
       )}
       <CliLaunchDialog />

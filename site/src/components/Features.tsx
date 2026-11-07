@@ -1,50 +1,30 @@
-import type { PointerEvent, ReactNode } from "react";
-import { LibrarySync, RevertTurn, SearchPalette, Worktrees } from "./FeatureVisuals";
+import { GitBranch, Library, Search, Undo2 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Reveal } from "./Reveal";
 
-/** Moves the card's soft highlight to follow the pointer. */
-function track(e: PointerEvent<HTMLElement>) {
-  const r = e.currentTarget.getBoundingClientRect();
-  e.currentTarget.style.setProperty("--x", `${e.clientX - r.left}px`);
-  e.currentTarget.style.setProperty("--y", `${e.clientY - r.top}px`);
-}
-
-function Card({
-  wide = false,
-  delay = 0,
-  visual,
-  title,
-  keys,
-  children,
-}: {
-  wide?: boolean;
-  delay?: number;
-  visual: ReactNode;
-  title: string;
-  keys?: string[];
-  children: ReactNode;
-}) {
-  return (
-    <Reveal as="article" delay={delay} className={`bento-card glass ${wide ? "wide" : ""}`}>
-      <div className="bento-inner" onPointerMove={track}>
-        <div className="bento-visual">{visual}</div>
-        <div className="bento-text">
-          <h3>
-            {title}
-            {keys && (
-              <span className="keys">
-                {keys.map((k) => (
-                  <kbd key={k}>{k}</kbd>
-                ))}
-              </span>
-            )}
-          </h3>
-          <p>{children}</p>
-        </div>
-      </div>
-    </Reveal>
-  );
-}
+const FEATURES: { icon: LucideIcon; title: string; keys?: string[]; body: string }[] = [
+  {
+    icon: GitBranch,
+    title: "Isolated by default",
+    body: "Every session can start in its own git worktree on its own branch. Parallel agents never step on each other, or on your checkout.",
+  },
+  {
+    icon: Undo2,
+    title: "Revert a turn",
+    body: "Per-turn snapshots. When an agent goes the wrong way, roll back exactly one step.",
+  },
+  {
+    icon: Search,
+    title: "Find anything",
+    keys: ["⌘", "K"],
+    body: "Search every conversation and jump straight to the message.",
+  },
+  {
+    icon: Library,
+    title: "One library",
+    body: "Add MCP servers and skills once. egant writes them into each agent's own config, in that agent's format.",
+  },
+];
 
 export function Features() {
   return (
@@ -55,22 +35,26 @@ export function Features() {
           Terminals were fine. <span className="dim">Until you had five agents.</span>
         </h2>
       </Reveal>
-      <div className="bento">
-        <Card wide visual={<Worktrees />} title="Isolated by default">
-          Every session can start in its own git worktree on its own branch. Parallel agents never
-          step on each other, or on your checkout.
-        </Card>
-        <Card delay={90} visual={<RevertTurn />} title="Revert a turn">
-          Per-turn snapshots. When an agent goes the wrong way, roll back exactly one step.
-        </Card>
-        <Card visual={<SearchPalette />} title="Find anything" keys={["⌘", "K"]}>
-          Search every conversation and jump straight to the message.
-        </Card>
-        <Card wide delay={90} visual={<LibrarySync />} title="One library">
-          Add MCP servers and skills once. egant writes them into each agent's own config, in that
-          agent's format.
-        </Card>
-      </div>
+      <Reveal className="features stagger">
+        {FEATURES.map(({ icon: Icon, title, keys, body }) => (
+          <article className="feature" key={title}>
+            <span className="feature-icon">
+              <Icon size={16} strokeWidth={1.75} />
+            </span>
+            <h3>
+              {title}
+              {keys && (
+                <span className="keys">
+                  {keys.map((k) => (
+                    <kbd key={k}>{k}</kbd>
+                  ))}
+                </span>
+              )}
+            </h3>
+            <p>{body}</p>
+          </article>
+        ))}
+      </Reveal>
     </section>
   );
 }

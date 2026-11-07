@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { CSSProperties } from "react";
 import { Image, Layers, Palette, SunMoon } from "lucide-react";
 import { EFFECTS, GLASS_MODES, THEMES } from "../content";
 import type { Effect, GlassMode, Theme } from "../content";
-import { prefersReducedMotion, useInView } from "../useReveal";
 import { Mark } from "./Mark";
 import { Reveal } from "./Reveal";
+import { ScrollFrame } from "./ScrollFrame";
 import { Wallpapers } from "./Wallpapers";
 
 const POINTS = [
@@ -42,21 +42,7 @@ export function Customize() {
   const [themeIdx, setThemeIdx] = useState(0);
   const [glass, setGlass] = useState<GlassMode>("default");
   const [effect, setEffect] = useState<Effect>("none");
-  const [touched, setTouched] = useState(false);
-  const [ref, seen] = useInView<HTMLDivElement>(0.3);
   const theme = THEMES[themeIdx];
-
-  // Cycles through the palettes on its own until someone picks one.
-  useEffect(() => {
-    if (!seen || touched || prefersReducedMotion()) return;
-    const t = window.setInterval(() => setThemeIdx((i) => (i + 1) % THEMES.length), 2200);
-    return () => window.clearInterval(t);
-  }, [seen, touched]);
-
-  const pick = (i: number) => {
-    setTouched(true);
-    setThemeIdx(i);
-  };
 
   return (
     <section className="section" id="themes">
@@ -66,7 +52,8 @@ export function Customize() {
           Make it yours. <span className="dim">Down to the glass.</span>
         </h2>
         <p className="lead">
-          Bring your own wallpaper, pick from 23 themes, tune the glass and add a background effect. Your phone uses the same wallpaper.
+          Bring your own wallpaper, pick from 23 themes, tune the glass and add a background
+          effect. Your phone uses the same wallpaper.
         </p>
       </Reveal>
 
@@ -74,7 +61,7 @@ export function Customize() {
 
       <div className="customize">
         <Reveal className="preview-wrap">
-          <div className="preview" style={themeVars(theme, glass)} ref={ref}>
+          <ScrollFrame className="preview" style={themeVars(theme, glass)}>
             <div className="preview-wallpaper" />
             {effect !== "none" && <div className={`fx fx-${effect}`} />}
             <div className="preview-window">
@@ -105,8 +92,8 @@ export function Customize() {
                 </div>
               </div>
             </div>
-            <div className="preview-name glass">{theme.name}</div>
-          </div>
+            <div className="preview-name">{theme.name}</div>
+          </ScrollFrame>
         </Reveal>
 
         <Reveal delay={120} className="controls">
@@ -118,7 +105,7 @@ export function Customize() {
                   key={t.id}
                   className={`swatch ${i === themeIdx ? "on" : ""}`}
                   style={{ background: `linear-gradient(135deg, ${t.stage} 50%, ${t.accent} 50%)` }}
-                  onClick={() => pick(i)}
+                  onClick={() => setThemeIdx(i)}
                   aria-label={t.name}
                   title={t.name}
                 />
@@ -127,7 +114,7 @@ export function Customize() {
           </div>
           <div className="control">
             <p className="eyebrow">Glass</p>
-            <div className="segmented glass">
+            <div className="segmented">
               {GLASS_MODES.map((g) => (
                 <button key={g} className={g === glass ? "on" : ""} onClick={() => setGlass(g)}>
                   {g}
@@ -137,7 +124,7 @@ export function Customize() {
           </div>
           <div className="control">
             <p className="eyebrow">Background effect</p>
-            <div className="segmented glass">
+            <div className="segmented">
               {EFFECTS.map((e) => (
                 <button key={e} className={e === effect ? "on" : ""} onClick={() => setEffect(e)}>
                   {e}

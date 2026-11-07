@@ -543,6 +543,7 @@ export interface AgentStatus {
   email: string | null;
   accountName?: string | null;
   plan?: string | null;
+  version?: string | null;
 }
 
 /** One published way to install an agent — npm, Homebrew, the vendor's curl
@@ -581,6 +582,7 @@ export interface AgentCatalogEntry {
   /** The command line that opens this agent's own CLI, as a person would
    * type it (`pi`, `goose session`). */
   launchCommand: string;
+  version: string | null;
 }
 
 /** What `install_agent` / `update_agent` report: the command's exit, its log

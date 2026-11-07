@@ -22,7 +22,7 @@
 
 use serde::Serialize;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -169,14 +169,21 @@ pub const CATALOG: &[CatalogEntry] = &[
         #[cfg(windows)]
         install_options: &[
             npm("npm install -g @anthropic-ai/claude-code", true),
-            powershell(
-                "powershell -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\"",
-                false,
-            ),
+            InstallOption {
+                method: InstallMethod::Powershell,
+                command: "powershell -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\"",
+                update_command: Some("claude update"),
+                recommended: false,
+            },
         ],
         #[cfg(not(windows))]
         install_options: &[
-            curl("curl -fsSL https://claude.ai/install.sh | bash", true),
+            InstallOption {
+                method: InstallMethod::Curl,
+                command: "curl -fsSL https://claude.ai/install.sh | bash",
+                update_command: Some("claude update"),
+                recommended: true,
+            },
             npm("npm install -g @anthropic-ai/claude-code", false),
         ],
         npm_package: Some("@anthropic-ai/claude-code"),
@@ -220,14 +227,21 @@ pub const CATALOG: &[CatalogEntry] = &[
         #[cfg(windows)]
         install_options: &[
             npm("npm install -g opencode-ai", true),
-            powershell(
-                "powershell -ExecutionPolicy Bypass -Command \"irm https://opencode.ai/install.ps1 | iex\"",
-                false,
-            ),
+            InstallOption {
+                method: InstallMethod::Powershell,
+                command: "powershell -ExecutionPolicy Bypass -Command \"irm https://opencode.ai/install.ps1 | iex\"",
+                update_command: Some("opencode upgrade"),
+                recommended: false,
+            },
         ],
         #[cfg(not(windows))]
         install_options: &[
-            curl("curl -fsSL https://opencode.ai/install | bash", true),
+            InstallOption {
+                method: InstallMethod::Curl,
+                command: "curl -fsSL https://opencode.ai/install | bash",
+                update_command: Some("opencode upgrade"),
+                recommended: true,
+            },
             npm("npm install -g opencode-ai", false),
         ],
         npm_package: Some("opencode-ai"),
@@ -553,6 +567,7 @@ pub struct CatalogStatus {
     /// is derived here rather than reconstructed in the frontend — there is
     /// only one place that knows `goose` needs an argument.
     pub launch_command: String,
+    pub version: Option<String>,
 }
 
 /// Probe every catalog entry. Filesystem only — the same cost as
@@ -561,8 +576,9 @@ pub fn list() -> Vec<CatalogStatus> {
     CATALOG.iter().map(status_of).collect()
 }
 
-fn status_of(entry: &'static CatalogEntry) -> CatalogStatus {
+pub fn status_of(entry: &'static CatalogEntry) -> CatalogStatus {
     let executable = locate(entry);
+    let version = executable.as_ref().and_then(|p| local_version(p));
     CatalogStatus {
         id: entry.id,
         name: entry.name,
@@ -580,6 +596,7 @@ fn status_of(entry: &'static CatalogEntry) -> CatalogStatus {
         installed: executable.is_some(),
         executable: executable.map(|p| p.display().to_string()),
         launch_command: launch_command(entry),
+        version,
     }
 }
 
@@ -700,6 +717,25 @@ pub fn install(id: &str, method: Option<&str>) -> Result<InstallOutcome, String>
 pub fn update(id: &str, method: Option<&str>) -> Result<InstallOutcome, String> {
     log::info!("catalog update {id} method={method:?}");
     let entry = entry(id).ok_or_else(|| format!("unknown agent `{id}`"))?;
+
+    // Safety guard layer: verify that running update won't attempt an accidental downgrade
+    let current = locate(entry).and_then(|program| local_version(&program));
+    let latest = entry.npm_package.and_then(latest_npm_version);
+    if let (Some(cur), Some(lat)) = (&current, &latest) {
+        if !is_newer_version(lat, cur) {
+            log::info!(
+                "catalog update {id}: current v{cur} is not older than published v{lat}, skipping downgrade"
+            );
+            return Ok(InstallOutcome {
+                success: true,
+                output: format!(
+                    "Already up to date: installed version (v{cur}) is not older than published version (v{lat})."
+                ),
+                status: status_of(entry),
+            });
+        }
+    }
+
     let option = option_for(entry, method)?;
     run_install(entry, &update_command(entry, option))
 }
@@ -744,7 +780,7 @@ pub fn check_update(id: &str) -> Result<UpdateInfo, String> {
     let current = locate(entry).and_then(|program| local_version(&program));
     let latest = entry.npm_package.and_then(latest_npm_version);
     let update_available = match (&current, &latest) {
-        (Some(current), Some(latest)) => current != latest,
+        (Some(current), Some(latest)) => is_newer_version(latest, current),
         _ => false,
     };
     Ok(UpdateInfo {
@@ -762,13 +798,17 @@ pub fn check_update(id: &str) -> Result<UpdateInfo, String> {
 
 /// A CLI that hangs on `--version` must not wedge the blocking task this
 /// runs on, so the probe gets the same bounded wait an install does.
-fn local_version(program: &PathBuf) -> Option<String> {
+pub fn local_version(program: &Path) -> Option<String> {
     let (prog, prefix) = crate::agents::prepare_program_args(program);
     let mut command = std::process::Command::new(prog);
     for arg in prefix {
         command.arg(arg);
     }
     command.arg("--version");
+    command.env("PATH", crate::agents::execution_path());
+    for (k, v) in crate::agents::login_shell_env() {
+        command.env(k, v);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -785,6 +825,51 @@ fn latest_npm_version(package: &str) -> Option<String> {
     )
     .ok()?;
     success.then(|| first_version(&output)).flatten()
+}
+
+/// Parse a version string like "2.1.4", "v1.19.5", "2.1.319-beta.1" into numeric parts
+/// and an optional prerelease label for reliable semver comparison.
+fn parse_version_tuple(v: &str) -> (Vec<u64>, Option<String>) {
+    let clean = v.trim().trim_start_matches('v');
+    let mut parts = clean.splitn(2, |c| c == '-' || c == '+');
+    let num_part = parts.next().unwrap_or("");
+    let prerelease = parts.next().map(|s| s.to_string());
+
+    let numbers: Vec<u64> = num_part
+        .split('.')
+        .filter_map(|s| s.parse::<u64>().ok())
+        .collect();
+    (numbers, prerelease)
+}
+
+/// Returns true if `candidate` is strictly newer than `baseline`.
+/// Never considers an older or equal version as an update.
+pub fn is_newer_version(candidate: &str, baseline: &str) -> bool {
+    let (cand_nums, cand_pre) = parse_version_tuple(candidate);
+    let (base_nums, base_pre) = parse_version_tuple(baseline);
+
+    if cand_nums.is_empty() || base_nums.is_empty() {
+        return false;
+    }
+
+    let max_len = cand_nums.len().max(base_nums.len());
+    for i in 0..max_len {
+        let c = cand_nums.get(i).copied().unwrap_or(0);
+        let b = base_nums.get(i).copied().unwrap_or(0);
+        if c > b {
+            return true;
+        }
+        if c < b {
+            return false;
+        }
+    }
+
+    match (cand_pre, base_pre) {
+        (None, Some(_)) => true, // candidate is stable release, baseline was prerelease
+        (Some(_), None) => false, // candidate is prerelease, baseline was stable
+        (Some(c), Some(b)) => c > b, // both prereleases: lexicographical compare
+        (None, None) => false,   // exact same version
+    }
 }
 
 /// The first `1.2.3`-shaped token in a CLI's version banner — enough to
@@ -1122,6 +1207,33 @@ mod tests {
         assert_eq!(first_version("codex-cli 0.48.0").as_deref(), Some("0.48.0"));
         assert_eq!(first_version("v2.0.1\n").as_deref(), Some("2.0.1"));
         assert_eq!(first_version("no version here"), None);
+    }
+
+    #[test]
+    fn newer_version_comparison_prevents_downgrade() {
+        // Higher major version must never be considered behind a lower major
+        assert!(!is_newer_version("1.19.5", "2.1.4"));
+        assert!(is_newer_version("2.1.4", "1.19.5"));
+
+        // Identical versions are not newer
+        assert!(!is_newer_version("2.1.4", "2.1.4"));
+        assert!(!is_newer_version("2.1.319", "2.1.319"));
+
+        // Normal patch/minor upgrades
+        assert!(is_newer_version("2.1.5", "2.1.4"));
+        assert!(is_newer_version("2.2.0", "2.1.4"));
+        assert!(is_newer_version("3.0.0", "2.1.4"));
+        assert!(is_newer_version("2.1.320", "2.1.319"));
+        assert!(!is_newer_version("2.1.318", "2.1.319"));
+
+        // Different segment counts
+        assert!(is_newer_version("2.1.1", "2.1"));
+        assert!(!is_newer_version("2.1.0", "2.1"));
+        assert!(!is_newer_version("2.0", "2.1"));
+
+        // Prereleases vs stable
+        assert!(is_newer_version("2.1.4", "2.1.4-beta.1"));
+        assert!(!is_newer_version("2.1.4-beta.1", "2.1.4"));
     }
 
     #[test]

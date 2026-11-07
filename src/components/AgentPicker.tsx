@@ -23,7 +23,6 @@ import {
   variantLabel,
 } from "../lib/agents";
 import { api } from "../lib/api";
-import { fitBelow } from "../lib/popover";
 import { formatContext } from "../lib/types";
 import type { AgentModel } from "../lib/types";
 import {
@@ -141,20 +140,45 @@ export function AgentPicker() {
   // Bumped on every agent switch so the list replays its stagger.
   const [listToken, setListToken] = useState(0);
   // A ceiling, not a height: a short catalog draws a short menu instead of
-  // padding 440px of empty pane under seven rows. The menu always drops
-  // downward — see `fitBelow` — so this is the room under the trigger.
-  const [menuMaxHeight, setMenuMaxHeight] = useState(440);
-  // Viewport-anchored position for the portaled menu. The menu lives in
-  // `document.body` (not under the trigger) so the composer's own
-  // `backdrop-filter` stacking context can't trap it behind the launch
-  // screen's checkout chips below — that trap is what let "Current checkout"
-  // bleed straight through the agent tabs.
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 420 });
+  // padding 520px of empty pane under seven rows.
+  const [menuMaxHeight, setMenuMaxHeight] = useState(520);
+  // Viewport-anchored position for the portaled menu.
+  const [menuPos, setMenuPos] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+    openUpward: boolean;
+  }>({ left: 0, width: 440, openUpward: false });
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
   const effortRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const updateMenuPlacement = () => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(440, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const margin = 12;
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    // When space below is tight (< 380px) and there's more space above, open upward
+    // so the models list has ample scrolling room instead of collapsing to a sliver.
+    const openUpward = spaceBelow < 380 && spaceAbove > spaceBelow;
+    const available = openUpward ? spaceAbove : spaceBelow;
+    const maxHeight = Math.max(280, Math.min(520, available));
+
+    setMenuPos({
+      top: openUpward ? undefined : rect.bottom + 8,
+      bottom: openUpward ? window.innerHeight - rect.top + 8 : undefined,
+      left,
+      width,
+      openUpward,
+    });
+    setMenuMaxHeight(maxHeight);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -168,23 +192,18 @@ export function AgentPicker() {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
-    // The menu is viewport-anchored, so a resize would leave it floating
-    // where the trigger used to be — re-anchor instead of going stale.
-    const onResize = () => {
-      const rect = rootRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const width = Math.min(420, window.innerWidth - 16);
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-      setMenuPos({ top: rect.bottom + 8, left, width });
-      setMenuMaxHeight(fitBelow(rootRef, Math.min(440, window.innerHeight * 0.5)));
+    const onReposition = () => {
+      updateMenuPlacement();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
     };
   }, [open]);
 
@@ -244,15 +263,7 @@ export function AgentPicker() {
     if (!open) {
       setQuery("");
       setView("models");
-      // Viewport-anchored position for the portaled menu: below the trigger,
-      // clamped off the window's right edge. Measured here (not in render)
-      // so the menu opens exactly where the trigger is on this frame.
-      const rect = rootRef.current?.getBoundingClientRect();
-      if (rect) {
-        const width = Math.min(420, window.innerWidth - 16);
-        const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-        setMenuPos({ top: rect.bottom + 8, left, width });
-      }
+      updateMenuPlacement();
       // A live recheck, not the cached presence list: this menu is exactly
       // where a stale "connected" dot (credentials file present, token
       // actually expired) would send someone into a session that fails. It
@@ -275,7 +286,6 @@ export function AgentPicker() {
           void warmModels(id);
         }
       }
-      setMenuMaxHeight(fitBelow(rootRef, Math.min(440, window.innerHeight * 0.5)));
     }
     setOpen((o) => !o);
   };
@@ -316,6 +326,7 @@ export function AgentPicker() {
       setQuery("");
       void fetchModels(id);
     }
+    updateMenuPlacement();
     inputRef.current?.focus();
   };
 
@@ -652,42 +663,45 @@ export function AgentPicker() {
             // bleed through the agent tabs. `fixed` + body portal escapes it.
             style={{
               maxHeight: menuMaxHeight,
-              transformOrigin: "top left",
+              transformOrigin: menuPos.openUpward ? "bottom left" : "top left",
               top: menuPos.top,
+              bottom: menuPos.bottom,
               left: menuPos.left,
               width: menuPos.width,
             }}
-            className="menu menu-pop fixed z-[100] flex flex-col overflow-hidden rounded-2xl p-2 outline-none"
-        >
-          {view === "effort" ? (
-            <>
-              {/* Reasoning — its own screen, separate from the catalog, sized
-                to its own content rather than sharing the list's scroll
-                region. */}
-              <button
-                type="button"
-                onClick={() => setView("models")}
-                className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--hover)]"
-              >
-                <ChevronLeft size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
-                {(selectedModel ?? cliDefaultModel) ? (
-                  <ProviderLogo provider={(selectedModel ?? cliDefaultModel)!.provider} size={20} />
-                ) : (
-                  <ProviderGlyph
-                    provider={AGENT_PROVIDER[effective] ?? effective}
-                    size={20}
-                  />
-                )}
-                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
-                  {(selectedModel ?? cliDefaultModel)?.name ??
-                    (effectiveModelId || (current?.name ?? fallbackName(effective)))}
-                </span>
-              </button>
-              <div className="mx-1 my-1.5 shrink-0 border-t border-[var(--border)]" />
-              <div className="shrink-0 px-2 pb-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--faint)]">
-                REASONING
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
+            className={`menu ${
+              menuPos.openUpward ? "menu-pop-up" : "menu-pop"
+            } fixed z-[100] flex flex-col overflow-hidden rounded-2xl p-2 outline-none`}
+          >
+            {view === "effort" ? (
+              <>
+                {/* Reasoning — its own screen, separate from the catalog, sized
+                  to its own content rather than sharing the list's scroll
+                  region. */}
+                <button
+                  type="button"
+                  onClick={() => setView("models")}
+                  className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--hover)]"
+                >
+                  <ChevronLeft size={14} strokeWidth={2} className="shrink-0 text-[var(--faint)]" />
+                  {(selectedModel ?? cliDefaultModel) ? (
+                    <ProviderLogo provider={(selectedModel ?? cliDefaultModel)!.provider} size={20} />
+                  ) : (
+                    <ProviderGlyph
+                      provider={AGENT_PROVIDER[effective] ?? effective}
+                      size={20}
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]">
+                    {(selectedModel ?? cliDefaultModel)?.name ??
+                      (effectiveModelId || (current?.name ?? fallbackName(effective)))}
+                  </span>
+                </button>
+                <div className="mx-1 my-1.5 shrink-0 border-t border-[var(--border)]" />
+                <div className="shrink-0 px-2 pb-1 text-[10px] font-semibold tracking-[0.08em] text-[var(--faint)]">
+                  REASONING
+                </div>
+                <div className="min-h-[140px] flex-1 overflow-y-auto">
                 {variants.map((variant, index) => {
                   // Settings' pin wins the label when there is one; otherwise
                   // the model's own default effort is the thing worth marking,
@@ -929,26 +943,32 @@ export function AgentPicker() {
             </div>
           </div>
 
-          {/* Chat UI toggle — always visible above the model list for
-            chat-capable agents. On by default; turning it off asks for the
-            agent's own CLI instead. */}
+          {/* Controls row — Chat UI toggle & Bypass permissions toggle.
+            Placed in a 2-column grid when both are active so they stay compact
+            and leave maximum vertical space for the models list. */}
           {(() => {
             const entry = agentCatalog.find((c) => c.id === effective);
             const toggleable =
               entry?.chatUi ?? (RUNNABLE as readonly string[]).includes(effective);
-            if (!toggleable) return null;
+            const showChatUi = Boolean(toggleable);
+            const showBypass = isChat(effective) && isDrivable(effective);
+            if (!showChatUi && !showBypass) return null;
+
             const chat = isChat(effective);
             const label = current?.name ?? entry?.name ?? fallbackName(effective);
-            return (
-              <div className="mt-1.5 flex shrink-0 items-center gap-2.5 rounded-lg bg-[var(--card)] px-2.5 py-2">
-                {chat ? (
-                  <MessageSquare size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
-                ) : (
-                  <TerminalSquare size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
-                )}
-                <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--ink)]">
-                  {chat ? "Chat UI" : `Go to ${label} CLI`}
-                </span>
+
+            const chatUiNode = showChatUi ? (
+              <div className="flex min-w-0 items-center justify-between gap-1.5 rounded-lg bg-[var(--card)] px-2.5 py-1.5">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {chat ? (
+                    <MessageSquare size={13} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+                  ) : (
+                    <TerminalSquare size={13} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+                  )}
+                  <span className="truncate text-[12px] font-medium text-[var(--ink)]">
+                    {chat ? "Chat UI" : `CLI`}
+                  </span>
+                </div>
                 <button
                   type="button"
                   role="switch"
@@ -970,58 +990,70 @@ export function AgentPicker() {
                   />
                 </button>
               </div>
+            ) : null;
+
+            const bypassNode = showBypass ? (
+              <div className="flex min-w-0 items-center justify-between gap-1.5 rounded-lg bg-[var(--card)] px-2.5 py-1.5">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {composerBypass ? (
+                    <ShieldOff size={13} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+                  ) : (
+                    <ShieldCheck size={13} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
+                  )}
+                  <span className="truncate text-[12px] font-medium text-[var(--ink)]" title="Bypass permissions">
+                    Bypass permissions
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={composerBypass}
+                  title={
+                    composerBypass
+                      ? "The next session starts without asking — click to ask normally"
+                      : "Start the next session without asking for permission"
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setComposerBypass(!composerBypass);
+                  }}
+                  className={`flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full px-0.5 ${
+                    composerBypass
+                      ? "justify-end bg-[var(--toggle-on)]"
+                      : "justify-start bg-[var(--bubble)]"
+                  }`}
+                >
+                  <span
+                    className={`h-4 w-4 rounded-full ${
+                      composerBypass ? "bg-[var(--toggle-knob)]" : "bg-[var(--faint)]"
+                    }`}
+                  />
+                </button>
+              </div>
+            ) : null;
+
+            if (showChatUi && showBypass) {
+              return (
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5 shrink-0">
+                  {chatUiNode}
+                  {bypassNode}
+                </div>
+              );
+            }
+
+            return (
+              <div className="mt-1.5 flex shrink-0 flex-col gap-1.5">
+                {chatUiNode}
+                {bypassNode}
+              </div>
             );
           })()}
-
-          {/* Bypass permissions — for before a session exists to toggle it
-            on. Applied to the session the moment it's created (see
-            `applyComposerBypass` in the store); only offered where it means
-            anything — a chat session egant actually drives. Same neutral
-            switch as the Chat UI toggle above, not a warning color: this is
-            an ordinary setting, not something to alarm over. */}
-          {isChat(effective) && isDrivable(effective) && (
-            <div className="mt-1.5 flex shrink-0 items-center gap-2.5 rounded-lg bg-[var(--card)] px-2.5 py-2">
-              {composerBypass ? (
-                <ShieldOff size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
-              ) : (
-                <ShieldCheck size={14} strokeWidth={2} className="shrink-0 text-[var(--muted)]" />
-              )}
-              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--ink)]">
-                Bypass permissions
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={composerBypass}
-                title={
-                  composerBypass
-                    ? "The next session starts without asking — click to ask normally"
-                    : "Start the next session without asking for permission"
-                }
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setComposerBypass(!composerBypass);
-                }}
-                className={`flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full px-0.5 ${
-                  composerBypass
-                    ? "justify-end bg-[var(--toggle-on)]"
-                    : "justify-start bg-[var(--bubble)]"
-                }`}
-              >
-                <span
-                  className={`h-4 w-4 rounded-full ${
-                    composerBypass ? "bg-[var(--toggle-knob)]" : "bg-[var(--faint)]"
-                  }`}
-                />
-              </button>
-            </div>
-          )}
 
           {/* The catalog — the only scrolling region in the menu. */}
           <div
             key={`${effective}:${listToken}`}
             role="listbox"
-            className="mt-1 min-h-0 flex-1 overflow-y-auto"
+            className="mt-1 min-h-[140px] flex-1 overflow-y-auto"
           >
             {!isChat(effective) ? null : modelsLoading && catalog.length === 0 ? (
               <div className="px-2.5 py-3 text-[12px] text-[var(--faint)]">Loading models…</div>

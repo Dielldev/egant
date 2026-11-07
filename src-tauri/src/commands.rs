@@ -1077,6 +1077,17 @@ async fn list_agent_catalog() -> Result<Vec<CatalogStatus>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Query one catalog entry with its fresh on-disk presence and detected version.
+#[tauri::command]
+async fn get_agent_catalog_entry(agent: String) -> Result<Option<CatalogStatus>, String> {
+    log::debug!("get_agent_catalog_entry {agent}");
+    tauri::async_runtime::spawn_blocking(move || {
+        egant_harness::catalog::entry(&agent).map(egant_harness::catalog::status_of)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 /// Run one catalog entry's own install command. The command comes from the
 /// backend's table, never from the caller — the frontend sends an agent id
 /// and nothing else. Slow (a network install), so it runs off the command
@@ -2036,6 +2047,7 @@ pub fn handlers() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sy
         set_worktree_default,
         list_agents,
         list_agent_catalog,
+        get_agent_catalog_entry,
         install_agent,
         update_agent,
         check_agent_update,

@@ -1,5 +1,6 @@
 import { PHONE_SHOT } from "../content";
 import { Reveal } from "./Reveal";
+import { ScrollFrame } from "./ScrollFrame";
 
 const STEPS = [
   ["Install Tailscale", "and sign in. egant itself only ever listens on 127.0.0.1."],
@@ -19,7 +20,7 @@ export function Phone() {
           The desktop serves a small web client over your tailnet. Start a chat, switch models and
           answer prompts — the agents keep running on your computer.
         </p>
-        <ol className="steps">
+        <Reveal as="ol" className="steps stagger">
           {STEPS.map(([strong, rest], i) => (
             <li key={i}>
               <span className="step-n">0{i + 1}</span>
@@ -28,12 +29,12 @@ export function Phone() {
               </span>
             </li>
           ))}
-        </ol>
+        </Reveal>
       </Reveal>
       <Reveal delay={150} className="phone-visual">
-        <div className="phone-frame glass">
+        <ScrollFrame className="frame phone-frame">
           <img src={PHONE_SHOT} alt="The egant phone client" loading="lazy" />
-        </div>
+        </ScrollFrame>
       </Reveal>
     </section>
   );

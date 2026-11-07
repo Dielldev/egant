@@ -266,6 +266,11 @@ export const api = {
    * probe like `listAgents`, over the wider install catalog. */
   listAgentCatalog: () =>
     traced("list_agent_catalog", "", () => invoke<AgentCatalogEntry[]>("list_agent_catalog")),
+  /** Fresh on-disk status and version probe for a single agent. */
+  getAgentCatalogEntry: (agent: string) =>
+    traced("get_agent_catalog_entry", `agent=${agent}`, () =>
+      invoke<AgentCatalogEntry | null>("get_agent_catalog_entry", { agent }),
+    ),
   /** Runs the catalog's own install command for one agent. Only the id
    * crosses the boundary — the command itself lives in the backend's table,
    * so nothing here can ask it to run arbitrary shell. Slow: a real install. */
@@ -354,13 +359,24 @@ export const api = {
   // Terminals. One real PTY per terminal tab; output arrives on `pty-output`
   // rather than as a return value, which is what makes the shell live.
   ptySpawn: (cwd: string, cols: number, rows: number) =>
-    traced("pty_spawn", `cwd=${cwd}`, () => invoke<number>("pty_spawn", { cwd, cols, rows })),
+    traced("pty_spawn", `cwd=${cwd}`, () =>
+      invoke<number>("pty_spawn", {
+        cwd: typeof cwd === "string" ? cwd : "",
+        cols: typeof cols === "number" ? cols : 80,
+        rows: typeof rows === "number" ? rows : 24,
+      }),
+    ),
   /** The same, but running one agent's own CLI rather than a shell — what a
    * CLI session's stage opens onto. Resolves the binary from the install
    * catalog and hands it the user's login-shell environment. */
   ptySpawnAgent: (cwd: string, agent: string, cols: number, rows: number) =>
     traced("pty_spawn_agent", `agent=${agent} cwd=${cwd}`, () =>
-      invoke<number>("pty_spawn_agent", { cwd, agent, cols, rows }),
+      invoke<number>("pty_spawn_agent", {
+        cwd: typeof cwd === "string" ? cwd : "",
+        agent: typeof agent === "string" ? agent : "",
+        cols: typeof cols === "number" ? cols : 80,
+        rows: typeof rows === "number" ? rows : 24,
+      }),
     ),
   ptyWrite: (id: number, data: string) =>
     invoke<void>("pty_write", { id, data }).catch((error: unknown) => {

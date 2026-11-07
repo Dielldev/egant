@@ -247,7 +247,7 @@ export function WorkspacePanel() {
               icon={<TerminalIcon size={15} strokeWidth={1.9} />}
               label="Terminal"
               detail="A shell in this folder"
-              onClick={openTerminalTab}
+              onClick={() => openTerminalTab()}
             />
             <ChooserButton
               icon={<GitBranch size={15} strokeWidth={1.9} />}
@@ -259,7 +259,7 @@ export function WorkspacePanel() {
               icon={<Globe size={15} strokeWidth={1.9} />}
               label="Browser"
               detail="A real page, side by side with the chat"
-              onClick={openBrowserTab}
+              onClick={() => openBrowserTab()}
             />
           </div>
         )}
@@ -313,7 +313,7 @@ function ChooserButton({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onClick()}
       className="flex w-full max-w-[220px] cursor-pointer items-center gap-2.5 rounded-lg border border-[var(--border)] px-3 py-2 text-left hover:bg-[var(--hover)]"
     >
       <span className="shrink-0 text-[var(--muted)]">{icon}</span>

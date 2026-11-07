@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Mark } from "../components/Mark";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { REPO } from "../content";
 import { GUIDES } from "./guides";
 import "./../styles.css";
@@ -7,25 +8,29 @@ import "./../styles.css";
 export function GuidesPage() {
   return (
     <>
-      <div className="backdrop" aria-hidden>
-        <span className="glow glow-a" />
-        <span className="glow glow-b" />
-      </div>
-      <header className="nav glass">
-        <Link className="brand" to="/">
-          <Mark width={20} />
-          egant
-        </Link>
-        <nav className="nav-links">
-          {GUIDES.map((guide) => (
-            <a href={`#${guide.id}`} key={guide.id}>
-              {guide.nav}
+      <header className="nav">
+        <div className="nav-in">
+          <Link className="brand" to="/">
+            <Mark width={20} />
+            egant
+          </Link>
+          <nav className="nav-links">
+            {GUIDES.map((guide) => (
+              <a href={`#${guide.id}`} key={guide.id}>
+                {guide.nav}
+              </a>
+            ))}
+          </nav>
+          <div className="nav-end">
+            <ThemeToggle />
+            <a
+              className="btn btn-primary btn-sm"
+              href="https://github.com/Dielldev/egant/releases/latest"
+            >
+              Download
             </a>
-          ))}
-        </nav>
-        <a className="btn btn-primary btn-sm" href="https://github.com/Dielldev/egant/releases/latest">
-          Download
-        </a>
+          </div>
+        </div>
       </header>
       <main>
         <section className="section guides-intro">
@@ -39,7 +44,7 @@ export function GuidesPage() {
           </p>
           <div className="guides-index">
             {GUIDES.map((guide, i) => (
-              <a className="guide-index-card glass" href={`#${guide.id}`} key={guide.id}>
+              <a className="guide-index-card" href={`#${guide.id}`} key={guide.id}>
                 <span className="step-n">0{i + 1}</span>
                 <span>
                   <b>{guide.nav}</b>

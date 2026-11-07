@@ -1,4 +1,4 @@
-import { PanelRight, PanelRightClose } from "lucide-react";
+import { PanelRight, PanelRightClose, PanelRightDashed } from "lucide-react";
 import { useColumnLayout } from "../lib/layout";
 import { modShortcut } from "../lib/platform";
 import { selectOnLaunchScreen, useEgant } from "../store";
@@ -107,7 +107,7 @@ export function SessionHeader({ bare }: { bare?: boolean }) {
           {active?.busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--busy)]" />}
           {/* Stops short of the panel button so the title can't run under it. */}
           <div data-tauri-drag-region className="h-full flex-1" />
-          <div data-tauri-drag-region className="h-full w-7 shrink-0" />
+          <div data-tauri-drag-region className="h-full w-[60px] shrink-0" />
         </div>
       )}
       {/* Pinned to the stage's top-right corner rather than placed in a row:
@@ -125,9 +125,31 @@ function PanelButtonSlot() {
   const onLaunchScreen = useEgant(selectOnLaunchScreen);
   if (onLaunchScreen) return null;
   return (
-    <div className="absolute top-[7px] right-3 z-20">
+    <div className="absolute top-[7px] right-3 z-20 flex items-center gap-0.5">
+      <ContextButton />
       <PanelButton />
     </div>
+  );
+}
+
+/** The way into the context sidebar: how full the window is, the environment,
+ * connectors and changes. Sits beside the panel button, which it must not be
+ * mistaken for — hence its own glyph. */
+function ContextButton() {
+  const contextOpen = useEgant((s) => s.contextOpen);
+  const toggleContext = useEgant((s) => s.toggleContext);
+
+  return (
+    <button
+      type="button"
+      title={contextOpen ? "Hide context" : "Context, environment and changes"}
+      onClick={() => toggleContext()}
+      className={`cursor-pointer rounded-md p-1.5 hover:bg-[var(--hover)] hover:text-[var(--ink)] ${
+        contextOpen ? "text-[var(--ink)]" : "text-[var(--muted)]"
+      }`}
+    >
+      <PanelRightDashed size={15} strokeWidth={2} />
+    </button>
   );
 }
 

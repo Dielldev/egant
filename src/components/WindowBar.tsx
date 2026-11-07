@@ -24,7 +24,7 @@ export function WindowBar() {
   const canBack = startingNew || index > 0;
   const canForward = index >= 0 && index < sessions.length - 1;
   const { sidebarShown: open, sidebarYielded } = useColumnLayout();
-  const togglePanel = useEgant((s) => s.togglePanel);
+  const yieldToSidebar = useEgant((s) => s.yieldToSidebar);
 
   return (
     <div
@@ -44,12 +44,12 @@ export function WindowBar() {
       <Button
         label={
           sidebarYielded
-            ? "Sidebar hidden to make room for the panel — closes the panel"
+            ? "Sidebar hidden to make room for the right-hand columns — closes them"
             : `Toggle sidebar · ${modShortcut("B")}`
         }
-        // There is no room for both columns, so showing the sidebar means
-        // closing the one that displaced it.
-        onClick={() => (sidebarYielded ? togglePanel() : void toggleSidebar())}
+        // There is no room for every column, so showing the sidebar means
+        // closing the ones that displaced it.
+        onClick={() => (sidebarYielded ? yieldToSidebar() : void toggleSidebar())}
         active={open}
       >
         <PanelLeft size={15} strokeWidth={2} />

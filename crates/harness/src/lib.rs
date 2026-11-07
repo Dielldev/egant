@@ -544,15 +544,18 @@ pub fn project_display_name(cwd: &std::path::Path) -> String {
 /// the turn text on wires that don't (Codex, opencode) — see
 /// [`wrap_turn_with_project`].
 ///
-/// Ground the model transparently with the project name and working directory,
-/// instructing it to validate its working directory before continuing with
-/// operations without artificial constraints forbidding folder inspection.
+/// The app, not the model, owns validation: it checks the directory exists
+/// before spawning the agent (see `claude.rs` / `runner.rs`) and pins the
+/// session to it. The prompt therefore states the location as fact and asks
+/// the model to use it silently — no "validating" or "confirming" narration
+/// in the transcript — while still answering plainly if the user asks where
+/// it is working.
 pub fn project_system_prompt(project_name: &str, cwd: &std::path::Path) -> String {
     format!(
         "You are working in project \"{project_name}\" at {path}. \
          Your working directory is {path}. \
-         Validate your working directory before continuing with any operations. \
-         Be transparent with the user about your active folder and project location.",
+         This location is already verified by the app, so do not check it, confirm it, or mention it unprompted; just work there. \
+         Only state the project name or path if the user asks.",
         path = cwd.display()
     )
 }
@@ -587,7 +590,7 @@ fn format_skill_prompt(
 ) -> String {
     if user_instruction.is_empty() {
         format!(
-            "[Project: {project_name} | Path: {path} — validate your working directory before continuing]\n\
+            "[Project: {project_name} | Path: {path}]\n\
             [Skill: {skill_id} | Path: {skill_file}]\n\
             Please apply and follow the instructions in the {skill_id} skill below:\n\n\
             <skill_instructions>\n\
@@ -598,7 +601,7 @@ fn format_skill_prompt(
         )
     } else {
         format!(
-            "[Project: {project_name} | Path: {path} — validate your working directory before continuing]\n\
+            "[Project: {project_name} | Path: {path}]\n\
             [Skill: {skill_id} | Path: {skill_file}]\n\
             Please apply and follow the instructions in the {skill_id} skill below to fulfill the user request:\n\n\
             <skill_instructions>\n\
@@ -681,7 +684,7 @@ pub fn wrap_turn_with_project(project_name: &str, cwd: &std::path::Path, text: &
         return wrapped_skill;
     }
     format!(
-        "[Project: {project_name} | Path: {path} — validate your working directory before continuing]\n{text}",
+        "[Project: {project_name} | Path: {path}]\n{text}",
         path = cwd.display()
     )
 }
@@ -695,8 +698,13 @@ mod project_context_tests {
         let prompt = project_system_prompt("Arka", std::path::Path::new("/tmp/Arka"));
         assert!(prompt.contains("Arka"));
         assert!(prompt.contains("/tmp/Arka"));
-        assert!(prompt.contains("Validate your working directory"));
-        assert!(!prompt.contains("do not run `pwd`"));
+        // The app validates the directory; the model must not narrate it.
+        assert!(
+            !prompt
+                .to_lowercase()
+                .contains("validate your working directory")
+        );
+        assert!(!prompt.to_lowercase().contains("be transparent"));
     }
 
     #[test]
@@ -704,8 +712,7 @@ mod project_context_tests {
         let wrapped = wrap_turn_with_project("Arka", std::path::Path::new("/tmp/Arka"), "hi");
         assert!(wrapped.contains("Arka"));
         assert!(wrapped.ends_with("hi"));
-        assert!(wrapped.contains("validate your working directory"));
-        assert!(!wrapped.contains("do not run `pwd`"));
+        assert!(!wrapped.to_lowercase().contains("validate"));
     }
 
     #[test]

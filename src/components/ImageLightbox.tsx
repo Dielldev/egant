@@ -37,10 +37,30 @@ export function ImageLightbox() {
     if (activeImage) {
       setZoom(1);
       setPan({ x: 0, y: 0 });
+      setIsDragging(false);
       setCopied(false);
       setImgNaturalSize(activeImage.dimensions ?? null);
     }
   }, [activeImage]);
+
+  const handleZoomIn = useCallback(() => {
+    setZoom((z) => Math.min(5, Math.round((z + 0.25) * 100) / 100));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setZoom((z) => {
+      const next = Math.max(0.25, Math.round((z - 0.25) * 100) / 100);
+      if (next <= 1) {
+        setPan({ x: 0, y: 0 });
+      }
+      return next;
+    });
+  }, []);
+
+  const handleResetZoom = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
 
   // Keyboard shortcut listener
   useEffect(() => {
@@ -50,18 +70,17 @@ export function ImageLightbox() {
       if (e.key === "Escape") {
         close();
       } else if (e.key === "+" || e.key === "=") {
-        setZoom((z) => Math.min(5, Math.round((z + 0.25) * 100) / 100));
+        handleZoomIn();
       } else if (e.key === "-" || e.key === "_") {
-        setZoom((z) => Math.max(0.2, Math.round((z - 0.25) * 100) / 100));
+        handleZoomOut();
       } else if (e.key === "0") {
-        setZoom(1);
-        setPan({ x: 0, y: 0 });
+        handleResetZoom();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeImage, close]);
+  }, [activeImage, close, handleZoomIn, handleZoomOut, handleResetZoom]);
 
   const handleCopy = useCallback(async () => {
     if (!activeImage) return;
@@ -88,39 +107,46 @@ export function ImageLightbox() {
     close();
   }, [activeImage, close]);
 
+  // Keep image stiff: prevent scroll wheel from wildly zooming
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const factor = e.deltaY < 0 ? 1.15 : 0.85;
-    setZoom((z) => {
-      const next = Math.max(0.2, Math.min(6, Math.round(z * factor * 100) / 100));
-      return next;
-    });
   }, []);
 
-  const handleMouseDown = useCallback(
+  // Dragging to pan when zoomed in
+  const handleImageMouseDown = useCallback(
     (e: React.MouseEvent) => {
+      e.stopPropagation();
       if (e.button !== 0) return;
-      setIsDragging(true);
-      setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      if (zoom > 1) {
+        setIsDragging(true);
+        setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      }
     },
-    [pan],
+    [pan, zoom],
   );
 
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
-      if (!isDragging) return;
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const onMouseMove = (e: MouseEvent) => {
       setPan({
         x: e.clientX - dragStart.x,
         y: e.clientY - dragStart.y,
       });
-    },
-    [isDragging, dragStart],
-  );
+    };
 
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
-  }, []);
+    const onMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [isDragging, dragStart]);
 
   const handleDoubleClick = useCallback(() => {
     if (zoom !== 1) {
@@ -146,7 +172,9 @@ export function ImageLightbox() {
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex flex-col bg-black/85 backdrop-blur-md select-none animate-in fade-in duration-150"
-      onMouseDown={close}
+      onMouseDown={(e) => {
+        if (e.button === 0 && e.target === e.currentTarget) close();
+      }}
     >
       {/* Top Header Bar */}
       <div
@@ -172,29 +200,33 @@ export function ImageLightbox() {
             <button
               type="button"
               title="Zoom out (-)"
-              onClick={() => setZoom((z) => Math.max(0.2, Math.round((z - 0.25) * 100) / 100))}
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white"
+              disabled={zoom <= 0.25}
+              onClick={handleZoomOut}
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Minus size={13} strokeWidth={2.5} />
             </button>
-            <span className="w-12 text-center font-mono text-xs text-white/80">
+            <button
+              type="button"
+              title="Reset Zoom (0)"
+              onClick={handleResetZoom}
+              className="w-12 cursor-pointer text-center font-mono text-xs text-white/80 hover:text-white"
+            >
               {Math.round(zoom * 100)}%
-            </span>
+            </button>
             <button
               type="button"
               title="Zoom in (+)"
-              onClick={() => setZoom((z) => Math.min(5, Math.round((z + 0.25) * 100) / 100))}
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white"
+              disabled={zoom >= 5}
+              onClick={handleZoomIn}
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus size={13} strokeWidth={2.5} />
             </button>
             <button
               type="button"
               title="Reset Zoom (0)"
-              onClick={() => {
-                setZoom(1);
-                setPan({ x: 0, y: 0 });
-              }}
+              onClick={handleResetZoom}
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white"
             >
               <RotateCcw size={12} strokeWidth={2} />
@@ -262,18 +294,20 @@ export function ImageLightbox() {
       <div
         className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6"
         onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        onMouseDown={(e) => {
+          if (e.button === 0 && e.target === e.currentTarget) close();
+        }}
       >
         <div
-          className="relative inline-block max-h-full max-w-full transition-transform duration-75"
+          className={`relative inline-block max-h-full max-w-full ${
+            isDragging ? "transition-none" : "transition-transform duration-150"
+          }`}
           style={{
             transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
             cursor: zoom > 1 ? (isDragging ? "grabbing" : "grab") : "default",
           }}
           onDoubleClick={handleDoubleClick}
-          onMouseDown={(e) => e.stopPropagation()}
+          onMouseDown={handleImageMouseDown}
         >
           <div className="image-checker overflow-hidden rounded-lg shadow-2xl ring-1 ring-white/10">
             <img
@@ -287,7 +321,7 @@ export function ImageLightbox() {
                   height: img.naturalHeight,
                 });
               }}
-              className="max-h-[82vh] max-w-[88vw] object-contain"
+              className="max-h-[82vh] max-w-[88vw] object-contain select-none"
             />
           </div>
         </div>
@@ -295,9 +329,8 @@ export function ImageLightbox() {
         {/* Bottom hint */}
         <div
           className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3.5 py-1 text-[11px] text-white/50 backdrop-blur-sm"
-          onMouseDown={(e) => e.stopPropagation()}
         >
-          Scroll to zoom · Drag to pan · Double-click to toggle fit · Esc to close
+          Use + / - to zoom · Drag to pan · Double-click to toggle fit · Esc to close
         </div>
       </div>
     </div>,

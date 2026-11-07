@@ -2,6 +2,7 @@ import launchShot from "../../docs/screenshots/1-launch.png";
 import workspaceShot from "../../docs/screenshots/2-chat-and-editor.png";
 import diffShot from "../../docs/screenshots/3-diff-and-browser.png";
 import phoneShot from "../../docs/screenshots/4-phone.png";
+import heroImage from "./assets/egant-hero.jpg";
 import wallCats from "./assets/shots/wall-cats.jpg";
 import wallSky from "./assets/shots/wall-sky.jpg";
 import wallTorii from "./assets/shots/wall-torii.jpg";
@@ -80,16 +81,17 @@ export const AGENTS: Agent[] = [
 
 export type Shot = { label: string; title: string; body: string; src: string; alt: string };
 
-export const HERO_SHOT: Shot = {
-  label: "Launch",
-  title: "Pick an agent, pick a model, go.",
-  body: "egant finds the CLIs on your machine and shows which are logged in.",
-  src: launchShot,
-  alt: "egant launch screen",
-};
+export const HERO_IMAGE = heroImage;
 
 /** The tabbed tour of the app, in the order a session usually goes. */
 export const SHOWCASE: Shot[] = [
+  {
+    label: "Launch",
+    title: "Pick an agent, pick a model, go.",
+    body: "egant finds the CLIs on your machine and shows which are logged in.",
+    src: launchShot,
+    alt: "egant launch screen",
+  },
   {
     label: "Chat",
     title: "Every tool call, right where it happened.",

@@ -228,6 +228,7 @@ pub struct AgentStatus {
     pub email: Option<String>,
     pub account_name: Option<String>,
     pub plan: Option<String>,
+    pub version: Option<String>,
 }
 
 /// Probe every known agent. One login-shell snapshot is shared across the
@@ -246,6 +247,9 @@ fn build_status(id: AgentId) -> AgentStatus {
     let desc = id.descriptor();
     let executable = resolve_executable(desc);
     let installed = executable.is_some();
+    let version = executable
+        .as_ref()
+        .and_then(|p| crate::catalog::local_version(p));
     // opencode has no single "logged in" state the way Claude/Codex/Cursor
     // do — confirmed live: `opencode run` answers real turns against
     // OpenCode Zen's free-tier models with no auth.json on disk at all, so
@@ -298,6 +302,7 @@ fn build_status(id: AgentId) -> AgentStatus {
         email,
         account_name,
         plan,
+        version,
     }
 }
 
@@ -349,7 +354,11 @@ fn verify_claude_login() -> Option<(bool, Option<String>)> {
     let mut cmd = std::process::Command::new(prog);
     cmd.args(prefix)
         .args(["auth", "status", "--json"])
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .env("PATH", execution_path());
+    for (k, v) in login_shell_env() {
+        cmd.env(k, v);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -372,7 +381,11 @@ fn verify_codex_login() -> Option<(bool, Option<String>)> {
     let mut cmd = std::process::Command::new(prog);
     cmd.args(prefix)
         .args(["login", "status"])
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .env("PATH", execution_path());
+    for (k, v) in login_shell_env() {
+        cmd.env(k, v);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

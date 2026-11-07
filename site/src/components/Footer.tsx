@@ -21,16 +21,13 @@ export function Footer() {
     <>
       <section className="closing" id="download">
         <Reveal>
-          <Mark width={56} wave />
           <h2>
-            Stop juggling terminals.
-            <br />
-            <span className="dim">Start running agents.</span>
+            Stop juggling terminals. <span className="dim">Start running agents.</span>
           </h2>
           <div className="closing-cta">
-            {downloads.map((download) => (
+            {downloads.map((download, i) => (
               <a
-                className="btn btn-primary"
+                className={`btn ${i === 0 ? "btn-primary" : "btn-outline"}`}
                 href={download.url}
                 key={download.os}
               >
@@ -38,7 +35,7 @@ export function Footer() {
               </a>
             ))}
           </div>
-          <p className="hero-note" style={{ marginTop: "22px" }}>
+          <p className="hero-note">
             {primary.detail} · {primary.note} ·{" "}
             <Link to={primary.guide} className="text-link">
               {primary.guideLabel}
