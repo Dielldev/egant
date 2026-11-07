@@ -9,7 +9,7 @@ import { LogoLoader } from "./components/Logo";
 import { SearchModal } from "./components/SearchModal";
 import { SessionHeader } from "./components/SessionHeader";
 import { setMenuActionHandler } from "./lib/menuActions";
-import { isMac, isWindows } from "./lib/platform";
+import { isMac, usesCustomTitlebar } from "./lib/platform";
 import { useColumnLayout } from "./lib/layout";
 import { log } from "./lib/logger";
 import { checkForUpdates } from "./lib/updater";
@@ -63,7 +63,7 @@ type Stage = "launch" | "docking" | "thread";
 export default function App() {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-transparent text-[var(--ink)]">
-      {isWindows() && <WindowsChrome />}
+      {usesCustomTitlebar() && <WindowsChrome />}
       <div className="min-h-0 flex-1">
         <EgantWindow />
       </div>
