@@ -85,7 +85,7 @@ export const AgentCard = memo(function AgentCard({ entry }: { entry: ToolEntry }
 /** A subagent's steps in order: runs of tool calls fold into one activity
  * block, as they do in the conversation; its words read as quieter text; a
  * subagent it launched gets a card of its own. */
-function AgentSteps({ steps }: { steps: Entry[] }) {
+export function AgentSteps({ steps }: { steps: Entry[] }) {
   const nodes: ReactNode[] = [];
   let i = 0;
   while (i < steps.length) {

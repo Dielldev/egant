@@ -16,7 +16,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.19"
+version = "0.1.20"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -52,6 +52,7 @@ portable-pty = "0.9"
 
 anyhow = "1"
 async-channel = "2"
+async-io = "2"
 async-process = "2"
 async-trait = "0.1"
 futures-lite = "2"
@@ -99,3 +100,15 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.release]
+# Shipped builds trade compile time for a smaller, faster binary: a smaller
+# image means fewer pages resident, and cross-crate inlining (webview glue,
+# serde, git2, tokio) trims CPU on every event. `panic` stays `unwind` on
+# purpose — worker threads here are joined and a panic in one must not take
+# the whole app down.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+incremental = false

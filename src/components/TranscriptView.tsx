@@ -908,7 +908,7 @@ function ChatOutline({
               <div className="pointer-events-none absolute top-1/2 left-full -translate-y-1/2">
                 {/* Fixed footprint: capped height with clipped text, so the
                   card never sprawls over the transcript beneath it. */}
-                <div className="menu rail-card-in flex max-h-[220px] w-[280px] flex-col gap-1.5 overflow-hidden rounded-[12px] p-2 backdrop-blur-[16px]">
+                <div className="menu rail-card-in flex max-h-[220px] w-[280px] flex-col gap-1.5 overflow-hidden rounded-[12px] p-2">
                   <div className="truncate text-[12px] leading-5 text-[var(--ink)]">
                     {tick.prompt}
                   </div>

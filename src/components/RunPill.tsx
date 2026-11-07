@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { detectRunCommand, type RunCommand } from "../lib/runCommand";
 import type { WorktreeInfo } from "../lib/types";
 import { useEgant } from "../store";
-import { queueTerminalCommand } from "./TerminalPane";
 
 /** What a finished task offers next when the project says how to run itself.
  *
@@ -40,7 +39,7 @@ export function RunPill({ cwd, worktree }: { cwd: string; worktree: WorktreeInfo
         title={`Run \`${run.command}\`${where} — opens a terminal${worktree ? " in this worktree" : ""} and runs it`}
         onClick={() => {
           const tabId = openTerminalTab(cwd);
-          queueTerminalCommand(tabId, run.command);
+          void import("./TerminalPane").then((m) => m.queueTerminalCommand(tabId, run.command));
         }}
         className="flex cursor-pointer items-center gap-2 rounded-full bg-[#f2f2f5] py-1.5 pr-3.5 pl-3 text-xs text-[#0c0c0e] hover:opacity-85"
       >

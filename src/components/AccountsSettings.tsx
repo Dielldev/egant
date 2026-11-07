@@ -302,7 +302,7 @@ function DeveloperHeroCard({
   const initial = (name?.trim()?.[0] ?? email?.trim()?.[0] ?? "D").toUpperCase();
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-5 shadow-sm backdrop-blur-sm">
+    <div className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-5 shadow-sm">
       <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
         {/* User Profile Info */}
         <div className="flex items-center gap-4">

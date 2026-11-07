@@ -1,4 +1,6 @@
 import {
+  ArrowLeft,
+  Bot,
   ChevronDown,
   ChevronUp,
   FolderOpen,
@@ -8,14 +10,19 @@ import {
   Laptop,
   Settings,
   Smartphone,
+  SquareTerminal,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import {
+  type BackgroundStatus,
+  type BackgroundTask,
   CONTEXT_WIDTH,
   type ContextSectionId,
+  backgroundTasks,
   contextBreakdown,
+  findToolEntry,
   mcpToolCounts,
   moveContextSection,
   prettyServerName,
@@ -26,6 +33,8 @@ import { formatCost, formatTokens } from "../lib/transcript";
 import type { GitChange, InstalledMcp, RepoStatus } from "../lib/types";
 import { modelWindowFor } from "../lib/types";
 import { selectActiveSession, useEgant, workspaceRoot } from "../store";
+import { AgentSteps } from "./AgentCard";
+import { Markdown } from "./Markdown";
 import { usePhoneAccess } from "./PhoneAccess";
 import { Toggle } from "./SettingsKit";
 
@@ -40,6 +49,12 @@ export function ContextSidebar() {
   const order = useEgant((s) => s.contextOrder);
   const setOrder = useEgant((s) => s.setContextOrder);
   const toggleContext = useEgant((s) => s.toggleContext);
+  const sessionId = useEgant((s) => selectActiveSession(s.snapshot)?.id ?? null);
+
+  // The background task whose thread is open in place of the sections. Tied to
+  // the session it was opened in, so switching chats never shows a stranger's.
+  const [thread, setThread] = useState<{ session: number; task: string } | null>(null);
+  const openThread = thread && thread.session === sessionId ? thread.task : null;
 
   // `armed` is the section whose grip is held — only then does its card become
   // draggable, so selecting text inside a section never starts a drag.
@@ -79,6 +94,9 @@ export function ContextSidebar() {
         </button>
       </div>
 
+      {openThread && sessionId !== null ? (
+        <TaskThread sessionId={sessionId} taskId={openThread} onBack={() => setThread(null)} />
+      ) : (
       <div className="min-h-0 flex-1 overflow-y-auto px-3.5 pb-4">
         {order.map((id, index) => (
           <div
@@ -131,18 +149,25 @@ export function ContextSidebar() {
               }}
             />
             {id === "context" && <ContextSection />}
+            {id === "background" && (
+              <BackgroundSection
+                onOpen={(task) => sessionId !== null && setThread({ session: sessionId, task })}
+              />
+            )}
             {id === "environment" && <EnvironmentSection />}
             {id === "connectors" && <ConnectorsSection />}
             {id === "changes" && <ChangesSection />}
           </div>
         ))}
       </div>
+      )}
     </aside>
   );
 }
 
 const SECTION_TITLES: Record<ContextSectionId, string> = {
   context: "Context",
+  background: "Background tasks",
   environment: "Environment",
   connectors: "Connectors",
   changes: "Changes",
@@ -401,6 +426,271 @@ function Row({
       </span>
       {children}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Background tasks
+// ---------------------------------------------------------------------------
+
+const SETTLED_SHOWN = 3;
+
+const STATUS_LABEL: Record<BackgroundStatus, string> = {
+  running: "Running",
+  background: "In background",
+  done: "Done",
+  failed: "Failed",
+  stopped: "Stopped",
+};
+
+const STATUS_HINT: Partial<Record<BackgroundStatus, string>> = {
+  background:
+    "The agent handed this off and moved on. egant hasn't seen it report back, so it may still be going.",
+  stopped: "Cut off before it reported back.",
+};
+
+/** Subagents and background shells the agent started — whichever agent this
+ * is. Read off the calls that launched them (see `backgroundTasks`). */
+function BackgroundSection({ onOpen }: { onOpen: (task: string) => void }) {
+  const snapshot = useEgant((s) => s.snapshot);
+  const session = selectActiveSession(snapshot);
+  const transcript = useEgant((s) => (session ? s.transcripts[session.id] : undefined));
+  const [all, setAll] = useState(false);
+
+  const tasks = useMemo(
+    () => backgroundTasks(transcript?.entries ?? [], transcript?.state ?? "idle"),
+    [transcript?.entries, transcript?.state],
+  );
+
+  if (session?.kind === "cli") {
+    return (
+      <p className="text-[12.5px] leading-relaxed text-[var(--faint)]">
+        This session runs the agent&apos;s own terminal, so egant can&apos;t see what it runs
+        in the background.
+      </p>
+    );
+  }
+  if (tasks.length === 0) {
+    return (
+      <p className="text-[12.5px] text-[var(--faint)]">
+        Nothing running in the background. Subagents and background commands the agent starts
+        show up here.
+      </p>
+    );
+  }
+
+  const live = tasks.filter((t) => t.status === "running" || t.status === "background");
+  const settled = tasks.filter((t) => !live.includes(t));
+  const shownSettled = all ? settled : settled.slice(0, SETTLED_SHOWN);
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {[...live, ...shownSettled].map((task) => (
+        <TaskRow key={task.id} task={task} onOpen={() => onOpen(task.id)} />
+      ))}
+      {settled.length > SETTLED_SHOWN && (
+        <button
+          type="button"
+          onClick={() => setAll((v) => !v)}
+          className="mt-1 flex cursor-pointer items-center gap-1 self-start text-[12px] text-[var(--faint)] hover:text-[var(--ink)]"
+        >
+          {all ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {all ? "Show fewer" : `${settled.length - SETTLED_SHOWN} more finished`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function TaskRow({ task, onOpen }: { task: BackgroundTask; onOpen: () => void }) {
+  const Icon = task.kind === "agent" ? Bot : SquareTerminal;
+  const detail =
+    task.kind === "agent" && task.steps > 0
+      ? `${task.steps} ${task.steps === 1 ? "step" : "steps"}`
+      : null;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="-mx-1.5 flex min-h-[28px] cursor-pointer items-center gap-2.5 rounded-md px-1.5 text-left hover:bg-[var(--hover)]"
+      title={`${task.title}${STATUS_HINT[task.status] ? `\n${STATUS_HINT[task.status]}` : ""}`}
+    >
+      <Icon size={14} strokeWidth={1.75} className="shrink-0 text-[var(--faint)]" />
+      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">{task.title}</span>
+      <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-[var(--muted)]">
+        <StatusDot status={task.status} />
+        {detail && task.status === "running" ? detail : STATUS_LABEL[task.status]}
+      </span>
+    </button>
+  );
+}
+
+/** One background task opened up, like a small chat of its own: what it was
+ * asked, what it did and said as it went, and what it reported back. For a
+ * subagent the steps are the ones the harness folded under its launching call;
+ * an agent that doesn't stream those leaves only the ask and the report. A
+ * shell shows its command and whatever output came back. */
+function TaskThread({
+  sessionId,
+  taskId,
+  onBack,
+}: {
+  sessionId: number;
+  taskId: string;
+  onBack: () => void;
+}) {
+  const entries = useEgant((s) => s.transcripts[sessionId]?.entries);
+  const turn = useEgant((s) => s.transcripts[sessionId]?.state ?? "idle");
+  const entry = useMemo(() => (entries ? findToolEntry(entries, taskId) : null), [entries, taskId]);
+  const task = useMemo(
+    () => (entries ? backgroundTasks(entries, turn).find((t) => t.id === taskId) : undefined),
+    [entries, turn, taskId],
+  );
+
+  const scroller = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const steps = entry?.children ?? [];
+  // Follow a running subagent as it writes — unless the reader scrolled up.
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [steps, entry?.output]);
+
+  if (!entry || !task) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col px-3.5">
+        <BackButton onBack={onBack} />
+        <p className="text-[12.5px] text-[var(--faint)]">This task is no longer in the conversation.</p>
+      </div>
+    );
+  }
+
+  const input = (entry.input ?? {}) as Record<string, unknown>;
+  const asked =
+    task.kind === "agent"
+      ? typeof input.prompt === "string"
+        ? input.prompt
+        : typeof input.task === "string"
+          ? input.task
+          : typeof input.message === "string"
+            ? input.message
+            : null
+      : null;
+  const command =
+    task.kind === "shell"
+      ? typeof input.command === "string"
+        ? input.command
+        : typeof input.cmd === "string"
+          ? input.cmd
+          : null
+      : null;
+  // A detached launch answers with its own bookkeeping (ids, file paths), not
+  // with anything the task produced.
+  const output = entry.output?.trim() ?? "";
+  const launchAck = /launched successfully|running in background|started in background/i.test(output);
+  const report = output && !(task.detached && launchAck) ? output : "";
+  const running = task.status === "running";
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="px-3.5">
+        <BackButton onBack={onBack} />
+        <div className="flex items-center gap-2 pb-2">
+          {task.kind === "agent" ? (
+            <Bot size={14} strokeWidth={1.75} className="shrink-0 text-[var(--muted)]" />
+          ) : (
+            <SquareTerminal size={14} strokeWidth={1.75} className="shrink-0 text-[var(--muted)]" />
+          )}
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--ink)]" title={task.title}>
+            {task.title}
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-[var(--muted)]">
+            <StatusDot status={task.status} />
+            {STATUS_LABEL[task.status]}
+          </span>
+        </div>
+      </div>
+      <div
+        ref={scroller}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-t border-[var(--border)] px-3.5 pt-3 pb-4 text-[13px]"
+      >
+        {asked && (
+          <div className="max-h-48 self-end overflow-y-auto rounded-xl bg-[var(--bubble)] px-3 py-2 text-[12.5px] whitespace-pre-wrap text-[var(--ink)]">
+            {asked}
+          </div>
+        )}
+        {command && (
+          <pre className="overflow-x-auto rounded-lg bg-[var(--bubble)] px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-[var(--ink)]">
+            {command}
+          </pre>
+        )}
+        {task.kind === "agent" && <AgentSteps steps={steps} />}
+        {report &&
+          (task.kind === "agent" ? (
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] text-[var(--faint)]">
+                {entry.isError ? "Failed" : "Reported back"}
+              </span>
+              <div className="text-[var(--ink)]">
+                <Markdown text={report} />
+              </div>
+            </div>
+          ) : (
+            <pre className="max-h-80 overflow-auto rounded-lg border border-[var(--border)] px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-[var(--muted)]">
+              {report}
+            </pre>
+          ))}
+        {task.kind === "agent" && steps.length === 0 && !report && (
+          <p className="text-[12px] text-[var(--faint)]">
+            {running ? "Waiting for its first step…" : "No steps were recorded for this task."}
+          </p>
+        )}
+        {task.kind === "agent" && steps.length === 0 && report && (
+          <p className="text-[11.5px] text-[var(--faint)]">
+            This agent doesn&apos;t share its subagent&apos;s individual steps — only what it
+            reported back.
+          </p>
+        )}
+        {task.status === "background" && (
+          <p className="text-[11.5px] leading-relaxed text-[var(--faint)]">
+            {STATUS_HINT.background}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BackButton({ onBack }: { onBack: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onBack}
+      className="-ml-1 mb-1 flex cursor-pointer items-center gap-1.5 rounded-md px-1 py-1 text-[12px] text-[var(--faint)] hover:text-[var(--ink)]"
+    >
+      <ArrowLeft size={13} />
+      Session
+    </button>
+  );
+}
+
+function StatusDot({ status }: { status: BackgroundStatus }) {
+  const color =
+    status === "failed"
+      ? "bg-[var(--danger)]"
+      : status === "done"
+        ? "bg-[var(--diff-add-fg)]"
+        : status === "stopped"
+          ? "bg-[var(--faint)]"
+          : "bg-[var(--accent)]";
+  return (
+    <span
+      className={`size-1.5 rounded-full ${color} ${status === "running" ? "animate-pulse" : ""}`}
+    />
   );
 }
 

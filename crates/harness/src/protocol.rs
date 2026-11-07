@@ -111,6 +111,12 @@ pub struct SystemMessage {
     pub fallback_model: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
+    /// `session_state_changed`: `running` as a turn begins, `idle` once the
+    /// CLI is truly done — after its background agents and the follow-up
+    /// turns they trigger — and `requires_action` while it waits on the host.
+    /// Only sent when `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` is set.
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 /// What a `compact_boundary` frame says about the compaction it marks.

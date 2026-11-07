@@ -217,6 +217,12 @@ impl ClaudeCode {
             .current_dir(&options.cwd)
             .env("PATH", crate::agents::execution_path())
             .envs(crate::agents::login_shell_env().iter().cloned());
+        // Ask the CLI to say when it is really idle. A `result` frame only
+        // ends the model's turn: the CLI may still be waiting on background
+        // agents and shells, and will start another turn by itself when one
+        // reports back. `session_state_changed: idle` is its own word for "the
+        // run is over" — see [`TurnGate`].
+        cmd.env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1");
         if std::env::var_os("BUN_JSC_forceRAMSize").is_none() {
             cmd.env("BUN_JSC_forceRAMSize", "268435456");
         }
@@ -508,10 +514,35 @@ impl EventPump {
 
         let stdout_task = async move {
             let mut lines = BufReader::new(stdout).lines();
-            while let Some(line) = lines.next().await {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(error) => {
+            let mut gate = TurnGate::default();
+            loop {
+                // While a result is held back the CLI is expected to follow up
+                // with `idle`; if it goes silent instead, the wait is bounded.
+                let next = if gate.holding() {
+                    futures_lite::future::or(async { Some(lines.next().await) }, async {
+                        async_io::Timer::after(GATE_PATIENCE).await;
+                        None
+                    })
+                    .await
+                } else {
+                    Some(lines.next().await)
+                };
+                let line = match next {
+                    None => {
+                        log::warn!(
+                            "claude went quiet for {}s after a result with no idle report; ending the turn",
+                            GATE_PATIENCE.as_secs()
+                        );
+                        if let Some(event) = gate.release() {
+                            if events.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                        continue;
+                    }
+                    Some(None) => break,
+                    Some(Some(Ok(line))) => line,
+                    Some(Some(Err(error))) => {
                         let _ = events
                             .send(HarnessEvent::Error {
                                 message: format!("read error: {error}"),
@@ -539,18 +570,146 @@ impl EventPump {
                     }
                 };
 
-                for event in translate(message, &session_id) {
+                for event in route(&mut gate, message, &session_id) {
                     if events.send(event).await.is_err() {
                         return; // receiver dropped: the session's UI is gone.
                     }
                 }
             }
             log::info!("claude stdout closed; process exited");
+            // A result still held back when the process dies is the turn's
+            // true end: deliver it ahead of the exit.
+            if let Some(event) = gate.release() {
+                let _ = events.send(event).await;
+            }
             let _ = events.send(HarnessEvent::Exited { code: None }).await;
         };
 
         futures_lite::future::zip(stdout_task, stderr_task).await;
     }
+}
+
+/// How long a held-back result waits in silence for the CLI's `idle` report
+/// before the turn is ended anyway. Long enough for a quiet background shell,
+/// short enough that a CLI that never reports leaves the session recoverable.
+const GATE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Decides when a Claude turn is *over*, as opposed to when the model stopped.
+///
+/// A `result` frame closes one model turn, not the run: with background agents
+/// or shells still going, the CLI answers their completion by starting another
+/// turn on its own. Taking every `result` as the end made the session look
+/// idle, ping "finished", release the user's queued message — and then resume
+/// streaming. The CLI reports the real end as `session_state_changed: idle`
+/// (measured on 2.1.319: `running`, the turn's frames, `result`, then `idle`).
+///
+/// So once the CLI has shown that it sends those reports, a `TurnEnded` is
+/// held until `idle` and any further ones in the meantime are folded into it.
+/// A CLI that never reports state is left alone: every `result` ends the turn
+/// at once, as before.
+#[derive(Default)]
+struct TurnGate {
+    reports_state: bool,
+    held: Option<HarnessEvent>,
+}
+
+impl TurnGate {
+    fn holding(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// Passes `event` on, unless it is a turn end the CLI will confirm later.
+    fn admit(&mut self, event: HarnessEvent) -> Option<HarnessEvent> {
+        match event {
+            ended @ HarnessEvent::TurnEnded { .. } if self.reports_state => {
+                self.held = Some(match self.held.take() {
+                    Some(earlier) => merge_turn_ends(earlier, ended),
+                    None => ended,
+                });
+                None
+            }
+            other => Some(other),
+        }
+    }
+
+    /// Notes a `session_state_changed` report; `idle` releases the held end.
+    fn observe_state(&mut self, state: &str) -> Option<HarnessEvent> {
+        self.reports_state = true;
+        if state == "idle" { self.held.take() } else { None }
+    }
+
+    /// Gives up waiting: whatever is held becomes the turn's end.
+    fn release(&mut self) -> Option<HarnessEvent> {
+        self.held.take()
+    }
+}
+
+/// Two turn ends that are really one run. The accounting adds up, so the
+/// session's totals match what separate ends would have recorded; the words
+/// and the verdict are the latest turn's, since that is how the run finished.
+fn merge_turn_ends(earlier: HarnessEvent, later: HarnessEvent) -> HarnessEvent {
+    match (earlier, later) {
+        (
+            HarnessEvent::TurnEnded {
+                result: earlier_result,
+                duration_ms: earlier_ms,
+                cost_usd: earlier_cost,
+                usage: earlier_usage,
+                ..
+            },
+            HarnessEvent::TurnEnded {
+                result,
+                is_error,
+                duration_ms,
+                cost_usd,
+                usage,
+            },
+        ) => HarnessEvent::TurnEnded {
+            result: result.or(earlier_result),
+            is_error,
+            duration_ms: duration_ms.saturating_add(earlier_ms),
+            cost_usd: cost_usd + earlier_cost,
+            usage: TurnUsage {
+                input_tokens: usage.input_tokens.saturating_add(earlier_usage.input_tokens),
+                output_tokens: usage
+                    .output_tokens
+                    .saturating_add(earlier_usage.output_tokens),
+                cache_creation_tokens: usage
+                    .cache_creation_tokens
+                    .saturating_add(earlier_usage.cache_creation_tokens),
+                cache_read_tokens: usage
+                    .cache_read_tokens
+                    .saturating_add(earlier_usage.cache_read_tokens),
+                context_window: usage.context_window.max(earlier_usage.context_window),
+            },
+        },
+        // Only turn ends are ever held; keep the newer of anything else.
+        (_, later) => later,
+    }
+}
+
+/// One wire message through the gate: its events, in order, minus any turn
+/// end the CLI has yet to confirm — plus the held end, if this message is the
+/// `idle` report that confirms it.
+fn route(
+    gate: &mut TurnGate,
+    message: CliMessage,
+    session_id: &Mutex<Option<SessionId>>,
+) -> Vec<HarnessEvent> {
+    let reported = match &message {
+        CliMessage::System(system) if system.subtype == "session_state_changed" => {
+            system.state.clone()
+        }
+        _ => None,
+    };
+    let mut events: Vec<HarnessEvent> = translate(message, session_id)
+        .into_iter()
+        .filter_map(|event| gate.admit(event))
+        .collect();
+    if let Some(state) = reported {
+        events.extend(gate.observe_state(&state));
+    }
+    events
 }
 
 /// Maps one wire message onto zero or more app-level events.
@@ -1086,6 +1245,100 @@ mod tests {
 
     fn translated(frame: &str) -> Vec<HarnessEvent> {
         translate(serde_json::from_str(frame).unwrap(), &Mutex::new(None))
+    }
+
+
+    fn gated(gate: &mut TurnGate, frame: &str) -> Vec<HarnessEvent> {
+        route(gate, serde_json::from_str(frame).unwrap(), &Mutex::new(None))
+    }
+
+    const STATE_RUNNING: &str =
+        r#"{"type":"system","subtype":"session_state_changed","state":"running","session_id":"s1"}"#;
+    const STATE_IDLE: &str =
+        r#"{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"s1"}"#;
+
+    fn result_frame(text: &str, cost: f64) -> String {
+        format!(
+            r#"{{"type":"result","subtype":"success","is_error":false,"result":"{text}","duration_ms":100,"session_id":"s1","total_cost_usd":{cost},"usage":{{"input_tokens":1,"output_tokens":2}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_result_waits_for_the_clis_idle_report() {
+        let mut gate = TurnGate::default();
+        assert!(gated(&mut gate, STATE_RUNNING).is_empty());
+        // The model stopped, but the CLI has not said it is done.
+        assert!(gated(&mut gate, &result_frame("first", 0.5)).is_empty());
+        assert!(gate.holding());
+        match gated(&mut gate, STATE_IDLE).as_slice() {
+            [HarnessEvent::TurnEnded { result, .. }] => {
+                assert_eq!(result.as_deref(), Some("first"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(!gate.holding());
+    }
+
+    #[test]
+    fn a_follow_up_turn_before_idle_is_one_run_not_two() {
+        // A background agent finished and the CLI began another turn by itself.
+        let mut gate = TurnGate::default();
+        gated(&mut gate, STATE_RUNNING);
+        assert!(gated(&mut gate, &result_frame("started a task", 0.25)).is_empty());
+        gated(&mut gate, STATE_RUNNING);
+        assert!(gated(&mut gate, &result_frame("task is done", 0.5)).is_empty());
+        match gated(&mut gate, STATE_IDLE).as_slice() {
+            [
+                HarnessEvent::TurnEnded {
+                    result,
+                    duration_ms,
+                    cost_usd,
+                    usage,
+                    ..
+                },
+            ] => {
+                assert_eq!(result.as_deref(), Some("task is done"));
+                assert_eq!(*duration_ms, 200);
+                assert!((cost_usd - 0.75).abs() < f64::EPSILON);
+                assert_eq!((usage.input_tokens, usage.output_tokens), (2, 4));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cli_that_reports_no_state_ends_turns_at_the_result() {
+        let mut gate = TurnGate::default();
+        let events = gated(&mut gate, &result_frame("done", 0.1));
+        assert!(matches!(events.as_slice(), [HarnessEvent::TurnEnded { .. }]));
+        assert!(!gate.holding());
+    }
+
+    #[test]
+    fn an_idle_with_nothing_held_says_nothing() {
+        let mut gate = TurnGate::default();
+        assert!(gated(&mut gate, STATE_IDLE).is_empty());
+    }
+
+    #[test]
+    fn a_held_result_can_be_given_up_on() {
+        let mut gate = TurnGate::default();
+        gated(&mut gate, STATE_RUNNING);
+        gated(&mut gate, &result_frame("done", 0.1));
+        assert!(matches!(gate.release(), Some(HarnessEvent::TurnEnded { .. })));
+        assert!(gate.release().is_none());
+    }
+
+    #[test]
+    fn the_streaming_between_a_result_and_idle_still_flows() {
+        let mut gate = TurnGate::default();
+        gated(&mut gate, STATE_RUNNING);
+        gated(&mut gate, &result_frame("done", 0.1));
+        let delta = r#"{"type":"stream_event","session_id":"s1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"more"}}}"#;
+        assert!(matches!(
+            gated(&mut gate, delta).as_slice(),
+            [HarnessEvent::AssistantDelta { .. }]
+        ));
     }
 
     #[test]

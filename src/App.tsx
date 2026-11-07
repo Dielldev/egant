@@ -1,11 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CliLaunchDialog } from "./components/CliLaunchDialog";
-import { CliStage } from "./components/CliStage";
-import { ConflictFileView } from "./components/ConflictResolution";
 import { ContextSidebar } from "./components/ContextSidebar";
-import { DiffTabView } from "./components/DiffTabView";
-import { FileView } from "./components/FileView";
 import { ImageLightbox } from "./components/ImageLightbox";
 import { LaunchScreen } from "./components/LaunchScreen";
 import { NoticeToast } from "./components/NoticeToast";
@@ -18,15 +14,11 @@ import { useColumnLayout } from "./lib/layout";
 import { log } from "./lib/logger";
 import { checkForUpdates } from "./lib/updater";
 import { resetZoom, restoreZoom, zoomIn, zoomOut } from "./lib/zoom";
-import { LibraryPage } from "./components/LibraryPage";
-import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { StageTabs } from "./components/StageTabs";
-import { disposeCliTerminals } from "./components/TerminalPane";
 import { TranscriptView } from "./components/TranscriptView";
 import { Wallpaper } from "./components/Wallpaper";
 import { WindowsChrome } from "./components/WindowsChrome";
-import { WorkspacePanel } from "./components/WorkspacePanel";
 import type { StageTab } from "./store";
 import {
   applyAppearance,
@@ -39,6 +31,18 @@ import {
 
 /** Stable empty list: a fresh `[]` per render would make the store's snapshot
  * a new value on every read. */
+// Surfaces most sessions never open. Their code (CodeMirror, xterm, the diff
+// views, settings) is fetched the first time one is shown, not parsed at launch.
+const SettingsPage = lazy(() => import("./components/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+const LibraryPage = lazy(() => import("./components/LibraryPage").then((m) => ({ default: m.LibraryPage })));
+const WorkspacePanel = lazy(() => import("./components/WorkspacePanel").then((m) => ({ default: m.WorkspacePanel })));
+const FileView = lazy(() => import("./components/FileView").then((m) => ({ default: m.FileView })));
+const DiffTabView = lazy(() => import("./components/DiffTabView").then((m) => ({ default: m.DiffTabView })));
+const CliStage = lazy(() => import("./components/CliStage").then((m) => ({ default: m.CliStage })));
+const ConflictFileView = lazy(() =>
+  import("./components/ConflictResolution").then((m) => ({ default: m.ConflictFileView })),
+);
+
 const NO_TABS: StageTab[] = [];
 
 /** How long the hero composer takes to dock at the bottom — matches the
@@ -69,7 +73,6 @@ export default function App() {
 
 function EgantWindow() {
   const snapshot = useEgant((s) => s.snapshot);
-  const transcripts = useEgant((s) => s.transcripts);
   const settingsOpen = useEgant((s) => s.settingsOpen);
   const libraryOpen = useEgant((s) => s.libraryOpen);
   const startingNewSession = useEgant((s) => s.startingNewSession);
@@ -361,15 +364,23 @@ function EgantWindow() {
   // session that goes away any other way (a project removed, a restore that
   // dropped it) takes its terminal with it too.
   const sessions = snapshot?.sessions;
+  // xterm is only loaded once a CLI session has been on screen; until then
+  // there is no terminal to dispose and nothing to import.
+  const sawCli = useRef(false);
   useEffect(() => {
     if (!sessions) return;
-    disposeCliTerminals(
-      sessions.filter((s) => s.kind === "cli").map((s) => s.id),
-    );
+    const cliIds = sessions.filter((s) => s.kind === "cli").map((s) => s.id);
+    if (cliIds.length > 0) sawCli.current = true;
+    if (!sawCli.current) return;
+    void import("./components/TerminalPane").then((m) => m.disposeCliTerminals(cliIds));
   }, [sessions]);
 
   const activeId = snapshot?.activeSession;
-  const activeTranscript = activeId != null ? transcripts[activeId] : undefined;
+  // Booleans, not the transcripts map: this window re-renders only when one of
+  // these flips, not on every streamed token.
+  const hasActiveTranscript = useEgant(
+    (s) => s.snapshot?.activeSession != null && s.transcripts[s.snapshot.activeSession] !== undefined,
+  );
   // A session that runs its own CLI takes the stage whole: no launch
   // composer to dock, no transcript to stream, nothing to wait for.
   // `startingNewSession` wins: "+" asks for the launch screen back, and the
@@ -389,8 +400,8 @@ function EgantWindow() {
 
   // The two states of one window. The sidebar is common to both — only the
   // stage beside it changes, from the launch composer to the conversation.
-  const launching = selectLaunching(snapshot ?? null, transcripts, startingNewSession);
-  const loading = !launching && !cli && activeTranscript === undefined;
+  const launching = useEgant((s) => selectLaunching(s.snapshot, s.transcripts, s.startingNewSession));
+  const loading = !launching && !cli && !hasActiveTranscript;
   // The moment real transcript content — not just a cleared `launching` flag
   // — is on screen. `launching` can go false a tick before the first message
   // actually lands (the session exists, its transcript doesn't yet), and
@@ -446,7 +457,9 @@ function EgantWindow() {
   return (
     <div className="flex h-full w-full overflow-hidden bg-transparent text-[var(--ink)]">
       {settingsOpen ? (
-        <SettingsPage />
+        <Suspense fallback={null}>
+          <SettingsPage />
+        </Suspense>
       ) : (
         <>
           {sidebarShown && <Sidebar />}
@@ -477,7 +490,9 @@ function EgantWindow() {
               >
                 <NoticeToast />
                 {libraryOpen ? (
-                  <LibraryPage />
+                  <Suspense fallback={null}>
+                    <LibraryPage />
+                  </Suspense>
                 ) : (
                   <>
                     {heroVisible && <Wallpaper launch exiting={docking} />}
@@ -488,13 +503,21 @@ function EgantWindow() {
                       <SessionHeader bare={stage !== "thread"} />
                       <StageTabs sessionKey={stageKey} />
                       {openTab?.kind === "diff" && openTab.status === "conflicted" ? (
-                        <ConflictFileView tab={openTab} />
+                        <Suspense fallback={null}>
+                          <ConflictFileView tab={openTab} />
+                        </Suspense>
                       ) : openTab?.kind === "diff" ? (
-                        <DiffTabView tab={openTab} />
+                        <Suspense fallback={null}>
+                          <DiffTabView tab={openTab} />
+                        </Suspense>
                       ) : openTab ? (
-                        <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
+                        <Suspense fallback={null}>
+                          <FileView key={openTab.key} path={openTab.path} name={openTab.name} />
+                        </Suspense>
                       ) : cli ? (
-                        <CliStage session={cli} />
+                        <Suspense fallback={null}>
+                          <CliStage session={cli} />
+                        </Suspense>
                       ) : (
                         <div
                           onDragOver={(e) => {
@@ -559,7 +582,11 @@ function EgantWindow() {
                   </>
                 )}
               </div>
-              {panelVisible && !libraryOpen && <WorkspacePanel />}
+              {panelVisible && !libraryOpen && (
+                <Suspense fallback={null}>
+                  <WorkspacePanel />
+                </Suspense>
+              )}
               {contextShown && <ContextSidebar />}
         </>
       )}

@@ -948,7 +948,7 @@ export function Composer({
   const lightbox = previewImage
     ? createPortal(
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-10 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-10"
           onMouseDown={() => setPreviewImage(null)}
         >
           <img
@@ -1003,7 +1003,7 @@ export function Composer({
   const sourceTitle = attachedContext?.title || attachedContextSource?.title || "Previous Chat";
 
   const attachedContextRow = (attachedContextSource || attachedContext) ? (
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)]/90 px-3 py-1.5 text-xs shadow-xs backdrop-blur-md">
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)]/90 px-3 py-1.5 text-xs shadow-xs">
       <div className="flex min-w-0 items-center gap-2">
         <ProviderGlyph
           provider={AGENT_PROVIDER[sourceAgent] ?? sourceAgent}
@@ -1064,7 +1064,7 @@ export function Composer({
     showContextPreview && attachedContext
       ? createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
             onClick={() => setShowContextPreview(false)}
           >
             <div

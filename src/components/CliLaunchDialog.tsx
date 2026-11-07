@@ -69,7 +69,7 @@ export function CliLaunchDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-6 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6"
       // A click on the backdrop is a cancel, the same as Esc. The panel below
       // stops the event so a click inside it is never one.
       onMouseDown={cancel}

@@ -171,14 +171,14 @@ export function ImageLightbox() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-black/85 backdrop-blur-md select-none animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex flex-col bg-black/85 select-none animate-in fade-in duration-150"
       onMouseDown={(e) => {
         if (e.button === 0 && e.target === e.currentTarget) close();
       }}
     >
       {/* Top Header Bar */}
       <div
-        className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/50 px-5 text-white backdrop-blur-sm"
+        className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/50 px-5 text-white"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Title and dimension badge */}
@@ -328,7 +328,7 @@ export function ImageLightbox() {
 
         {/* Bottom hint */}
         <div
-          className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3.5 py-1 text-[11px] text-white/50 backdrop-blur-sm"
+          className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3.5 py-1 text-[11px] text-white/50"
         >
           Use + / - to zoom · Drag to pan · Double-click to toggle fit · Esc to close
         </div>

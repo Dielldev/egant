@@ -1275,6 +1275,15 @@ export const useEgant = create<EgantStore>()((set, get) => {
   function patchSession(id: number, patch: Partial<SessionInfo>): void {
     const snapshot = get().snapshot;
     if (!snapshot) return;
+    const current = snapshot.sessions.find((session) => session.id === id);
+    if (!current) return;
+    // Most events (every streamed token, say) leave the row exactly as it was.
+    // A new snapshot object would wake every component subscribed to it, so
+    // an unchanged patch changes nothing.
+    const changed = (Object.keys(patch) as (keyof SessionInfo)[]).some(
+      (key) => current[key] !== patch[key],
+    );
+    if (!changed) return;
     set({
       snapshot: {
         ...snapshot,
@@ -1453,6 +1462,9 @@ export const useEgant = create<EgantStore>()((set, get) => {
   /** Adopts a transcript snapshot, and the decision answers the backend keeps
    * with it — which may have been given on a paired phone. */
   function adoptTranscript(id: number, dto: TranscriptDto): void {
+    // Deltas still queued predate this snapshot; let them land first so they
+    // are replaced by it rather than applied on top of it afterwards.
+    flushDeltas();
     set({
       transcripts: { ...get().transcripts, [id]: fromDto(dto) },
       queues: { ...get().queues, [id]: dto.queued ?? [] },
@@ -1584,6 +1596,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       prev,
       next,
       get().snapshot?.sessions.find((s) => s.id === sessionId)?.title ?? "",
+      () => get().transcripts[sessionId],
     );
     // The session rows derive their live Badges from the same fold.
     const patch: Partial<SessionInfo> = {
@@ -1627,6 +1640,53 @@ export const useEgant = create<EgantStore>()((set, get) => {
       if (session?.agent === "claude") void get().fetchClaudeUsage();
       if (session?.agent === "opencode") void get().fetchOpencodeUsage();
     }
+  }
+
+  // Streamed text arrives a few words at a time, dozens of times a second.
+  // Folding each one separately copies the transcript and re-renders its
+  // readers per token; instead consecutive deltas are merged and folded once
+  // every ~33 ms. Anything else flushes the queue first, so order is kept.
+  let queuedDeltas: SessionEventPayload[] = [];
+  let deltaTimer: ReturnType<typeof setTimeout> | null = null;
+  const DELTA_FLUSH_MS = 33;
+
+  function flushDeltas(): void {
+    if (deltaTimer !== null) {
+      clearTimeout(deltaTimer);
+      deltaTimer = null;
+    }
+    if (queuedDeltas.length === 0) return;
+    const batch = queuedDeltas;
+    queuedDeltas = [];
+    const merged: SessionEventPayload[] = [];
+    for (const item of batch) {
+      const last = merged[merged.length - 1];
+      if (
+        last &&
+        last.sessionId === item.sessionId &&
+        last.event.type === item.event.type &&
+        (item.event.type === "assistant_delta" || item.event.type === "thinking_delta")
+      ) {
+        merged[merged.length - 1] = {
+          sessionId: last.sessionId,
+          event: { ...item.event, text: (last.event as typeof item.event).text + item.event.text },
+        };
+      } else {
+        merged.push(item);
+      }
+    }
+    for (const item of merged) onSessionEvent(item);
+  }
+
+  function enqueueSessionEvent(payload: SessionEventPayload): void {
+    const type = payload.event.type;
+    if (type !== "assistant_delta" && type !== "thinking_delta") {
+      flushDeltas();
+      onSessionEvent(payload);
+      return;
+    }
+    queuedDeltas.push(payload);
+    if (deltaTimer === null) deltaTimer = setTimeout(flushDeltas, DELTA_FLUSH_MS);
   }
 
   return {
@@ -2436,7 +2496,7 @@ export const useEgant = create<EgantStore>()((set, get) => {
       void get().fetchCatalog();
       void get().fetchSkills();
       const unlistenEvents = await listen<SessionEventPayload>("session-event", (e) =>
-        onSessionEvent(e.payload),
+        enqueueSessionEvent(e.payload),
       );
       const unlistenRenames = await listen<WorktreeRenamedPayload>("worktree-renamed", (e) =>
         onWorktreeRenamed(e.payload),

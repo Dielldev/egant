@@ -247,23 +247,55 @@ function takeInterrupt(sessionId: number): boolean {
   return at !== undefined && Date.now() - at < INTERRUPT_WINDOW_MS;
 }
 
+/** How long a notice waits before it is raised, and is dropped if the session
+ * has moved on by then. An event is only a *claim* that the agent finished,
+ * stalled or died: the next one often retracts it — a queued message goes out
+ * the instant a turn ends, a permission is answered from the phone, an agent
+ * carries on with background work. Announcing the claim at once is a fake
+ * alert; announcing it once it has held for a moment is not. */
+const SETTLE_MS = 2_000;
+const settling = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** Whether the notice `event` raised still describes the session now: the run is still over for
+ * a finish or failure, and the same request is still unanswered for an
+ * approval. */
+function stillHolds(event: HarnessEvent, now: TranscriptState | undefined): boolean {
+  if (!now) return false;
+  if (event.type === "permission_request") {
+    return (now.pendingList ?? []).some((pending) => pending.requestId === event.request_id);
+  }
+  return now.state === "idle";
+}
+
 /** Plays and shows whatever `event` calls for, honouring Settings and staying
  * quiet while the egant window is focused. Never throws and never waits on the
  * caller: a notification must not be able to break the fold of the event that
- * caused it. */
+ * caused it. `current` reads the session's transcript as it is when the notice
+ * is about to be raised, so one the session has since contradicted is dropped. */
 export function notifySession(
   sessionId: number,
   event: HarnessEvent,
   before: TranscriptState,
   after: TranscriptState,
   title: string,
+  current: () => TranscriptState | undefined,
 ): void {
   if (event.type === "turn_ended" && takeInterrupt(sessionId)) return;
   const notice = noticeFor(event, before, after);
   if (!notice || !readBool(NOTIFY_KEYS[notice.kind], true)) return;
-  void deliver(notice, title).catch((error: unknown) => {
-    log.warn("notify", `notification failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
+  // One notice in flight per session: a newer event supersedes the last.
+  const earlier = settling.get(sessionId);
+  if (earlier !== undefined) clearTimeout(earlier);
+  settling.set(
+    sessionId,
+    setTimeout(() => {
+      settling.delete(sessionId);
+      if (!stillHolds(event, current())) return;
+      void deliver(notice, title).catch((error: unknown) => {
+        log.warn("notify", `notification failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, SETTLE_MS),
+  );
 }
 
 async function deliver(notice: SessionNotice, title: string): Promise<void> {

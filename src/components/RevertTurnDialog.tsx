@@ -76,7 +76,7 @@ export function RevertTurnDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-6 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-6"
       onMouseDown={onClose}
     >
       <div

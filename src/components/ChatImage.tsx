@@ -180,7 +180,7 @@ export const ChatImage = memo(function ChatImage({
             type="button"
             title="View full size"
             onClick={handleClickImage}
-            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow backdrop-blur-sm hover:bg-black/80"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow hover:bg-black/80"
           >
             <Maximize2 size={13} strokeWidth={2} />
           </button>
@@ -189,7 +189,7 @@ export const ChatImage = memo(function ChatImage({
             type="button"
             title="Copy image"
             onClick={handleCopy}
-            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow backdrop-blur-sm hover:bg-black/80"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow hover:bg-black/80"
           >
             {copied ? (
               <Check size={13} className="text-emerald-400" strokeWidth={2.5} />
@@ -202,7 +202,7 @@ export const ChatImage = memo(function ChatImage({
             type="button"
             title="Download image"
             onClick={handleDownload}
-            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow backdrop-blur-sm hover:bg-black/80"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow hover:bg-black/80"
           >
             <Download size={13} />
           </button>
@@ -212,7 +212,7 @@ export const ChatImage = memo(function ChatImage({
               type="button"
               title="Open in file tab"
               onClick={handleOpenInTab}
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow backdrop-blur-sm hover:bg-black/80"
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md bg-black/60 text-white shadow hover:bg-black/80"
             >
               <ExternalLink size={13} strokeWidth={2} />
             </button>

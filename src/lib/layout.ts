@@ -8,9 +8,21 @@ export { MIN_PANEL_WIDTH, MIN_STAGE_WIDTH };
 export function useWindowWidth(): number {
   const [width, setWidth] = useState(() => window.innerWidth);
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    // A drag-resize fires an event per pixel; the layout only needs the width
+    // once per frame.
+    let frame = 0;
+    const onResize = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setWidth(window.innerWidth);
+      });
+    };
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, []);
   return width;
 }

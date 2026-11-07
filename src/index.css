@@ -420,20 +420,22 @@ html[data-palette="andromeda"] {
   --code-chip-fg: #23262e;
 }
 
-/* The sidebar: frosted glass in every Glass mode, including No Glass —
- * it is the one surface that always keeps its blur/tint. */
+/* The sidebar: tinted glass in every Glass mode, including No Glass — it is
+ * the one surface that always keeps its tint. The blur itself is the window's
+ * native one (vibrancy / Mica); a CSS `backdrop-filter` here could only sample
+ * the page behind the sidebar, which is empty, so it blurred nothing while
+ * costing a full-height offscreen GPU layer. */
 .sidebar-glass {
   background: var(--glass-tint);
-  backdrop-filter: blur(38px) saturate(1.4);
-  -webkit-backdrop-filter: blur(38px) saturate(1.4);
+  /* `backdrop-filter` used to give this its own stacking context; keep it, so
+   * popovers inside the sidebar layer exactly as before. */
+  isolation: isolate;
 }
 
 /* Clear: the most transparent option — half the tint of frosted, so the
- * desktop reads through strongly while the blur keeps text legible. */
+ * desktop reads through strongly. */
 html[data-glass="clear"] .sidebar-glass {
   background: color-mix(in srgb, var(--sidebar) 8%, transparent);
-  backdrop-filter: blur(44px) saturate(1.5);
-  -webkit-backdrop-filter: blur(44px) saturate(1.5);
 }
 
 /* The Settings page's own stage. The conversation stage handles this same
