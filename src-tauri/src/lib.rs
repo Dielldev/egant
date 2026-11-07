@@ -103,12 +103,12 @@ pub fn run() {
         .setup(|app| {
             {
                 use tauri::Manager;
-                // Windows draws its own caption and menu bar (the window is
-                // undecorated there — see `tauri.windows.conf.json`), so a
-                // native HMENU would put an unthemed second menu strip above
-                // it. The items themselves still reach the frontend through
-                // the custom bar, which calls the same actions.
-                #[cfg(target_os = "windows")]
+                // Windows and Linux draw their own caption and menu bar (the
+                // window is undecorated — see `tauri.windows.conf.json` /
+                // `tauri.linux.conf.json`), so a native menu would put a
+                // second strip above it. The items themselves still reach the
+                // frontend through the custom bar, which calls the same actions.
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
                 let _ = app.remove_menu();
 
                 app.state::<sync::SyncHub>().attach(app.handle().clone());

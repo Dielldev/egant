@@ -20,11 +20,13 @@ type Menu = {
   items: (MenuItem | "separator")[];
 };
 
-/** Windows' custom title bar: an application menu on the left, window title and
- * drag strip in the center, and native-feeling caption buttons on the right.
+/** Custom title bar for Windows and Linux: application menu on the left,
+ * window title and drag strip in the center, caption buttons (minimize /
+ * maximize / close) on the right.
  *
- * The window is undecorated on Windows (`tauri.windows.conf.json`) so the
- * webview can paint edge-to-edge over Mica / Mica Alt / Acrylic. */
+ * The window is undecorated on those platforms (`tauri.windows.conf.json`,
+ * `tauri.linux.conf.json`) so the webview owns the chrome — on Windows that
+ * also lets Mica / Acrylic show through. */
 export function WindowsChrome() {
   const barRef = useRef<HTMLElement>(null);
   const menuButtonsRef = useRef<(HTMLButtonElement | null)[]>([]);

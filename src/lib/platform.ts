@@ -27,6 +27,12 @@ export function isWindows(): boolean {
   return /Windows/i.test(navigator.userAgent || "");
 }
 
+/** Windows and Linux paint an in-app titlebar (menus + min/max/close) because
+ * the native window is undecorated. macOS keeps system traffic lights. */
+export function usesCustomTitlebar(): boolean {
+  return isWindows() || isLinux();
+}
+
 /** Platform-appropriate device naming: "this Mac", "this PC", or "this device". */
 export function hostDeviceLabel(): string {
   if (isMac()) return "this Mac";
@@ -41,7 +47,7 @@ export function hostDeviceCapitalized(): string {
 }
 
 /** Left padding for the window-bar row: clears overlay traffic lights on
- * macOS; a small inset elsewhere (normal decorations own the chrome). */
+ * macOS; a small inset elsewhere (custom or OS chrome owns the top edge). */
 export function windowBarPadClass(): string {
   return isMac() ? "pl-[76px]" : "pl-2";
 }

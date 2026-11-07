@@ -466,12 +466,16 @@ html[data-platform="linux"] .stage-ground {
   background: var(--stage);
 }
 
-/* Windows' custom title bar (see `WindowsChrome.tsx`). It carries a refined
- * Fluent stage colour so menu items and window title remain crisp and legible
- * while Mica / Acrylic shines through underneath. */
+/* Custom title bar on Windows and Linux (see `WindowsChrome.tsx`). On Windows
+ * it stays translucent over Mica / Acrylic; on Linux the stage tint is solid
+ * enough to read against an undecorated frame. */
 .windows-titlebar {
   background: color-mix(in srgb, var(--stage) 25%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+html[data-platform="linux"] .windows-titlebar {
+  background: var(--stage);
+  border-bottom: 1px solid var(--border);
 }
 html[data-window-glass="false"] .windows-titlebar {
   background: var(--stage);
@@ -615,9 +619,14 @@ body,
 }
 
 /* Subtle border for undecorated window on Windows when restored */
-html[data-platform="windows"]:not([data-window-maximized="true"]) #root {
+html[data-platform="windows"]:not([data-window-maximized="true"]) #root,
+html[data-platform="linux"]:not([data-window-maximized="true"]) #root {
   border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   box-sizing: border-box;
+}
+html[data-platform="linux"]:not([data-window-maximized="true"]) #root {
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 body {
