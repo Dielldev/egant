@@ -24,7 +24,7 @@ export type DownloadInfo = {
 };
 
 /** The release assets keep version-less names so these links never go stale. */
-export const DOWNLOADS: Record<"mac" | "windows", DownloadInfo> = {
+export const DOWNLOADS: Record<"mac" | "windows" | "linux", DownloadInfo> = {
   mac: {
     os: "macOS",
     url: `${REPO}/releases/latest/download/egant-macos-arm64.dmg`,
@@ -43,11 +43,28 @@ export const DOWNLOADS: Record<"mac" | "windows", DownloadInfo> = {
     guide: "/guides#windows-smartscreen",
     guideLabel: "SmartScreen guide →",
   },
+  linux: {
+    os: "Linux",
+    url: `${REPO}/releases/latest/download/egant-linux-x86_64.AppImage`,
+    label: "Download for Linux",
+    detail: "x86_64 AppImage",
+    note: "make it executable, then run it: chmod +x egant-linux-x86_64.AppImage",
+    guide: "/guides#linux-appimage",
+    guideLabel: "Linux guide →",
+  },
 } as const;
 
 export type DownloadOs = keyof typeof DOWNLOADS;
 
-/** The visitor's desktop OS; detects Windows vs macOS. */
+/** The two downloads the page offers: the visitor's own OS first, then one
+ * alternative. Three buttons is noise, so Linux visitors get Linux + Windows
+ * and everyone else keeps macOS + Windows. */
+export function downloadsFor(os: DownloadOs): DownloadInfo[] {
+  const other: DownloadOs = os === "windows" ? "mac" : "windows";
+  return [DOWNLOADS[os], DOWNLOADS[other]];
+}
+
+/** The visitor's desktop OS: Windows, Linux (not Android), else macOS. */
 export function detectOs(): DownloadOs {
   if (typeof window === "undefined" || typeof navigator === "undefined") {
     return "mac";
@@ -57,6 +74,9 @@ export function detectOs(): DownloadOs {
   const ua = (nav.userAgent || "").toLowerCase();
   if (platform.startsWith("win") || ua.includes("windows")) {
     return "windows";
+  }
+  if ((platform.startsWith("linux") || ua.includes("linux")) && !ua.includes("android")) {
+    return "linux";
   }
   return "mac";
 }

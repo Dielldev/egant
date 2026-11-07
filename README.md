@@ -16,7 +16,9 @@
 
 **Windows (10 & 11, 64-bit):** [download egant-setup-x64.exe](https://github.com/Dielldev/egant/releases/latest/download/egant-setup-x64.exe), run the installer. Standard user installation, auto-updates supported.
 
-Intel Macs and Linux: build from source, see the [Quickstart](#quickstart).
+**Linux (x86_64):** [download egant-linux-x86_64.AppImage](https://github.com/Dielldev/egant/releases/latest/download/egant-linux-x86_64.AppImage), then `chmod +x egant-linux-x86_64.AppImage` and run it. A `.deb` for Debian/Ubuntu is on the [releases page](https://github.com/Dielldev/egant/releases/latest). Auto-updates supported for the AppImage.
+
+Intel Macs: build from source, see the [Quickstart](#quickstart).
 
 ## What is egant?
 
@@ -233,7 +235,7 @@ egant checks GitHub for a newer release a little after it starts and every few h
 
 ### Releasing
 
-Bump the version in `src-tauri/tauri.conf.json`, `Cargo.toml` and `package.json`, commit and push to `main`, then either run `scripts/release.sh` (builds on your Mac and publishes the release) or push a tag (`git tag v0.1.2 && git push egant-old v0.1.2`) and let the *Release* workflow do it. Both need the updater signing key: `scripts/release.sh` reads `~/.tauri/egant-updater.key`, the workflow reads the repository secret `TAURI_SIGNING_PRIVATE_KEY` (`gh secret set TAURI_SIGNING_PRIVATE_KEY -R Dielldev/egant < ~/.tauri/egant-updater.key`). Keep a backup of the key: without it, installed copies can't be updated.
+Bump the version in `src-tauri/tauri.conf.json`, `Cargo.toml` and `package.json`, commit and push to `main`, then either run `scripts/release.sh` (builds on your Mac and publishes the macOS release only) or push a tag (`git tag v0.1.2 && git push egant-old v0.1.2`) and let the *Release* workflow do it. Both need the updater signing key: `scripts/release.sh` reads `~/.tauri/egant-updater.key`, the workflow reads the repository secret `TAURI_SIGNING_PRIVATE_KEY` (`gh secret set TAURI_SIGNING_PRIVATE_KEY -R Dielldev/egant < ~/.tauri/egant-updater.key`). Keep a backup of the key: without it, installed copies can't be updated.
 
 ## Troubleshooting
 

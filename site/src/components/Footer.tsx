@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { DOWNLOADS, REPO, detectOs, type DownloadOs } from "../content";
+import { DOWNLOADS, downloadsFor, REPO, detectOs, type DownloadOs } from "../content";
 import { Mark } from "./Mark";
 import { Reveal } from "./Reveal";
 
@@ -12,9 +12,7 @@ export function Footer() {
     setOs(detectOs());
   }, []);
 
-  const downloads = [DOWNLOADS[os], ...Object.values(DOWNLOADS)].filter(
-    (download, i, all) => all.indexOf(download) === i,
-  );
+  const downloads = downloadsFor(os);
   const primary = DOWNLOADS[os];
 
   return (

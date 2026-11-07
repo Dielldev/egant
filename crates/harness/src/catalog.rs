@@ -1367,6 +1367,8 @@ mod tests {
 
     /// The sink sees output while the command is still running, not only
     /// after it exits — that is what lets the sheet show a live progress bar.
+    /// Unix only: the script leans on `printf` and `sleep`.
+    #[cfg(unix)]
     #[test]
     fn the_shell_runner_streams_output_before_the_command_exits() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::<(Instant, String)>::new()));

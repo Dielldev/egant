@@ -141,4 +141,29 @@ export const GUIDES: Guide[] = [
     note:
       "On Windows the same updater writes into your user folder, so no admin prompt appears. A release mid-session never interrupts the running agent — the update is applied at the next full restart.",
   },
+  {
+    id: "linux-appimage",
+    nav: "Linux AppImage",
+    tag: "Linux",
+    title: "Running egant on Linux in two commands.",
+    summary: "Making the AppImage executable and what it needs",
+    intro:
+      "The Linux download is a single AppImage (x86_64) — no installer, no root. Browsers don't keep the executable bit, so it needs one nudge the first time:",
+    steps: [
+      {
+        strong: "Make it executable.",
+        rest: "In the folder you downloaded it to, run chmod +x egant-linux-x86_64.AppImage. Some file managers also offer “Allow executing file as program” in the file's properties.",
+      },
+      {
+        strong: "Run it.",
+        rest: "Double-click it or start ./egant-linux-x86_64.AppImage from a terminal. If it complains about FUSE, install fuse2 (libfuse2 on Ubuntu) or run it with --appimage-extract-and-run.",
+      },
+      {
+        strong: "Install an agent CLI.",
+        rest: "egant drives the agent CLIs you already have, so install at least one first (for example claude, then claude login). A Debian/Ubuntu .deb is on the releases page too.",
+      },
+    ],
+    note:
+      "The AppImage updates itself like the other builds. It needs WebKitGTK 4.1, which every current desktop distro ships.",
+  },
 ];

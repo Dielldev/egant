@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
 import { Link } from "react-router-dom";
-import { DOWNLOADS, HERO_IMAGE, REPO, detectOs, type DownloadOs } from "../content";
+import { DOWNLOADS, downloadsFor, HERO_IMAGE, REPO, detectOs, type DownloadOs } from "../content";
 import { leaveProgress, useScrollProgress } from "../useReveal";
 import { GithubIcon } from "./GithubIcon";
 
@@ -13,9 +13,7 @@ export function Hero() {
   }, []);
 
   // The visitor's own OS first.
-  const downloads = [DOWNLOADS[os], ...Object.values(DOWNLOADS)].filter(
-    (download, i, all) => all.indexOf(download) === i,
-  );
+  const downloads = downloadsFor(os);
   const primary = DOWNLOADS[os];
   const card = useScrollProgress<HTMLDivElement>(leaveProgress, 0);
 
