@@ -1216,18 +1216,6 @@ export function Composer({
           {attachedContextRow}
           {activeSkillRow}
           {imageRow}
-          {!hasContext && availableHandoverSessions.length > 0 && (
-            <div className="mb-2">
-              <button
-                type="button"
-                onClick={() => setPlusView("context")}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--card)] px-2.5 py-1 text-[11px] text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--ink)]"
-              >
-                <FoldVertical size={12} className="text-[var(--accent)]" />
-                <span>Pass context from previous chat...</span>
-              </button>
-            </div>
-          )}
           {area}
           {/* Picker left, actions right — the launch picker chooses what the
             next session starts with (agent, model, effort). */}

@@ -23,8 +23,7 @@ export type PlusView = "root" | "context";
 /** The "+" at the left of the composer: one place for everything that adds to
  * the message or jumps somewhere to set it up — files, a folder, a slash
  * command, context from another chat, and the Library's MCP servers and
- * skills. Controlled by the composer, so its "Pass context…" pill can open it
- * straight on the chat list. */
+ * skills. */
 export function ComposerPlusMenu({
   view,
   onView,
